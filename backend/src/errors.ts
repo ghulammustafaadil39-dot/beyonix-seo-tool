@@ -10,9 +10,16 @@ export class ApiError extends Error {
   }
 }
 
-export function errorEnvelope(err: unknown) {
+/** Builds the frozen API error envelope:
+ * `{ ok:false, error:{ code, message, requestId?, details? } }` (N-A1-2).
+ * Pass the request id so every error body carries it. */
+export function errorEnvelope(err: unknown, requestId?: string) {
+  const rid = requestId ? { requestId } : {};
   if (err instanceof ApiError) {
-    return { status: err.status, body: { error: { code: err.code, message: err.message, ...err.extra } } };
+    return {
+      status: err.status,
+      body: { ok: false, error: { code: err.code, message: err.message, ...err.extra, ...rid } },
+    };
   }
   // Fastify schema-validation failures (thrown before the handler runs).
   // Frozen contract: validation errors → 400 VALIDATION_ERROR (N-A1-1).
@@ -21,10 +28,12 @@ export function errorEnvelope(err: unknown) {
     return {
       status: 400,
       body: {
+        ok: false,
         error: {
           code: 'VALIDATION_ERROR',
           message: 'Request validation failed',
           details: fErr.validation ?? [],
+          ...rid,
         },
       },
     };
@@ -32,11 +41,14 @@ export function errorEnvelope(err: unknown) {
   // Never leak internal messages (Postgres details, provider responses,
   // missing-key hints) to clients in production. Log server-side instead.
   if (process.env.NODE_ENV === 'production') {
-    console.error('[api] internal error:', err instanceof Error ? err.message : err);
-    return { status: 500, body: { error: { code: 'INTERNAL', message: 'Something went wrong. Please try again.' } } };
+    console.error(`[api] internal error requestId=${requestId ?? '-'}:`, err instanceof Error ? err.message : err);
+    return {
+      status: 500,
+      body: { ok: false, error: { code: 'INTERNAL', message: 'Something went wrong. Please try again.', ...rid } },
+    };
   }
   const message = err instanceof Error ? err.message : 'Internal server error';
-  return { status: 500, body: { error: { code: 'INTERNAL', message } } };
+  return { status: 500, body: { ok: false, error: { code: 'INTERNAL', message, ...rid } } };
 }
 
 export const notFound = (what = 'Resource') => new ApiError(404, 'NOT_FOUND', `${what} not found`);
