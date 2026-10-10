@@ -54,10 +54,22 @@ services:
         condition: service_started
 
   web:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Build-time override only (non-proxied deploys): bakes an absolute
+        # API URL into the client bundle. Empty (default) => the browser
+        # uses same-origin relative URLs, proxied at runtime by
+        # app/api/[...path]/route.ts — no rebuild needed to change the API
+        # target.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
     env_file: .env
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:4000
+      # Runtime /api proxy target, read per request by
+      # app/api/[...path]/route.ts. Compose-internal hostname; the browser
+      # never sees this value. (NEXT_PUBLIC_API_URL is kept as a fallback
+      # by the route for the old runtime-only pattern.)
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:4000}
     ports:
       - "3000:3000"
     depends_on:

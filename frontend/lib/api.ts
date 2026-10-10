@@ -1,9 +1,12 @@
-// Typed client for the Beyonix SEO Tool API (http://localhost:4000 by default).
+// Typed client for the Beyonix SEO Tool API.
 // Auth is via the httpOnly cookie `bseo_token` set by the API, so every
 // request uses credentials: 'include'.
-
-const BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+//
+// The browser always uses same-origin relative URLs: app/api/[...path]/route.ts
+// proxies /api/* to the API origin read from the runtime environment, so the
+// API URL is never baked into the client bundle. Set NEXT_PUBLIC_API_URL at
+// build time to bypass the proxy and call the API directly (non-proxied deploys).
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 export interface ApiErrorShape {
   code: string;
