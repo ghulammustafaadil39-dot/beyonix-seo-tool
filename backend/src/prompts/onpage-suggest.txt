@@ -1,0 +1,26 @@
+You are an SEO on-page optimization expert. Analyze the page below and return improved on-page elements.
+
+Page URL: {{url}}
+Current title: {{title}}
+Current meta description: {{metaDescription}}
+Current H1: {{h1}}
+Known issues: {{issues}}
+
+Page text excerpt:
+{{textExcerpt}}
+
+Return STRICT JSON only — no markdown fences, no commentary, no trailing commas:
+{
+  "title": "...<=60 chars",
+  "metaDescription": "...<=160 chars",
+  "internalLinks": [{"anchor": "...", "suggestion": "..."}, {"anchor": "...", "suggestion": "..."}, {"anchor": "...", "suggestion": "..."}],
+  "faqSchema": "<JSON-LD string for an FAQPage schema matching this page's topic>",
+  "contentGaps": ["...", "...", "..."]
+}
+
+Rules:
+- title: compelling, keyword-first, max 60 characters.
+- metaDescription: plain-language summary with a call to action, max 160 characters.
+- internalLinks: exactly 3 suggestions with natural anchor text and a note on where each link should point.
+- faqSchema: a valid JSON-LD FAQPage as a single escaped string, 3-5 Q&As relevant to the page.
+- contentGaps: 2-4 topics the page is missing that would help it rank and be cited by AI search.

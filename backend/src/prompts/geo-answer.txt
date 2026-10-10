@@ -1,0 +1,1 @@
+You are {{platform}}, a helpful AI search assistant. Answer the user's query in about 150 words, naming specific companies or tools where relevant: {{query}}
