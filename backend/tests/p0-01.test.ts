@@ -8,7 +8,7 @@ import { pool, runMigrations } from '../src/db.js';
  * users.token_version, while /auth/logout bumps token_version. The first
  * logout permanently revoked every future password-login token.
  *
- * Requires a real database: run with DATABASE_URL pointing at bseo_test.
+ * Requires a real database: run with DATABASE_URL pointing at bseo_test_backend.
  */
 describe('P0-01 token_version regression', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
