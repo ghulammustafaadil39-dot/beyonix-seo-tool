@@ -218,3 +218,32 @@ describe.runIf(HAS_STRIPE_ENV && HAS_TEST_DB)('P0-04 signed webhook fixtures (re
     }
   }, 60000);
 });
+
+/**
+ * Security-review regression (no Stripe env needed): checkout.session.completed
+ * must isPlanId-guard the plan before writing — an unsigned mock webhook (or a
+ * tampered event) must not be able to escalate an arbitrary tenant.
+ */
+describe('P0-04 checkout plan guard', () => {
+  it('writes only isPlanId-validated plans from checkout.session.completed', async () => {
+    const writes: unknown[][] = [];
+    const q = async (text: string, params?: unknown[]) => {
+      writes.push([text, params]);
+      return { rows: [], rowCount: 0 };
+    };
+    const evt = (planId: unknown) => ({
+      type: 'checkout.session.completed',
+      data: { metadata: { tenantId: 't-victim', planId }, subscription: 'sub_x' },
+    });
+    await applyPaymentEvent(evt('pro'), q as any);
+    expect(writes.length).toBe(1);
+    expect((writes[0][1] as unknown[])[3]).toBe('pro');
+    writes.length = 0;
+    await applyPaymentEvent(evt('enterprise'), q as any);
+    expect(writes.length).toBe(0);
+    await applyPaymentEvent(evt(undefined), q as any);
+    expect(writes.length).toBe(0);
+    await applyPaymentEvent(evt(''), q as any);
+    expect(writes.length).toBe(0);
+  });
+});
