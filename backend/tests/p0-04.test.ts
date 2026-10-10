@@ -29,8 +29,12 @@ import { pool, query, runMigrations } from '../src/db.js';
 const HAS_PRICES = !!process.env.STRIPE_PRICE_GROWTH && !!process.env.STRIPE_PRICE_PRO;
 const HAS_STRIPE_ENV =
   HAS_PRICES && !!process.env.STRIPE_SECRET_KEY && !!process.env.STRIPE_WEBHOOK_SECRET;
+const HAS_TEST_DB = /test/i.test(process.env.DATABASE_URL ?? '');
 if (!HAS_STRIPE_ENV) {
   console.warn('[p0-04] Stripe env not set — Stripe-specific tests self-skip (mock mode)');
+}
+if (!HAS_TEST_DB) {
+  console.warn('[p0-04] skipping DB-backed tests: DATABASE_URL does not point at a test database');
 }
 
 describe.runIf(HAS_PRICES)('P0-04 checkout params', () => {
@@ -72,7 +76,7 @@ describe.runIf(HAS_PRICES)('P0-04 price -> plan mapping', () => {
   });
 });
 
-describe.runIf(HAS_STRIPE_ENV)('P0-04 signed webhook fixtures (real signature verification)', () => {
+describe.runIf(HAS_STRIPE_ENV && HAS_TEST_DB)('P0-04 signed webhook fixtures (real signature verification)', () => {
   let tenantA: string;
   let tenantB: string;
 

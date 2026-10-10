@@ -13,9 +13,14 @@ import { pool, runMigrations } from '../src/db.js';
  * These tests assert the public routes are reachable WITHOUT a token while
  * protected routes still require one.
  *
- * Requires a real database: run with DATABASE_URL pointing at bseo_test_backend.
+ * Requires a real database: run with DATABASE_URL pointing at a test
+ * database (e.g. bseo_test_backend). Skips otherwise — never touches a
+ * non-test database by accident.
  */
-describe('N-QA-1 public routes are not auth-gated', () => {
+const HAS_TEST_DB = /test/i.test(process.env.DATABASE_URL ?? '');
+if (!HAS_TEST_DB) console.warn('[n-qa-1] skipping: DATABASE_URL does not point at a test database');
+
+describe.runIf(HAS_TEST_DB)('N-QA-1 public routes are not auth-gated', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
   const email = `nqa1_${Date.now()}@example.com`;
   const password = 'correct-horse-9';

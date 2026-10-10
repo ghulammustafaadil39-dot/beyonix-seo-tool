@@ -10,9 +10,14 @@ import { pool, query, runMigrations, type QueryFn } from '../src/db.js';
  * migration file in its own transaction, a one-shot `migrate` compose
  * service, and /healthz split into liveness vs readiness.
  *
- * DB-backed parts need DATABASE_URL pointing at bseo_test_backend.
+ * DB-backed parts need DATABASE_URL pointing at a test database (e.g.
+ * bseo_test_backend). They skip otherwise — never touches a non-test
+ * database by accident.
  */
-describe('P0-02 migration safety', () => {
+const HAS_TEST_DB = /test/i.test(process.env.DATABASE_URL ?? '');
+if (!HAS_TEST_DB) console.warn('[p0-02] skipping DB-backed tests: DATABASE_URL does not point at a test database');
+
+describe.runIf(HAS_TEST_DB)('P0-02 migration safety', () => {
   it('runs each migration in a transaction: failure rolls back, nothing recorded', async () => {
     const seen: string[] = [];
     const boom = new Error('synthetic migration failure');
@@ -64,7 +69,8 @@ describe('P0-02 liveness vs readiness', () => {
     expect(res.json().ok).toBe(true);
   });
 
-  it('/readyz reports DB + Redis health', async () => {
+  // Needs live Postgres + Redis.
+  it.runIf(HAS_TEST_DB)('/readyz reports DB + Redis health', async () => {
     const res = await app.inject({ method: 'GET', url: '/readyz' });
     expect(res.statusCode).toBe(200);
     const body = res.json();

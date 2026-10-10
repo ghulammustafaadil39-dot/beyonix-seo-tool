@@ -8,9 +8,14 @@ import { pool, runMigrations } from '../src/db.js';
  * users.token_version, while /auth/logout bumps token_version. The first
  * logout permanently revoked every future password-login token.
  *
- * Requires a real database: run with DATABASE_URL pointing at bseo_test_backend.
+ * Requires a real database: run with DATABASE_URL pointing at a test
+ * database (e.g. bseo_test_backend). Skips otherwise — never touches a
+ * non-test database by accident.
  */
-describe('P0-01 token_version regression', () => {
+const HAS_TEST_DB = /test/i.test(process.env.DATABASE_URL ?? '');
+if (!HAS_TEST_DB) console.warn('[p0-01] skipping: DATABASE_URL does not point at a test database');
+
+describe.runIf(HAS_TEST_DB)('P0-01 token_version regression', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
   const email = `p001_${Date.now()}@example.com`;
   const password = 'correct-horse-9';
