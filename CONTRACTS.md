@@ -361,12 +361,14 @@ export const Jobs = {
 ## 9. Frontend (`frontend/`)
 
 Next.js 14 App Router + TypeScript + Tailwind. API base URL: the browser
-client (`lib/api.ts`) defaults to same-origin relative URLs; the Next.js
-server proxies `/api/*` to the API origin via `rewrites()` in
-`next.config.js`, where `NEXT_PUBLIC_API_URL` is read at server boot
-(default `http://localhost:4000`). Set `NEXT_PUBLIC_API_URL` as a build
-arg only for non-proxied deploys where the browser must reach the API
-directly.
+client (`lib/api.ts`) defaults to same-origin relative URLs;
+`app/api/[...path]/route.ts` proxies `/api/*` to the API origin read from
+the runtime environment per request (`API_INTERNAL_URL`, falling back to
+`NEXT_PUBLIC_API_URL`, default `http://localhost:4000`) — the URL is never
+baked into the image. Set `NEXT_PUBLIC_API_URL` as a build arg only for
+non-proxied deploys where the browser must reach the API directly. (A
+`next.config.js` rewrite cannot serve this purpose: rewrites are evaluated
+at build time and serialized into the standalone server.)
 Auth: httpOnly cookie `bseo_token` set by API on login/signup
 (`POST /api/v1/auth/login` with `credentials:'include'`); `lib/api.ts`
 wraps fetch with `credentials: 'include'`.
