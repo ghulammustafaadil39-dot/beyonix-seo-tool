@@ -23,6 +23,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # P0-02: one-shot migration runner. api/worker wait for it to complete
+  # successfully, so the schema lands exactly once before anything boots.
+  # (runMigrations() is also advisory-locked, so a concurrent boot-time run
+  # can never race it.)
+  migrate:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://bseo:bseo@postgres:5432/bseo
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   api:
     build: ./backend
     env_file: .env
@@ -37,6 +54,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   worker:
     build: ./backend
@@ -50,8 +75,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       api:
         condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "node --input-type=module -e \"const{Redis}=await import('ioredis');const r=new Redis(process.env.REDIS_URL||'redis://redis:6379',{lazyConnect:true});await r.ping();await r.quit();\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   web:
     build:
@@ -73,7 +106,8 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:

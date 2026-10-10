@@ -4,7 +4,8 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import { config } from './config.js';
-import { runMigrations } from './db.js';
+import { pool, runMigrations } from './db.js';
+import { Redis } from 'ioredis';
 import { errorEnvelope } from './errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerBillingRoutes } from './routes/billing.js';
@@ -58,7 +59,30 @@ export async function buildApp() {
     });
   });
 
+  // Liveness: dependency-free, answers even when DB/Redis are down.
   app.get('/healthz', async () => ({ ok: true, time: new Date().toISOString() }));
+
+  // Readiness (P0-02): 200 only when Postgres AND Redis answer. Orchestrators
+  // and compose healthchecks use /healthz for liveness, /readyz for readiness.
+  const readinessRedis = new Redis(config.redisUrl, { lazyConnect: true, maxRetriesPerRequest: 1 });
+  app.get('/readyz', async (_req, reply) => {
+    let db = false;
+    let redis = false;
+    try {
+      await pool.query('SELECT 1');
+      db = true;
+    } catch {
+      /* stays false */
+    }
+    try {
+      await readinessRedis.ping();
+      redis = true;
+    } catch {
+      /* stays false */
+    }
+    const ok = db && redis;
+    return reply.status(ok ? 200 : 503).send({ ok, db, redis, time: new Date().toISOString() });
+  });
 
   await app.register(
     async (v1) => {
