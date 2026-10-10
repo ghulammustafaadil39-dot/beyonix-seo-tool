@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
+import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
 import { badRequest } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -116,6 +117,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/backlinks/refresh', {
       schema: { params: idParams },
+      preHandler: requireVerifiedEmail, // S-01: provider-backed refresh
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);

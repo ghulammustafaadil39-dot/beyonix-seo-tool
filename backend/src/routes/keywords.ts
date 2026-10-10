@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
+import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query as defaultQuery } from '../db.js';
 import { notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -36,6 +37,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['seeds'],
           },
         },
+        preHandler: requireVerifiedEmail, // S-01: DataForSEO spend
       },
       async (req) => {
         const { tenantId } = req.tenant;

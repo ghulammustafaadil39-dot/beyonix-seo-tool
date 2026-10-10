@@ -12,6 +12,8 @@ export interface TenantContext {
   plan: PlanId;
   email: string;
   name: string;
+  /** S-01: false until the user completes email verification. */
+  emailVerified: boolean;
 }
 
 declare module 'fastify' {
@@ -71,7 +73,7 @@ export async function authPlugin(fastify: FastifyInstance) {
       throw unauthorized('Invalid or expired token');
     }
     const r = await query(
-      `SELECT u.id AS user_id, u.email, u.name, u.tenant_id, u.token_version, t.plan_id
+      `SELECT u.id AS user_id, u.email, u.name, u.tenant_id, u.token_version, u.email_verified_at, t.plan_id
        FROM users u JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = $1 AND u.tenant_id = $2`,
       [payload.uid, payload.tid],
@@ -89,6 +91,7 @@ export async function authPlugin(fastify: FastifyInstance) {
       plan: row.plan_id as PlanId,
       email: row.email,
       name: row.name,
+      emailVerified: row.email_verified_at != null,
     };
   });
 }

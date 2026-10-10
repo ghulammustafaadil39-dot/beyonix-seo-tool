@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
+import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { requireSite } from '../services/sites.js';
 import { buildGeoHtml } from '../services/contentEngine.js';
 import { checkLimit, assertLimit } from '../metering.js';
@@ -86,6 +87,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     }>(
       '/sites/:id/content',
       {
+        preHandler: requireVerifiedEmail, // S-01: creating a piece enqueues LLM generation
         schema: {
           params: uuidParamSchema,
           body: {
@@ -221,7 +223,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // (Re)enqueue generation; only allowed from draft status.
     app.post<{ Params: SiteParams }>(
       '/content/:id/generate',
-      { schema: { params: uuidParamSchema } },
+      { schema: { params: uuidParamSchema }, preHandler: requireVerifiedEmail }, // S-01: LLM spend
       async (req) => {
         const { tenantId, plan } = req.tenant;
         const r = await defaultQuery(`SELECT * FROM content_pieces WHERE id = $1 AND tenant_id = $2`, [
