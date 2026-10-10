@@ -54,6 +54,13 @@ export const hasDataForSeo = () => !!(config.dataforseoLogin && config.dataforse
 export const hasSmtp = () => !!(config.smtpHost && config.smtpUser);
 export const hasTelegram = () => !!config.telegramBotToken;
 
+// N-A2-6: a deploy with Stripe keys but no webhook secret would 500 every
+// incoming webhook into a Stripe retry storm. Fail fast at boot instead
+// (all environments — dev with real keys hits the same storm).
+if (config.stripeSecretKey && !config.stripeWebhookSecret) {
+  throw new Error('FATAL: STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is set');
+}
+
 // Fail fast in production: the dev fallbacks below are publicly known values.
 // Running prod without real secrets would let anyone forge auth tokens.
 if (config.nodeEnv === 'production') {
