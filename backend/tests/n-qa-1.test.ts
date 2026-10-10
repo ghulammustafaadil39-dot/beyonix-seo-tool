@@ -54,15 +54,20 @@ describe('N-QA-1 public routes are not auth-gated', () => {
     expect(res.json().error.code).toBe('INVALID_CREDENTIALS');
   });
 
-  it('POST /billing/webhook is reachable without a token (mock provider)', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/billing/webhook',
-      payload: { type: 'unknown.test.event' },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().received).toBe(true);
-  });
+  // Mock-provider only: with real Stripe keys the webhook requires a valid
+  // Stripe signature (covered by the signed-fixture tests in p0-04.test.ts).
+  it.runIf(!process.env.STRIPE_SECRET_KEY)(
+    'POST /billing/webhook is reachable without a token (mock provider)',
+    async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/billing/webhook',
+        payload: { type: 'unknown.test.event' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().received).toBe(true);
+    },
+  );
 
   it('GET /auth/google (OAuth start) is reachable without a token', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/auth/google' });

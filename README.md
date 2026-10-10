@@ -109,7 +109,10 @@ prompt rendering, GEO HTML export.
 
 1. `JWT_SECRET`, `ENCRYPTION_KEY` (generate, never commit)
 2. Stripe: secret key, webhook secret, 3 price IDs; set webhook URL to
-   `/api/v1/billing/webhook`
+   `/api/v1/billing/webhook`. Checkout sets `subscription_data.metadata`
+   `{tenantId, planId}`; plan changes are resolved from the Stripe price id
+   via `STRIPE_PRICE_*` (single source of truth), falling back to the
+   subscription metadata `planId`.
 3. Google Cloud: OAuth client (Search Console + Analytics readonly scopes);
    set `GOOGLE_REDIRECT_URI`
 4. DataForSEO login/password (pay-as-you-go; caching keeps it cheap)
