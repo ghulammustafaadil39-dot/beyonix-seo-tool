@@ -1,0 +1,99 @@
+# PROGRESS.md — Program task board (LA-owned; agents report, LA edits)
+
+Spec: `~/workspace/user/files/SEO_TOOL_MASTER_PROMPT_1_yhjl.md` · Plan: `ARCHITECTURE_PLAN.md` · Findings: `AUDIT_RESULT.md`
+Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blocked` (reason) | `exception` (LA-justified only)
+
+## Wave 0 — baseline (LA + Audit Lead)
+
+| Item | Status | Evidence |
+|---|---|---|
+| Repo read; infra native (PG16+Redis7, no Docker daemon) | verified | `psql` 16.15 online, `redis-cli` PONG, DBs `bseo`/`bseo_test` created 2026-10-11 |
+| Baseline: `tsc --noEmit` | verified | exit 0, 2026-10-11 |
+| Baseline: `npm test` (backend) | verified | 108/108 pass, 7 files, 2026-10-11 |
+| Git init + baseline commit | verified | `cc622a6` on `main` |
+| ARCHITECTURE_PLAN.md / PROGRESS.md / AUDIT_RESULT.md created | verified | this wave |
+| Contracts frozen (§3 of plan) | verified | 2026-10-11 |
+| Scope: v2-deferrals SUPERSEDED (F-07/F-08/F-09/PDF in scope) | verified | decision recorded 2026-10-11 |
+
+## Wave 1 — Phase 0 + Phase 1 (blockers & security)
+
+| ID | Owner | Wave | Status | Notes / sub-tasks |
+|---|---|---|---|---|
+| P0-01 | Backend Lead | 1 | pending | Password login vs token_version. Partially? verify + regression test |
+| P0-02 | Backend Lead | 1 | pending | Migration advisory lock + tx; one-shot migrate; liveness/readiness split |
+| P0-03 | Frontend Lead | 1 | pending | Runtime API URL (rewrite proxy or build arg); standalone server; multi-stage |
+| P0-04 | Backend Lead | 1 | pending | subscription_data.metadata + price→plan map; signed-fixture tests |
+| P0-05 | Security Lead | 1 | pending | Prod-safe defaults; Backend Lead supports compose/prod env |
+| S-01 | Security Lead | 1 | pending | Email verification flow; Google merge rules |
+| S-02 | Security Lead | 1 | pending | SSRF DNS-pinning (safeFetch exists — verify/extend + rebinding tests) |
+| S-03 | Security Lead | 1 | pending | trustProxy, Redis rate limits, login lockout |
+| S-04 | Security Lead | 1 | pending | OAuth state in Redis + signed cookie + PKCE |
+| S-05 | Security Lead | 1 | pending | Password reset/change, email change, delete+purge, TOTP, sessions list |
+| S-06 | Security Lead | 1 | pending | Cookies/CSRF/helmet/CSP/CORS allow-list (Frontend Lead: Next.js headers) |
+| S-07 | Security Lead | 1 | pending | No base64 fallback in prod; key versioning + rotation script |
+| S-08 | Security Lead | 1 | pending | Exact meta-tag parse; TXT exact-match; weekly re-verify |
+| S-09 | Security Lead | 1 | pending | Prompt-injection delimiting; LLM HTML sanitization |
+| S-10 | Security Lead | 1 | pending | Non-root, read-only FS, pinned digests, no exposed DB/Redis, Trivy in CI |
+
+## Wave 2 — Phase 2 (billing/data/reliability) + Phase 3 (features)
+
+| ID | Owner | Wave | Status | Notes / sub-tasks |
+|---|---|---|---|---|
+| C-01 | Backend Lead | 2 | pending | Full Stripe event coverage; trials/coupons/annual/proration/dunning/grace |
+| C-02 | Backend Lead | 2 | pending | Reserve-then-commit metering; billing-period windows; 80/100% alerts |
+| C-03 | Backend Lead | 2 | pending | Fair scheduling, DLQ+replay, graceful shutdown, leader election, circuit breakers |
+| C-04 | Backend Lead | 2 | pending | robots crawl-delay, Playwright mode, simhash dupes, sitemap/canonical/hreflang |
+| C-05 | Backend Lead | 2 | pending | SERP snapshots, device/location/lang, SERP features, shared cross-tenant cache |
+| C-06 | Backend Lead | 2 | pending | Retention+cleanup, EXPLAIN-verified indexes, backups+restore test |
+| C-07 | Backend Lead | 2 | pending | Validation everywhere, OpenAPI 3.1 served, idempotency keys, request ids |
+| F-01 | Frontend Lead | 2 | pending | Onboarding checklist; sub-task→Backend: progress-state API |
+| F-02 | Backend Lead | 2 | pending | Audit v2 engine (impact priority, states, history, PDF/CSV); sub-task→Frontend: UI |
+| F-03 | Backend Lead | 2 | pending | Keyword v2 (clustering, gap, cannibalization); sub-task→Frontend: UI |
+| F-04 | Backend Lead | 2 | pending | Content v2 (brief→optimize, NLP coverage, WP/Webflow); sub-task→Frontend: UI |
+| F-05 | Backend Lead | 2 | pending | GEO v2 (multi-engine, SoV, llms.txt advice); sub-task→Frontend: UI |
+| F-06 | Backend Lead | 2 | pending | Backlinks v2 (toxic, anchors, opportunities, disavow); sub-task→Frontend: UI |
+| F-07 | Backend Lead | 2 | pending | Competitor analysis; sub-task→Frontend: UI — NOW IN SCOPE |
+| F-08 | Backend Lead | 2 | pending | White-label PDF/HTML reports, scheduling; sub-task→Frontend: report UI — NOW IN SCOPE |
+| F-09 | Backend Lead | 2 | pending | Agency/team: roles, invites, client workspaces, activity log; sub-task→Frontend: UI — NOW IN SCOPE |
+| F-10 | Backend Lead | 2 | pending | Notifications (email/TG/Slack/webhooks, rules, digests); sub-task→Frontend: center UI |
+| F-11 | Frontend Lead | 2 | pending | Billing UI (pricing page, meters, invoices, cancel flow); sub-task→Backend: trials/coupons/annual |
+| F-12 | Frontend Lead | 2 | pending | Marketing site: landing, docs skeleton, terms/privacy/DPA, cookies, SEO for app |
+| F-13 | Backend Lead | 2 | pending | Public API (keys/scopes/webhooks/rate limits); sub-task→Frontend: docs page |
+| F-14 | Backend Lead | 2 | pending | Admin back-office endpoints; sub-task→Frontend: UI |
+
+## Wave 3 — Phase 4 (quality/ops) + Phase 5 (world-class)
+
+| ID | Owner | Wave | Status | Notes / sub-tasks |
+|---|---|---|---|---|
+| Q-01 | QA/Release Lead | 3 | pending | Full pyramid: API integration (real PG/Redis), E2E Playwright, load k6, chaos, security, axe; ≥85% backend core |
+| Q-02 | QA/Release Lead | 3 | pending | GitHub Actions CI: lint, tsc strict, tests+services, images, audit, secrets, Trivy, E2E, changelog |
+| Q-03 | QA/Release Lead | 3 | pending | pino JSON logs, /metrics, Sentry/OTel hooks, alert examples, status page |
+| Q-04 | QA/Release Lead | 3 | pending | README/ARCHITECTURE/runbook/methodology/CONTRIBUTING/SECURITY/CHANGELOG, .env.example |
+| Q-05 | QA/Release Lead | 3 | pending | docker-compose.prod.yml (proxy+TLS), healthchecks, backups, zero-downtime notes |
+| W-01 | Backend Lead | 3 | pending | Scale: worker split, sharding, cost guardrails; 10k-site load proof |
+| W-02 | Backend Lead | 3 | pending | SERP/volume cache w/ provenance; multi-provider fallback; anomaly detection |
+| W-03 | Backend Lead | 3 | pending | Model routing, prompt evals w/ golden outputs, per-tenant cost caps |
+| W-04 | Backend Lead | 3 | pending | Insights engine (prioritized actions, drop diagnosis, forecast); sub-task→Frontend: UI |
+| W-05 | Frontend Lead | 3 | pending | SSE progress, optimistic UI, skeletons, palette, shortcuts, WCAG 2.2 AA, i18n scaffold; sub-task→Backend: SSE endpoints |
+| W-06 | Backend Lead | 3 | pending | Plugin interface, webhook catalog, signed delivery + retries + replay |
+| W-07 | Backend Lead | 3 | pending | GDPR export/erase, audit log, security.txt, SOC2 checklist; Security Lead reviews |
+| W-08 | Backend Lead + Frontend Lead | 3 | pending | p95<200ms hot endpoints, TTI<2s, query budgets, Lighthouse ≥95/90 (split noted) |
+| W-09 | QA/Release Lead | 3 | pending | Strict TS (no any new), OpenAPI-generated client, ESLint+Prettier, property tests, seed script, one-command dev |
+
+## Wave 4 — Final audit loop (§9)
+
+| Item | Status |
+|---|---|
+| Fresh hostile audit pass #1 (A1–A3, new agents) | pending |
+| Fixes for pass #1 findings | pending |
+| Fresh hostile audit pass #2 | pending |
+| Fixes for pass #2 findings (must be zero new medium+) | pending |
+| Final regression: wiped DB → full E2E incl. signup→logout→login, Stripe fixtures, load+chaos | pending |
+
+## Exceptions / deferred
+
+(none yet — LA approval required for any)
+
+## Handoff log (LA → parent)
+
+- Wave 0 gate: (to be sent)
