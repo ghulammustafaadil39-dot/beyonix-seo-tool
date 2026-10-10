@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { pool, query } from '../db.js';
-import { ApiError, badRequest, conflict } from '../errors.js';
+import { ApiError, conflict, validationError } from '../errors.js';
 import {
   authPlugin,
   clearAuthCookie,
@@ -72,8 +72,8 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
   fastify.post('/auth/signup', { schema: signupSchema, ...strictRateLimit }, async (req, reply) => {
     const { email, password, name } = req.body as { email: string; password: string; name?: string };
     const cleanEmail = (email ?? '').trim().toLowerCase();
-    if (!EMAIL_RE.test(cleanEmail)) throw badRequest('Invalid email address');
-    if (!password || password.length < 8) throw badRequest('Password must be at least 8 characters');
+    if (!EMAIL_RE.test(cleanEmail)) throw validationError('Invalid email address');
+    if (!password || password.length < 8) throw validationError('Password must be at least 8 characters');
 
     const existing = await query('SELECT id FROM users WHERE email = $1', [cleanEmail]);
     if (existing.rows.length > 0) throw conflict('EMAIL_EXISTS', 'An account with this email already exists');

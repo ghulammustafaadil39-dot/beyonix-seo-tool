@@ -14,6 +14,21 @@ export function errorEnvelope(err: unknown) {
   if (err instanceof ApiError) {
     return { status: err.status, body: { error: { code: err.code, message: err.message, ...err.extra } } };
   }
+  // Fastify schema-validation failures (thrown before the handler runs).
+  // Frozen contract: validation errors → 400 VALIDATION_ERROR (N-A1-1).
+  const fErr = err as { code?: string; validation?: unknown[] } | null | undefined;
+  if (fErr?.code === 'FST_ERR_VALIDATION' || Array.isArray(fErr?.validation)) {
+    return {
+      status: 400,
+      body: {
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: fErr.validation ?? [],
+        },
+      },
+    };
+  }
   // Never leak internal messages (Postgres details, provider responses,
   // missing-key hints) to clients in production. Log server-side instead.
   if (process.env.NODE_ENV === 'production') {
@@ -29,3 +44,6 @@ export const unauthorized = (msg = 'Unauthorized') => new ApiError(401, 'UNAUTHO
 export const forbidden = (msg = 'Forbidden') => new ApiError(403, 'FORBIDDEN', msg);
 export const conflict = (code: string, msg: string) => new ApiError(409, code, msg);
 export const badRequest = (msg: string) => new ApiError(400, 'BAD_REQUEST', msg);
+/** Input-validation failures (frozen contract: VALIDATION_ERROR, 400). */
+export const validationError = (msg: string, details: unknown[] = []) =>
+  new ApiError(400, 'VALIDATION_ERROR', msg, details.length > 0 ? { details } : {});
