@@ -2,8 +2,36 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['tests/**/*.test.ts'],
     environment: 'node',
-    testTimeout: 15000,
+    testTimeout: 30000,
+    projects: [
+      {
+        test: {
+          name: 'unit',
+          include: ['tests/*.test.ts'],
+        },
+      },
+      {
+        test: {
+          name: 'integration',
+          include: ['tests/integration/**/*.test.ts'],
+          exclude: ['tests/integration/stripe/**'],
+          setupFiles: ['./tests/integration/setup.ts'],
+          // Integration tests share one Postgres DB + one Redis DB; keep a
+          // single worker per project so files run sequentially.
+          pool: 'forks',
+          poolOptions: { forks: { singleFork: true } },
+        },
+      },
+      {
+        test: {
+          name: 'integration-stripe',
+          include: ['tests/integration/stripe/**/*.test.ts'],
+          setupFiles: ['./tests/integration/setup.stripe.ts'],
+          pool: 'forks',
+          poolOptions: { forks: { singleFork: true } },
+        },
+      },
+    ],
   },
 });
