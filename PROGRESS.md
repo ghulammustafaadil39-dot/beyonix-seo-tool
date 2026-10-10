@@ -20,10 +20,10 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| P0-01 | Backend Lead | 1 | pending | Password login vs token_version. Partially? verify + regression test |
-| P0-02 | Backend Lead | 1 | pending | Migration advisory lock + tx; one-shot migrate; liveness/readiness split |
+| P0-01 | Backend Lead | 1 | in_review | LA review PASSED; Security Lead review REQUESTED (queued) — merge blocked until APPROVED. Branch rebased onto main cleanly; LA re-ran: 143 pass / 9 skip, tsc clean. token_version read+signed in login/signup; fp wrapper removed (no remaining register(authPlugin) calls). Regression test passes |
+| P0-02 | Backend Lead | 1 | in_review | LA review PASSED; merges with branch after Security sign-off. Advisory lock + per-migration tx (real deadlock caught+fixed in test); one-shot migrate.ts; /healthz vs /readyz; compose migrate service + healthchecks (file-verified only, no Docker daemon) |
 | P0-03 | Frontend Lead | 1 | in_review | LA review PASSED + merged to main (b45411d) 2026-10-11. Approved deviation: next.config rewrites bake at build time (verified in standalone server.js) → implemented as catch-all proxy route reading API_INTERNAL_URL per request. tsc 0, next build 0 errors, live standalone smoke vs stub API passed. Docker build not run (no daemon — CI in Wave 3). Gate re-verification pending |
-| P0-04 | Backend Lead | 1 | pending | subscription_data.metadata + price→plan map; signed-fixture tests |
+| P0-04 | Backend Lead | 1 | in_review | LA review PASSED; Security Lead review REQUESTED (queued). subscription_data.metadata + price→plan map; 9 signed-fixture tests (real Stripe SDK offline HMAC) |
 | P0-05 | Security Lead | 1 | pending | Prod-safe defaults; Backend Lead supports compose/prod env |
 | S-01 | Security Lead | 1 | pending | Email verification flow; Google merge rules |
 | S-02 | Security Lead | 1 | pending | SSRF DNS-pinning (safeFetch exists — verify/extend + rebinding tests) |
@@ -41,19 +41,19 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
 | QA batch 1 (harness) | QA/Release Lead | 1 | in_review | MERGED to main (4f10129) 2026-10-11: vitest 3-project setup (unit/integration/integration-stripe), helpers, fake SMTP/webhook catchers, malicious fixture site, smoke tests. 120/120 pass (116 unit + 4 integration), tsc clean — LA-verified run. Gate re-verification pending |
-| N-QA-1 | Backend Lead | 1 | pending | CRITICAL (LA reproduced 2026-10-11: signup+login → 401): authPlugin fp-wrap breaks encapsulation → preHandler leaks onto public routes. Fix as first step of P0-01; add public-route integration test |
-| N-QA-2 | Backend Lead | 1 | pending | CRITICAL: migrations/003 line 16 `ADD CONSTRAINT IF NOT EXISTS` invalid syntax — whole 003 aborts on fresh DB. Fix the FILE (not yet applied anywhere). Part of P0-02 |
+| N-QA-1 | Backend Lead | 1 | in_review | Fixed + 6 regression tests; Security Lead review REQUESTED (queued). Root cause: fp-wrapped authPlugin lifted preHandler onto /api/v1 |
+| N-QA-2 | Backend Lead | 1 | in_review | File fixed (idempotent DO block); verified on virgin DB. Contract note: 003 never applied anywhere → file edit was legal |
 | npm audit | QA/Release Lead | 3 | pending | Blocked by registry policy (`policy_denied`) in this env — CI (Q-02) must cover it |
 | test DBs | LA | 0 | verified | Per-worktree DBs created: bseo_test_backend, bseo_test_security, bseo_test_qa (+ shared bseo_test). QA next session MUST use bseo_test_qa |
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| N-A1-1 | Backend Lead | 1 | pending | HIGH: Fastify validation errors return HTTP 500, must be 400 VALIDATION_ERROR (frozen contract). Do FIRST — poisons every new route |
-| N-A1-2 | Backend Lead | 1 | pending | HIGH: error envelope must match {ok:false, error:{code,message,requestId,details?}} — add requestId |
+| N-A1-1 | Backend Lead | 1 | in_review | VALIDATION_ERROR → 400 implemented + 3 tests. Follow-up sweep (remaining badRequest() → VALIDATION_ERROR) recorded under C-07 Wave 2 |
+| N-A1-2 | Backend Lead | 1 | in_review | Contract envelope + requestId (genReqId, x-request-id echo, 404 handler) + 5 tests |
 | N-A1-4 | Security Lead | 1 | pending | Folded into S-06: SameSite strategy for split app/api domains (lax breaks cookie auth) |
 | N-A1-7 | Security Lead | 1 | pending | Folded into P0-05: JWT secret ≥32 random chars |
 | N-A2-5 | Security Lead | 1 | pending | Folded into S-02: crawler response size cap (gzip-bomb OOM) |
-| N-A2-6 | Backend Lead | 1 | pending | Folded into P0-04: require STRIPE_WEBHOOK_SECRET when Stripe keys set (fail fast at boot) |
+| N-A2-6 | Backend Lead | 1 | in_review | Boot fails fast if STRIPE_SECRET_KEY without STRIPE_WEBHOOK_SECRET + 3 tests |
 | JWT-in-body | Security Lead | 1 | pending | Note for S-01/S-05: login returns JWT in JSON body — assess httpOnly-cookie alternative |
 | N-A2-1/N-A2-2 | Backend Lead | 2 | pending | HIGHs pre-confirmed as C-03 sub-findings: graceful shutdown + scheduler leader election + isoWeek UTC |
 | remaining mediums/lows | various | 2/3 | pending | Routed: robots parser→C-04, metering races→C-02, dup Stripe customers→C-01, webhook idempotency→C-01, Next headers→S-06/FE, README drift→Q-04, /settings/providers+OpenAPI→C-07 |
@@ -119,4 +119,5 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 ## Handoff log (LA → parent)
 
-- Wave 0 gate: (to be sent)
+- Wave 0 gate: PASSED 2026-10-11 (see parent handoff)
+- LA decisions (2026-10-11): (a) No relocation of p0-01/n-qa-1 tests to tests/integration/ — runIf self-skip gates suffice, zero churn. (b) QA setup.ts must read DATABASE_URL from env (fallback bseo_test) — task for next QA session. (c) Fastify FSTDEP024 (requestIdLogLabel) deprecation → low priority, Wave 3 cleanup. (d) ARCHITECTURE_PLAN migration-dir drift fixed (backend/migrations/). (e) Backend branch rebased onto main cleanly by LA; merge held for Security Lead review of P0-01/P0-04/N-QA-1.

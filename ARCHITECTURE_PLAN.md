@@ -54,7 +54,7 @@ contributes via a written sub-task request recorded in PROGRESS.md notes (never 
 
 ## 3. Frozen contracts (before any parallel work)
 
-1. **DB migrations:** new files only, `backend/src/db/migrations/005_*.sql`, `006_*`, … — never edit an
+1. **DB migrations:** new files only, `backend/migrations/005_*.sql`, `006_*`, … (the actual migrations dir; NOT `src/db/`) — never edit an
    applied migration. Number ranges reserved: Security Lead `005–009`, Backend Lead `010–039`,
    QA Lead none (fixtures via seed script). LA resolves collisions.
 2. **Provider interfaces:** `backend/src/providers/types.ts` is frozen; new providers implement it.
