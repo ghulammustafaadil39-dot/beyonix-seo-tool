@@ -22,7 +22,7 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 |---|---|---|---|---|
 | P0-01 | Backend Lead | 1 | pending | Password login vs token_version. Partially? verify + regression test |
 | P0-02 | Backend Lead | 1 | pending | Migration advisory lock + tx; one-shot migrate; liveness/readiness split |
-| P0-03 | Frontend Lead | 1 | pending | Runtime API URL (rewrite proxy or build arg); standalone server; multi-stage |
+| P0-03 | Frontend Lead | 1 | in_review | LA review PASSED + merged to main (b45411d) 2026-10-11. Approved deviation: next.config rewrites bake at build time (verified in standalone server.js) → implemented as catch-all proxy route reading API_INTERNAL_URL per request. tsc 0, next build 0 errors, live standalone smoke vs stub API passed. Docker build not run (no daemon — CI in Wave 3). Gate re-verification pending |
 | P0-04 | Backend Lead | 1 | pending | subscription_data.metadata + price→plan map; signed-fixture tests |
 | P0-05 | Security Lead | 1 | pending | Prod-safe defaults; Backend Lead supports compose/prod env |
 | S-01 | Security Lead | 1 | pending | Email verification flow; Google merge rules |
