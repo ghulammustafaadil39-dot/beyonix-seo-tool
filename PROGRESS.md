@@ -12,6 +12,7 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | Baseline: `npm test` (backend) | verified | 108/108 pass, 7 files, 2026-10-11 |
 | Git init + baseline commit | verified | `cc622a6` on `main` |
 | ARCHITECTURE_PLAN.md / PROGRESS.md / AUDIT_RESULT.md created | verified | this wave |
+| Baseline hostile audit (Audit Lead, read-only) | verified | 22 new findings: 4 high, 11 med, 7 low — all in AUDIT_RESULT.md Wave 0 section, 2026-10-11 |
 | Contracts frozen (§3 of plan) | verified | 2026-10-11 |
 | Scope: v2-deferrals SUPERSEDED (F-07/F-08/F-09/PDF in scope) | verified | decision recorded 2026-10-11 |
 
@@ -34,6 +35,20 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | S-08 | Security Lead | 1 | pending | Exact meta-tag parse; TXT exact-match; weekly re-verify |
 | S-09 | Security Lead | 1 | pending | Prompt-injection delimiting; LLM HTML sanitization |
 | S-10 | Security Lead | 1 | pending | Non-root, read-only FS, pinned digests, no exposed DB/Redis, Trivy in CI |
+
+### Wave 1 additions (from baseline hostile audit 2026-10-11)
+
+| ID | Owner | Wave | Status | Notes / sub-tasks |
+|---|---|---|---|---|
+| N-A1-1 | Backend Lead | 1 | pending | HIGH: Fastify validation errors return HTTP 500, must be 400 VALIDATION_ERROR (frozen contract). Do FIRST — poisons every new route |
+| N-A1-2 | Backend Lead | 1 | pending | HIGH: error envelope must match {ok:false, error:{code,message,requestId,details?}} — add requestId |
+| N-A1-4 | Security Lead | 1 | pending | Folded into S-06: SameSite strategy for split app/api domains (lax breaks cookie auth) |
+| N-A1-7 | Security Lead | 1 | pending | Folded into P0-05: JWT secret ≥32 random chars |
+| N-A2-5 | Security Lead | 1 | pending | Folded into S-02: crawler response size cap (gzip-bomb OOM) |
+| N-A2-6 | Backend Lead | 1 | pending | Folded into P0-04: require STRIPE_WEBHOOK_SECRET when Stripe keys set (fail fast at boot) |
+| JWT-in-body | Security Lead | 1 | pending | Note for S-01/S-05: login returns JWT in JSON body — assess httpOnly-cookie alternative |
+| N-A2-1/N-A2-2 | Backend Lead | 2 | pending | HIGHs pre-confirmed as C-03 sub-findings: graceful shutdown + scheduler leader election + isoWeek UTC |
+| remaining mediums/lows | various | 2/3 | pending | Routed: robots parser→C-04, metering races→C-02, dup Stripe customers→C-01, webhook idempotency→C-01, Next headers→S-06/FE, README drift→Q-04, /settings/providers+OpenAPI→C-07 |
 
 ## Wave 2 — Phase 2 (billing/data/reliability) + Phase 3 (features)
 
