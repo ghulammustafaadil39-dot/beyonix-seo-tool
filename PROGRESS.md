@@ -40,6 +40,14 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
+| QA batch 1 (harness) | QA/Release Lead | 1 | in_review | MERGED to main (4f10129) 2026-10-11: vitest 3-project setup (unit/integration/integration-stripe), helpers, fake SMTP/webhook catchers, malicious fixture site, smoke tests. 120/120 pass (116 unit + 4 integration), tsc clean — LA-verified run. Gate re-verification pending |
+| N-QA-1 | Backend Lead | 1 | pending | CRITICAL (LA reproduced 2026-10-11: signup+login → 401): authPlugin fp-wrap breaks encapsulation → preHandler leaks onto public routes. Fix as first step of P0-01; add public-route integration test |
+| N-QA-2 | Backend Lead | 1 | pending | CRITICAL: migrations/003 line 16 `ADD CONSTRAINT IF NOT EXISTS` invalid syntax — whole 003 aborts on fresh DB. Fix the FILE (not yet applied anywhere). Part of P0-02 |
+| npm audit | QA/Release Lead | 3 | pending | Blocked by registry policy (`policy_denied`) in this env — CI (Q-02) must cover it |
+| test DBs | LA | 0 | verified | Per-worktree DBs created: bseo_test_backend, bseo_test_security, bseo_test_qa (+ shared bseo_test). QA next session MUST use bseo_test_qa |
+
+| ID | Owner | Wave | Status | Notes / sub-tasks |
+|---|---|---|---|---|
 | N-A1-1 | Backend Lead | 1 | pending | HIGH: Fastify validation errors return HTTP 500, must be 400 VALIDATION_ERROR (frozen contract). Do FIRST — poisons every new route |
 | N-A1-2 | Backend Lead | 1 | pending | HIGH: error envelope must match {ok:false, error:{code,message,requestId,details?}} — add requestId |
 | N-A1-4 | Security Lead | 1 | pending | Folded into S-06: SameSite strategy for split app/api domains (lax breaks cookie auth) |
