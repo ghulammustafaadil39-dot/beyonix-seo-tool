@@ -267,7 +267,7 @@ async function analyzeUrl(tenantId: string, plan: PlanId, siteId: string, rawUrl
 
 export async function registerOnpageRoutes(fastify: FastifyInstance) {
   await fastify.register(async (app) => {
-    await app.register(authPlugin);
+    await authPlugin(app);
 
     // Fetch + analyze a single URL (LLM suggestions; meters ai_words).
     app.post<{ Params: SiteParams; Body: { url: string } }>(

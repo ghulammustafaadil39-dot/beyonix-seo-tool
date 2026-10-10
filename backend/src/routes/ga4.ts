@@ -72,7 +72,7 @@ function sweepGa4States() {
 
 export async function registerGa4Routes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
-    await authed.register(authPlugin);
+    await authPlugin(authed);
 
     // Google OAuth for GA4. The consent screen already requests
     // analytics.readonly, so this shares the stored Google refresh token.

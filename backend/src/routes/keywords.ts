@@ -20,7 +20,7 @@ const kwParams = {
 
 export function registerKeywordRoutes(fastify: FastifyInstance) {
   fastify.register(async (app) => {
-    await app.register(authPlugin);
+    await authPlugin(app);
 
     // Seed keywords: GSC queries (when connected) + metric research.
     app.post<{ Params: { id: string }; Body: { seeds: string[] } }>(

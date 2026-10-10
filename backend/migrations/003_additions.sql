@@ -13,7 +13,14 @@ DELETE FROM keyword_metrics_cache a USING keyword_metrics_cache b
 ALTER TABLE keyword_metrics_cache ADD PRIMARY KEY (keyword, location_code);
 
 -- Report idempotency at the DB level (scheduler + manual generate race).
-ALTER TABLE reports ADD CONSTRAINT IF NOT EXISTS reports_site_period_unique UNIQUE (site_id, period_start);
+-- NOTE: Postgres has no "ADD CONSTRAINT IF NOT EXISTS"; the DO block below is
+-- the idempotent equivalent.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reports_site_period_unique') THEN
+    ALTER TABLE reports ADD CONSTRAINT reports_site_period_unique UNIQUE (site_id, period_start);
+  END IF;
+END $$;
 
 -- Token version for logout/session revocation (bumped on logout).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT DEFAULT 0;

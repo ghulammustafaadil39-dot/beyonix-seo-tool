@@ -54,7 +54,7 @@ function sweepGscStates() {
 
 export async function registerGscRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
-    await authed.register(authPlugin);
+    await authPlugin(authed);
 
     authed.get('/sites/:id/gsc/auth-url', { schema: { params: idParamSchema } }, async (req) => {
       const { id } = req.params as { id: string };

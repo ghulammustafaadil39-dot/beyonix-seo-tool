@@ -94,12 +94,15 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       const u = await client.query(
         `INSERT INTO users (id, tenant_id, email, password_hash, name, role)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, 'owner')
-         RETURNING id, email, name`,
+         RETURNING id, email, name, token_version`,
         [tenantId, cleanEmail, pwHash, displayName],
       );
       await client.query('COMMIT');
       const user = u.rows[0];
-      const token = signToken(user.id as string, tenantId);
+      // Sign with the row's token_version (P0-01): login/logout revocation
+      // compares token tv against users.token_version, so the issued token
+      // must carry the value that is actually stored.
+      const token = signToken(user.id as string, tenantId, Number(user.token_version ?? 0));
       setAuthCookie(reply, token);
       return reply.status(201).send({
         token,
@@ -123,7 +126,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     const { email, password } = req.body as { email: string; password: string };
     const cleanEmail = (email ?? '').trim().toLowerCase();
     const r = await query(
-      `SELECT u.id, u.email, u.name, u.password_hash, u.tenant_id,
+      `SELECT u.id, u.email, u.name, u.password_hash, u.tenant_id, u.token_version,
               t.name AS tenant_name, t.plan_id
        FROM users u JOIN tenants t ON t.id = u.tenant_id
        WHERE u.email = $1`,
@@ -132,7 +135,9 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     const row = r.rows[0];
     const ok = row?.password_hash ? await verifyPassword(password ?? '', row.password_hash) : false;
     if (!row || !ok) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
-    const token = signToken(row.id as string, row.tenant_id as string);
+    // P0-01: sign with the stored token_version (logout bumps it); a default
+    // tv=0 here would be permanently revoked after the first logout.
+    const token = signToken(row.id as string, row.tenant_id as string, Number(row.token_version ?? 0));
     setAuthCookie(reply, token);
     return {
       token,
@@ -241,7 +246,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
 
   // Authenticated-only routes.
   await fastify.register(async (authed) => {
-    await authed.register(authPlugin);
+    await authPlugin(authed);
 
     authed.get('/auth/me', async (req) => {
       const r = await query('SELECT id, name, plan_id FROM tenants WHERE id = $1', [req.tenant.tenantId]);

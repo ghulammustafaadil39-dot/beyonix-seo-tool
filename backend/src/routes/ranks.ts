@@ -19,7 +19,7 @@ const kwParams = {
 
 export function registerRankRoutes(fastify: FastifyInstance) {
   fastify.register(async (app) => {
-    await app.register(authPlugin);
+    await authPlugin(app);
 
     // Latest rank per tracked keyword + previous position + 30-point sparkline.
     app.get<{ Params: { id: string } }>(

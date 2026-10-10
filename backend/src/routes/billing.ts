@@ -49,7 +49,7 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
   });
 
   await fastify.register(async (authed) => {
-    await authed.register(authPlugin);
+    await authPlugin(authed);
 
     authed.post('/billing/checkout', { schema: checkoutSchema }, async (req) => {
       const { planId } = req.body as { planId: string };
@@ -97,7 +97,7 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
   // Authenticated + tenant-scoped: the customer must belong to the caller,
   // otherwise anyone could upgrade arbitrary tenants in mock mode.
   await fastify.register(async (authed) => {
-    await authed.register(authPlugin);
+    await authPlugin(authed);
 
     authed.get('/billing/mock-confirm', { schema: mockConfirmSchema }, async (req, reply) => {
       if (!getPayments().isMock) throw new ApiError(404, 'NOT_FOUND', 'Not found');

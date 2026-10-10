@@ -31,7 +31,7 @@ const uuidParams = (name: string) => ({
 
 export function registerAuditRoutes(fastify: FastifyInstance) {
   return fastify.register(async function auditScoped(app: FastifyInstance) {
-    await app.register(authPlugin);
+    await authPlugin(app);
 
     // Trigger a new full-site audit (enqueues a crawl job). 409 if one is active.
     app.post('/sites/:id/audits', {

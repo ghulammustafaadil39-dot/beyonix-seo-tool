@@ -50,7 +50,7 @@ async function enqueueGenerateContent(pieceId: string, tenantId: string, tone: s
 
 export async function registerContentRoutes(fastify: FastifyInstance) {
   await fastify.register(async (app) => {
-    await app.register(authPlugin);
+    await authPlugin(app);
 
     // List content pieces for a site (newest first), optional ?status= filter.
     app.get<{ Params: SiteParams; Querystring: { status?: string } }>(
