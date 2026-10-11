@@ -9,11 +9,16 @@ function opt(name: string, fallback = ''): string {
 }
 
 export const config = {
-  nodeEnv: opt('NODE_ENV', 'development'),
+  // Fail-closed default: an operator who forgets NODE_ENV gets production
+  // behavior (no mocks, strict secrets) instead of a dev-mode server.
+  nodeEnv: opt('NODE_ENV', 'production'),
   port: parseInt(opt('PORT', '4000'), 10),
   databaseUrl: opt('DATABASE_URL', 'postgres://bseo:bseo@localhost:5432/bseo'),
   redisUrl: opt('REDIS_URL', 'redis://localhost:6379'),
   jwtSecret: opt('JWT_SECRET', 'dev-only-jwt-secret-change-me'),
+  // Local signing secret for the mock Stripe webhook (dev/test only).
+  // Mock webhooks are rejected when this is unset, and always in production.
+  mockWebhookSecret: opt('MOCK_WEBHOOK_SECRET', ''),
   appUrl: opt('APP_URL', 'http://localhost:3000').replace(/\/$/, ''),
   apiUrl: opt('API_URL', 'http://localhost:4000').replace(/\/$/, ''),
   encryptionKey: opt('ENCRYPTION_KEY', ''),
@@ -61,13 +66,59 @@ if (config.stripeSecretKey && !config.stripeWebhookSecret) {
   throw new Error('FATAL: STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is set');
 }
 
-// Fail fast in production: the dev fallbacks below are publicly known values.
-// Running prod without real secrets would let anyone forge auth tokens.
-if (config.nodeEnv === 'production') {
-  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-only-jwt-secret-change-me') {
-    throw new Error('FATAL: JWT_SECRET must be set to a random 32+ char value in production');
+// (old production-only check superseded by validateSecrets below)
+
+// Secrets every operator has seen: the in-repo dev default and the
+// .env.example placeholder. Booting with any of these outside dev/test
+// would let anyone forge auth tokens or read stored OAuth keys.
+export const KNOWN_PLACEHOLDER_SECRETS = new Set(
+  [
+    'dev-only-jwt-secret-change-me',
+    'change_me_32_plus_random_hex',
+    'change-me-to-a-random-32-char-string',
+    'changeme',
+    'change-me',
+    'secret',
+    'jwt-secret',
+    'your-jwt-secret-here',
+  ].map((s) => s.toLowerCase()),
+);
+
+export interface SecretsEnv {
+  jwtSecret?: string;
+  encryptionKey?: string;
+}
+
+/**
+ * Fail fast unless secrets are production-grade. Applies in ALL environments
+ * except an explicit NODE_ENV=test|development, so a forgotten NODE_ENV or a
+ * staging deploy can never ship with mock Stripe + a public JWT default.
+ * Pure function (params, not process.env) so it is unit-testable.
+ */
+export function validateSecrets(nodeEnv: string, secrets: SecretsEnv): void {
+  if (nodeEnv === 'test' || nodeEnv === 'development') return;
+  const jwt = (secrets.jwtSecret ?? '').trim();
+  if (jwt.length < 32) {
+    throw new Error(
+      `FATAL: JWT_SECRET must be at least 32 characters in ${nodeEnv} (got ${jwt.length}). ` +
+        'Generate one with: openssl rand -hex 32',
+    );
   }
-  if (!/^[0-9a-fA-F]{64}$/.test(process.env.ENCRYPTION_KEY ?? '')) {
-    throw new Error('FATAL: ENCRYPTION_KEY must be a 32-byte hex string in production');
+  if (KNOWN_PLACEHOLDER_SECRETS.has(jwt.toLowerCase())) {
+    throw new Error('FATAL: JWT_SECRET is a known placeholder value — set a real random secret');
+  }
+  const enc = (secrets.encryptionKey ?? '').trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(enc)) {
+    throw new Error(
+      `FATAL: ENCRYPTION_KEY must be a 32-byte hex string in ${nodeEnv}. Generate with: openssl rand -hex 32`,
+    );
   }
 }
+
+// Fail fast at boot: the dev fallbacks above are publicly known values.
+// Running outside dev/test without real secrets would let anyone forge
+// auth tokens or decrypt stored OAuth/API keys.
+validateSecrets(config.nodeEnv, {
+  jwtSecret: process.env.JWT_SECRET,
+  encryptionKey: process.env.ENCRYPTION_KEY,
+});

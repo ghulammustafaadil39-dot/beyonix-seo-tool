@@ -3,7 +3,7 @@ import { config } from '../config.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
-import { applyPaymentEvent, getPayments } from '../providers/stripe.js';
+import { applyPaymentEvent, getPayments, mockBillingRoutesEnabled } from '../providers/stripe.js';
 import { isPlanId } from '../plans.js';
 
 const checkoutSchema = {
@@ -96,6 +96,8 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
   // Dev/test helper: simulates a completed mock checkout (mock provider only).
   // Authenticated + tenant-scoped: the customer must belong to the caller,
   // otherwise anyone could upgrade arbitrary tenants in mock mode.
+  // P0-05: the route is not registered at all in production builds.
+  if (!mockBillingRoutesEnabled()) return;
   await fastify.register(async (authed) => {
     await authPlugin(authed);
 

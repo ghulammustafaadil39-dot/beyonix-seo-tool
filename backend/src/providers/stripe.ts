@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import Stripe from 'stripe';
 import { config, hasStripe } from '../config.js';
 import { query } from '../db.js';
@@ -42,6 +43,56 @@ export function buildCheckoutSessionParams(p: {
     metadata: { planId: p.planId, ...p.metadata },
     subscription_data: { metadata: { tenantId: p.metadata?.tenantId ?? '', planId: p.planId } },
   };
+}
+
+/** Dev/test mock routes (mock-confirm) exist only outside production builds. */
+export function mockBillingRoutesEnabled(nodeEnv: string = config.nodeEnv): boolean {
+  return nodeEnv !== 'production';
+}
+
+const MOCK_WEBHOOK_TOLERANCE_SEC = 300;
+
+/**
+ * Signs a mock webhook payload with the local MOCK_WEBHOOK_SECRET.
+ * Stripe-style header: `t=<unix>,v1=<hmac-sha256(secret, "<t>.<body>")>`.
+ * Used by tests and local dev tooling; never in production.
+ */
+export function signMockWebhookEvent(rawBody: Buffer | string, secret: string): string {
+  const t = Math.floor(Date.now() / 1000);
+  const body = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody);
+  const v1 = crypto.createHmac('sha256', secret).update(`${t}.${body.toString('utf8')}`).digest('hex');
+  return `t=${t},v1=${v1}`;
+}
+
+/**
+ * Verifies a mock webhook signature (timing-safe) with replay protection.
+ * Throws ApiError(401) on any mismatch, missing/expired timestamp.
+ */
+export function verifyMockWebhookEvent(
+  rawBody: Buffer | string,
+  signature: string,
+  secret: string,
+): { type: string; data: any } {
+  const fail = (msg: string): never => {
+    throw new ApiError(401, 'INVALID_WEBHOOK_SIGNATURE', `Mock webhook rejected: ${msg}`);
+  };
+  if (!signature) fail('missing signature');
+  const m = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(signature.trim());
+  if (!m) fail('malformed signature');
+  const t = parseInt(m![1], 10);
+  if (Math.abs(Math.floor(Date.now() / 1000) - t) > MOCK_WEBHOOK_TOLERANCE_SEC) fail('stale timestamp');
+  const body = (Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody)).toString('utf8');
+  const expected = crypto.createHmac('sha256', secret).update(`${t}.${body}`).digest();
+  const got = Buffer.from(m![2], 'hex');
+  if (got.length !== expected.length || !crypto.timingSafeEqual(got, expected)) fail('signature mismatch');
+  let evt: any;
+  try {
+    evt = JSON.parse(body);
+  } catch {
+    fail('invalid JSON payload');
+  }
+  if (!evt.type) fail('missing event type');
+  return { type: evt.type as string, data: evt.data ?? {} };
 }
 
 class RealStripeProvider implements PaymentsProvider {
@@ -96,10 +147,22 @@ class MockStripeProvider implements PaymentsProvider {
     return { url: returnUrl };
   }
 
-  async constructWebhookEvent(rawBody: Buffer | string, _signature: string) {
-    const evt = JSON.parse(rawBody.toString());
-    if (!evt.type) throw new Error('Invalid mock webhook payload: missing type');
-    return { type: evt.type as string, data: evt.data ?? {} };
+  async constructWebhookEvent(rawBody: Buffer | string, signature: string) {
+    // The mock webhook is a dev/test convenience. Unsigned events are never
+    // accepted: callers must sign with the local MOCK_WEBHOOK_SECRET, and the
+    // whole mock path is disabled in production (fail-closed).
+    if (config.nodeEnv === 'production') {
+      throw new ApiError(403, 'MOCK_WEBHOOK_DISABLED', 'Mock webhooks are disabled in production');
+    }
+    const secret = config.mockWebhookSecret;
+    if (!secret) {
+      throw new ApiError(
+        503,
+        'MOCK_WEBHOOK_NOT_CONFIGURED',
+        'Set MOCK_WEBHOOK_SECRET in dev/test to accept mock webhook events',
+      );
+    }
+    return verifyMockWebhookEvent(rawBody, signature, secret);
   }
 }
 
