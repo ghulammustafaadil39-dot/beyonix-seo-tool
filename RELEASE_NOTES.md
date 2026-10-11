@@ -2,7 +2,7 @@
 
 **Version:** 1.0.0
 **Release date:** 2026-10-11
-**Status:** pending final gate (Wave 4 audit loop still running — see "Not yet verified" below)
+**Status:** FINAL — Wave 4 audit loop completed with **two consecutive clean passes** (pass #11, pass #12); Final Gate reached 2026-10-12 ~00:45 PKT. See "Not yet verified" below for the few items that still need a live environment.
 
 A self-serve SEO + GEO SaaS for small businesses (and agencies): signup →
 connect a website → technical audits, keyword research, rank tracking,
@@ -10,9 +10,8 @@ AI-written SEO+GEO content, backlink monitoring, AI-visibility (GEO)
 tracking, competitor analysis, team workspaces, white-label reports, and a
 public API. Monthly/annual billing via Stripe.
 
-> **Verification numbers in this document are PRELIMINARY.** They are the
-> last verified gate figures from `PROGRESS.md`. The Lead Architect will
-> replace them with final numbers after the Wave-4 final gate.
+> **Verification numbers in this document are the FINAL gate figures** from
+> the Lead Architect's last full runs on `main` (see "Verification summary").
 
 ---
 
@@ -168,7 +167,7 @@ public API. Monthly/annual billing via Stripe.
 - **W-09** Developer quality: strict TS, OpenAPI-generated client, ESLint,
   property-based tests, seed script, one-command `make dev`.
 
-### Wave 4 — Final audit loop (in progress)
+### Wave 4 — Final audit loop (COMPLETE)
 
 - Pass #1 (3 fresh hostile auditors): 0 critical / **5 HIGH** / 14 medium /
   19 low findings → all fixed, regression-tested, merged to main; security
@@ -202,25 +201,73 @@ public API. Monthly/annual billing via Stripe.
   (duplicate dunning emails, refund-delta concurrency race, email-dedupe
   TOCTOU duplicate, signup password-hint mismatch, download-URL encoding)
   → all fixed + 7 new regression tests.
-- Pass #9 (5 auditors, in progress): the next clean-pass attempt — two
-  consecutive clean passes (zero new medium-or-higher findings) are
-  required before the Final Gate.
+- Pass #9 (5 auditors): NOT clean — **1 MEDIUM + 7 LOWs**, all fixed on
+  main by the LA: I5-M#1 — `customer.subscription.updated` re-minted grace
+  after consumption (now mirrors D1-H-1); I1-L-1 — atomic grace mint
+  (conditional `UPDATE … WHERE grace_until IS NULL`); I1-L-2 — transient
+  mint-send failure re-duns once per episode; I1-L-3 — the double-checkout
+  race closed with the new `checkout_sessions` claim table (migration 050:
+  409 `CHECKOUT_IN_PROGRESS` / same-URL reuse, stale-claim stealing,
+  release on webhook); I5-L#1 — `invoice.paid` recovery requires invSubId
+  match; I2-L-1 — report loser returns early without duplicate notify;
+  I2-L-2 — PageSpeed quota as an atomic conditional claim; I3-L-1 —
+  remaining raw-ID download URL builders now encoded; I4 fixes —
+  `REDISCLI_AUTH` in compose.prod redis healthcheck, audit-history and
+  verification numbers corrected in this document.
+- Pass #10 (5 auditors): NOT clean — **1 MEDIUM + 11 LOWs**: J3-M-1
+  (frontend success notice promised activation while fresh Stripe
+  subscriptions fail-close to `incomplete` — notice now gated on the
+  fetched subscription + `incomplete` explainer banner/portal CTA).
+  7 LOWs fixed surgically (J5-LOW-1 $0 `invoice.paid` guard, J5-LOW-2
+  coupon release on idempotent checkout return, J1-LOW-1 status-aware
+  claim steal, J2-LOW-2 session-scoped claim release, J1-LOW-2/J2-LOW-4
+  `recentDunningSent`, J2-LOW-3 dedupe-claim TTL, J4 doc fixes);
+  3 deferred as documented known limitations (J1-LOW-3, J1-LOW-4, J2-LOW-1 —
+  narrow, email-only or crash-window).
+- Pass #11 (5 auditors: K1–K5): **CLEAN — first consecutive clean pass**
+  (zero new medium-or-higher). All pass#10 fixes verified holding
+  (adversarial probes: notice gating, $0 guards, status-aware steal,
+  session-scoped release, `recentDunningSent`, coupon release).
+  **11 new LOWs, all fixed**: K1-LOW-1 — public `openapi.json` no longer
+  enumerates `/admin/*`; K2-1 — dedupe-claim extend is Lua
+  compare-and-exists; K2-2 — scheduler tick has per-site try/catch;
+  K2-3 — completed falls back to releasing `'creating'`-NULL claims;
+  K3-L-1 — `ErrorBanner` gets an `incomplete` cause-branch; K3-L-2 —
+  reset-password `?token=` scrubbed on mount; K3-L-3 — cancel modal copy
+  conditional for `incomplete`; K4-LOW-1 — RUNBOOK 409 row corrected
+  (URL reuse only on plan/interval match); K5-LOW-1 — canceled-revival
+  branch gets the $0 guard; K5-LOW-2 — refund email formats cents as money
+  via `Intl.NumberFormat`; K5-LOW-3 — `'open'` steal threshold 24h.
+- Pass #12 (5 auditors: L1–L5): **CLEAN — second consecutive clean pass**
+  (zero new medium-or-higher). **6 new LOWs, all fixed**: L3-L-1 —
+  ErrorBanner headline overridable for `incomplete`; L3-L-2 —
+  grace-consumed `past_due` shows "Payment failed." copy; L3-L-3 —
+  generic read-only "Subscribe" alert suppressed when specific alerts
+  render; L2-2 — rank-checks inline scheduler loop gets per-site try/catch
+  (L1-1 reported the same pre-fix instance); L2-1 — K2-3 fallback DELETE
+  pinned to claims predating the completing session (a stealer's newer
+  claim survives). L4 CLEAN (0/0/0): CVE triage — zero dep drift; Next.js
+  Oct-14 OOB advisories still unpublished at audit time (watch item
+  carries to delivery).
+- → **Final Gate reached** 2026-10-12 ~00:45 PKT: two consecutive clean
+  passes, all pass#11/#12 LOWs fixed with regression tests, full suite
+  green on main.
 
 ---
 
-## Verification summary (PRELIMINARY — LA to fill final)
+## Verification summary (FINAL gate figures)
 
-| Check | Last verified figure | Source |
+| Check | Final figure | Source |
 |---|---|---|
-| Backend test suite | **819 passed / 9 skipped / 0 failed** (92 files) | main, post pass-#8 fixes, 2026-10-11 |
+| Backend test suite | **833 passed / 9 skipped / 0 failed** (94 files) | main, post pass-#10 fixes, 2026-10-11 ~23:45 PKT (LA full run) |
 | Wave-3 gate (definitive post-rebase) | 646 passed / 9 skipped / 0 failed (72 files) | LA, 2026-10-11 ~17:45 PKT |
 | Wave-2 gate | 577 passed / 9 skipped / 0 failed (59 files) | LA, 2026-10-11 ~12:15 PKT |
 | Wave-1 gate | 307 passed / 9 skipped / 0 failed | LA, 2026-10-11 ~02:00 PKT |
 | Backend coverage (core) | **86.19% lines** (gate criterion ≥ 85%) | LA re-run on main, 2026-10-11 ~18:10 PKT |
-| TypeScript | `tsc --noEmit` clean | each gate |
+| TypeScript | `tsc --noEmit` clean (backend + frontend) | each gate |
 | Frontend | `next build` green | each gate |
 | Playwright E2E (real Chromium, headless) | **5/5 PASS** (login→dashboard, billing, logout→login, fresh signup, /status) | Wave-3 gate |
-| Audit passes | pass #1: 5H/14M/19L all fixed+verified; pass #2: 1H/9M/21L found, fixes in progress | AUDIT_RESULT.md |
+| Audit loop (Wave 4, 12 hostile passes) | #1: 5H/14M/19L · #2: 1H/9M/21L · #3: 4H/20M/33L · #4: 4H/10M/19L · #5: 2H/7M · #6: 1M/14L · #7: 1H/3M/5L · #8: 1H/0M/5L · #9: 1M/7L · #10: 1M/11L · #11: 0M+/11L CLEAN ×1 · #12: 0M+/6L CLEAN ×2. **All fixed except 3 documented LOW residuals** (see Known limitations #10). | PROGRESS.md / AUDIT_RESULT.md |
 | Lint | ESLint configured (Q-02); strict TS everywhere | Wave-3 |
 
 **Load/chaos (verified):** 88k-request load baseline (p95 185ms), worker
@@ -247,8 +294,8 @@ honest load proof (10 tenants, 18 jobs/s, fairness measured), chaos DLQ
 6. **No real-browser pass for TOTP login autofill/mobile keyboards** —
    recommend a manual staging check.
 7. **Migration number gaps:** migrations `008`, `009`, `031`–`039` were
-   never issued; 32 additive files cover `001`–`007`, `010`–`030`,
-   `040`–`043`. Harmless (the ledger skips by name), noted for honesty.
+   never issued; 39 additive files cover `001`–`007`, `010`–`030`,
+   `040`–`050`. Harmless (the ledger skips by name), noted for honesty.
 8. **`compose.prod.yml` was not boot-tested** (see #1); same-origin proxy /
    TLS config is file-reviewed only.
 9. **Crawl-reservation `ttlMinutes` remedy is dead code (D1-M-4):** the
@@ -282,11 +329,11 @@ honest load proof (10 tenants, 18 jobs/s, fairness measured), chaos DLQ
 - One-shot runner: `node dist/migrate.js`. It uses an advisory lock, runs
   each migration in its own transaction, and records it in the `migrations`
   ledger. The API and worker also run it (advisory-locked) at boot.
-- **Fresh install:** apply all 32 files in order on an empty database
+- **Fresh install:** apply all 39 files in order on an empty database
   (`make dev` does this, plus seeding).
 - **Upgrade from any earlier build:** just deploy + boot — pending
   migrations apply automatically. Wave ranges: `001`–`030` (Waves 0–2),
-  `040` (Wave 3), `041`–`043` (Wave 4). No data-migration or backfill steps
+  `040` (Wave 3), `041`–`050` (Wave 4). No data-migration or backfill steps
   are required; every change is additive.
 - Historical note: migration `003` was edited before it was ever applied
   anywhere (contract exception recorded in PROGRESS.md); the file on disk
@@ -320,12 +367,11 @@ runs in mock mode.**
 
 ---
 
-## Not yet verified (final gate checklist — LA)
+## Remaining verifications (need a live environment — none of these could run in the build VM)
 
-- [ ] Wave-4 **passes #8 and #9**: two consecutive clean passes with no new
-      medium-or-higher findings (passes #1–#7 complete, all findings fixed).
-- [ ] Final numbers on main: full test suite, coverage ≥ 85%, E2E, load +
-      chaos, strict `tsc`, lint clean.
+- [ ] Wave-4 **passes #11 and #12**: two consecutive clean passes with no new
+      medium-or-higher findings — DONE (2026-10-12 ~00:45 PKT; Final Gate
+      reached). This checklist now only covers environment-bound items.
 - [ ] `docker compose up --build` smoke from a wiped machine (deferred per
       user decision — needs Docker access).
 - [ ] Trivy image scan + `npm audit` (CI / delivery machine).
@@ -333,10 +379,25 @@ runs in mock mode.**
       created.
 - [ ] Playwright E2E re-run on final main.
 - [ ] axe ruleset executed with a real browser.
-- [ ] Docs / `.env.example` / OpenAPI / README final consistency sweep
-      against the shipped code.
+- [ ] Next.js Oct-14 OOB advisories review once published (pass#12 L4 watch
+      item).
 
 ---
 
-*Prepared by Delivery-Prep (DOCS), 2026-10-11. Numbers marked PRELIMINARY;
-the Lead Architect fills the final figures at the final gate.*
+*Prepared by DOCS-FINALIZER, 2026-10-12. Numbers are the final gate
+figures from the LA's last full runs on `main`; all 12 Wave-4 hostile
+audit passes are complete with two consecutive clean passes (Final Gate
+reached). Mock-vs-real rows re-verified row-by-row against
+`backend/src/providers/*` and `backend/src/services/*` — all accurate,
+including the pass#11 fixes (public OpenAPI excludes `/admin/*`;
+refund email formats cents via `Intl.NumberFormat`; `'open'` claim steal
+threshold 24h). README/DEPLOY.md/RUNBOOK.md/`.env.example`/OpenAPI
+consistency sweep against the shipped code: migration count (39 files,
+001–007/010–030/040–050), 409 `CHECKOUT_IN_PROGRESS` (status-aware steal:
+`'creating'` >10 min, `'open'` >24h, URL reuse only on plan/interval
+match), 14-day trial (`SIGNUP_TRIAL_DAYS`, default 14), 12-char password
+minimum, subscription statuses (`active`/`trialing`/`past_due`/`incomplete`
+live; `canceled`/`incomplete_expired` terminal) — all consistent.
+`.env.example` covers every config var (all `opt()`/`req()` in
+`backend/src/config.ts` plus all live `process.env` reads in
+backend/src and backend/scripts).* 

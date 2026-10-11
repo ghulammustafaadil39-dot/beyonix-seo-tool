@@ -20,6 +20,10 @@ COPY . .
 # relative URLs and app/api/[...path]/route.ts proxies /api/* to the runtime
 # API_INTERNAL_URL — no rebuild needed to change the API target.
 ARG NEXT_PUBLIC_API_URL
+# G-2 (Final Gate): the compose file passes NEXT_PUBLIC_SITE_URL as a build
+# arg — it must be declared here or Docker silently ignores it and the
+# frontend falls back to the hardcoded site URL in layout/robots/sitemap.
+ARG NEXT_PUBLIC_SITE_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
