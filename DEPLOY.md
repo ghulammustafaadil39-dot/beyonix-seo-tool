@@ -162,8 +162,11 @@ migration that added a NOT NULL column** (RUNBOOK.md).
   expiry handling on first deploy.
 - **045** replaces the sites `UNIQUE (tenant_id, domain)` constraint with a
   partial unique index (`WHERE deleted_at IS NULL`), so soft-deleted domains
-  can be re-added; and creates `global_provider_guard` (one row per UTC day)
-  backing the atomic global provider-spend circuit.
+  can be re-added; and creates `global_provider_guard`. That table is now
+  vestigial: the atomic global provider-spend circuit is serialized by an
+  xact-scoped advisory lock (`pg_advisory_xact_lock`, see
+  `backend/src/services/providerGuard.ts`), not by guard rows — production
+  code never reads or writes the table.
 
 Note: `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_SITE_URL` are **baked into the
 frontend at build time** (`.env.example` "Frontend / same-origin API proxy"
@@ -280,4 +283,4 @@ request and needs no rebuild.
 | `migrate` exits non-zero, api/worker never start | Read `logs migrate`; fix DB connectivity/migration, then `up -d` again (one-shot re-runs safely — advisory lock, P0-02) |
 | Signup works but no verification email | SMTP not configured — mail is log-only (`[notify:mock-email]` in `api` logs); see §4 |
 | Frontend shows API errors after changing `NEXT_PUBLIC_*` | Those are build-time baked — `up --build` again (§7) |
-| `backup` container restarting | Read `logs backup`; first suspects: `bash` missing in the image (UNVERIFIED-5) or DB unreachable |
+| `backup` container restarting | Read `logs backup`; first suspects: `_pg_env.sh` misconfiguration or DB unreachable. If the sidecar never ran a successful restore, treat backups as untrusted until the scratch-DB restore test passes (UNVERIFIED-5) |
