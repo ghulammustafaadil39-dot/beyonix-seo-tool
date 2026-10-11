@@ -5,7 +5,7 @@ import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { query as defaultQuery } from '../db.js';
-import { notFound } from '../errors.js';
+import { conflict, notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
 import {
   researchKeywords, seedFromGsc, expandKeywords, clusterRows,
@@ -45,7 +45,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
           body: {
             type: 'object',
             properties: {
-              seeds: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10 },
+              seeds: { type: 'array', items: { type: 'string', maxLength: 200 }, minItems: 1, maxItems: 10 }, // D1-L-3: per-item cap like /expand
             },
             required: ['seeds'],
           },
@@ -113,10 +113,12 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
         const { tenantId } = req.tenant;
         const kwId = req.params.kwId;
         const existing = await defaultQuery(
-          `SELECT id FROM keywords WHERE id = $1 AND tenant_id = $2`,
+          `SELECT id, tracked FROM keywords WHERE id = $1 AND tenant_id = $2`,
           [kwId, tenantId],
         );
         if (existing.rows.length === 0) throw notFound('Keyword');
+        // D1-L-2: already tracked -> no metering reservation, just return it.
+        if (existing.rows[0].tracked) return { value: { keyword: existing.rows[0] } };
         // A1-M1: atomic reservation instead of check-then-act.
         const r = await withUsageReservation(tenantId, 'keywords_tracked', 1, async () => {
           const upd = await defaultQuery(
@@ -330,10 +332,19 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
           sets.push(`tags = $${params.length}`);
         }
         params.push(list.id, tenantId);
-        const r = await defaultQuery(
-          `UPDATE keyword_lists SET ${sets.join(', ')} WHERE id = $${params.length - 1} AND tenant_id = $${params.length} RETURNING *`,
-          params,
-        );
+        let r;
+        try {
+          r = await defaultQuery(
+            `UPDATE keyword_lists SET ${sets.join(', ')} WHERE id = $${params.length - 1} AND tenant_id = $${params.length} RETURNING *`,
+            params,
+          );
+        } catch (err) {
+          // D1-L-9: rename-to-duplicate -> 409, not raw 500.
+          if (err instanceof Error && 'code' in err && (err as { code: string }).code === '23505') {
+            throw conflict('LIST_EXISTS', 'A list with this name already exists');
+          }
+          throw err;
+        }
         return { list: r.rows[0] };
       },
     );

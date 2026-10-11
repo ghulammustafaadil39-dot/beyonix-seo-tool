@@ -359,7 +359,8 @@ describe('LOW — toxicLinks tenant scoping', () => {
     expect(out.rescored).toBe(1);
     const upd = calls.find((c) => c.sql.includes('UPDATE backlinks'));
     expect(upd).toBeDefined();
-    expect(upd!.sql).toContain('tenant_id = $5');
+    // D1-M-3: batched via JSONB — tenant_id is $2 (was $5 in the per-row form).
+    expect(upd!.sql).toContain('tenant_id = $2');
     expect(upd!.params).toContain('tenant-9');
   });
 });

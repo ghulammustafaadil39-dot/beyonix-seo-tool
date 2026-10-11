@@ -56,13 +56,25 @@ export async function reportProcessor(job: Job): Promise<unknown> {
 
   const periodEnd = addDaysIso(periodStart, 6);
   const { summary, highlights } = await generateReport(tenantId, siteId, q);
+  // D1-L-8: ON CONFLICT makes concurrent jobs idempotent — the loser gets
+  // the winner's row instead of a raw 23505.
   const inserted = await q(
     `INSERT INTO reports (id, tenant_id, site_id, period_start, period_end, summary, highlights)
      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+     ON CONFLICT (site_id, period_start) DO NOTHING
      RETURNING id`,
     [tenantId, siteId, periodStart, periodEnd, summary, JSON.stringify(highlights)],
   );
-  const reportId = inserted.rows[0].id as string;
+  let reportId: string;
+  if ((inserted.rowCount ?? 0) === 0) {
+    const winner = await q(
+      `SELECT id FROM reports WHERE site_id = $1 AND tenant_id = $2 AND period_start = $3 LIMIT 1`,
+      [siteId, tenantId, periodStart],
+    );
+    reportId = winner.rows[0].id as string;
+  } else {
+    reportId = inserted.rows[0].id as string;
+  }
 
   // W-06: plugin hooks around report generation (errors isolated).
   void runPluginHooks('report.ready', { tenantId, siteId, resourceId: reportId, payload: { periodStart, periodEnd } }).catch((e) =>

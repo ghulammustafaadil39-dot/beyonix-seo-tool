@@ -44,11 +44,18 @@ export async function collectJobsSnapshot(tenantId: string, siteId: string, q: Q
     issuesCount: a.issues_count ?? 0, startedAt: a.started_at, finishedAt: a.finished_at,
     progressPct: progressFor(a.status, a.started_at, a.finished_at),
   }));
+  // D1-L-15: `settled` must reflect ALL audits, not just the 5 most recent —
+  // a 6th-oldest queued audit would otherwise be invisible and the client
+  // would close the stream while a job is still pending.
+  const pending = await q(
+    `SELECT 1 FROM audits WHERE tenant_id = $1 AND site_id = $2 AND status IN ('queued', 'running') LIMIT 1`,
+    [tenantId, siteId],
+  );
   return {
     audits: list,
     reports: (reports.rows as any[]).map((r) => ({ id: r.id, periodStart: r.period_start, periodEnd: r.period_end, createdAt: r.created_at })),
     rankRun: { checksLast24h: Number(rank.rows[0]?.c ?? 0), latestCheckedAt: rank.rows[0]?.latest ?? null, informational: true },
-    settled: list.every((a) => a.status === 'done' || a.status === 'failed'),
+    settled: (pending.rowCount ?? 0) === 0,
   };
 }
 

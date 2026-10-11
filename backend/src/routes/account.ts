@@ -10,6 +10,7 @@ import { DEFAULT_RETENTION_POLICIES, softDeleteSite } from '../services/retentio
 import { recomputeReadOnly } from '../services/billing.js';
 import { getQueue, QUEUES } from '../queues.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { getNotify } from '../providers/notify.js';
 import { createSession } from '../services/sessions.js';
 import { getPlan, type PlanId } from '../plans.js';
@@ -378,7 +379,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     // ---- Invitations (F-09) ----
     authed.post(
       '/account/invitations',
-      { schema: inviteSchema, preHandler: [requireVerifiedEmail, requireRole('owner', 'admin', 'editor')] },
+      { schema: inviteSchema, preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRole('owner', 'admin', 'editor')] }, // D1-L-12: throttle invitation email sends
       async (req, reply) => {
         const { email, role } = req.body as { email: string; role: string };
         if (!EMAIL_RE.test(email)) throw validationError('Invalid email address');

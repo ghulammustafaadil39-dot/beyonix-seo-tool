@@ -426,7 +426,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // NLP term-coverage scoring against top SERP results.
     app.post<{ Params: SiteParams }>(
       '/content/:id/optimize',
-      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'), schema: { params: uuidParamSchema } },
+      { preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')], schema: { params: uuidParamSchema } }, // D1-L-4: S-01 gate; D5-H-1: trial gate (SERP spend)
       async (req) => {
         const { tenantId } = req.tenant;
         const piece = await requirePiece(tenantId, req.params.id);
@@ -453,7 +453,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Duplication check vs existing content + crawled pages.
     app.post<{ Params: SiteParams; Body: { text?: string } }>(
       '/content/:id/duplication',
-      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'),
+      { preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')], // D1-L-4: S-01 gate; D5-H-1: trial gate
         schema: {
           params: uuidParamSchema,
           body: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 200000 } } },

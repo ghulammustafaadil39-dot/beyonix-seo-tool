@@ -101,20 +101,31 @@ export async function optimizeDraft(
     .map((i) => i.url)
     .filter(Boolean);
 
-  const texts: string[] = [];
-  for (const url of urls.slice(0, 5)) {
+  // D1-L-6: fetch competitor pages in parallel with an overall deadline
+  // instead of up to 5 sequential 8s fetches (was ~40s+ in the request).
+  const fetchOne = async (url: string): Promise<string | null> => {
     try {
       const res = await safeFetch(url, { headers: { 'User-Agent': 'BeyonixSEO-Bot/1.0' } }, 8000);
-      if (!res.ok) continue;
+      if (!res.ok) return null;
       const ct = res.headers.get('content-type') ?? '';
-      if (!ct.includes('text/html')) continue;
+      if (!ct.includes('text/html')) return null;
       const html = await res.text();
       const text = pageTextForTerms(html);
-      if (text.length > 500) texts.push(text.slice(0, 20000));
+      return text.length > 500 ? text.slice(0, 20000) : null;
     } catch {
-      /* one bad source must not fail the analysis */
+      return null; // one bad source must not fail the analysis
     }
-  }
+  };
+  const texts = (
+    await Promise.all(
+      urls.slice(0, 5).map((url) =>
+        Promise.race([
+          fetchOne(url),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 12000)),
+        ]),
+      ),
+    )
+  ).filter((t): t is string => t !== null);
   const terms = topTerms(texts, 30, 2);
   const coverage = termCoverage(piece.draft ?? '', terms);
   return {

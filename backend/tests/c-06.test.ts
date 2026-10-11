@@ -66,7 +66,9 @@ describe.runIf(HAS_TEST_DB)('C-06 data lifecycle', () => {
 
     // Scheduler verified-site scan.
     const s = await explainUsesIndex(`SELECT id, tenant_id FROM sites WHERE verified = TRUE AND deleted_at IS NULL`);
-    expect(s.index).toContain('sites_verified_idx');
+    // D1-M-2: the partial unique index (sites_tenant_id_domain_active) may
+    // win over sites_verified_idx — either is a valid index-backed plan.
+    expect(s.index).toMatch(/sites_verified_idx|sites_tenant_id_domain_active/);
 
     // Keywords tracked per site (scheduler). NOTE (stats-flake fix):
     // TWO indexes lead with site_id — idx_keywords_site_group (002) and

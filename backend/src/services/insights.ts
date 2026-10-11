@@ -62,7 +62,7 @@ export async function getSiteInsights(tenantId: string, siteId: string, q: Query
 
   // 2) Rank drops: latest vs previous check per tracked keyword + diagnosis.
   const ranks = await q(
-    `SELECT k.id, k.keyword,
+    `SELECT k.id, k.keyword, k.volume,
             (SELECT position FROM rank_checks WHERE keyword_id = k.id AND tenant_id = $2 ORDER BY checked_at DESC LIMIT 1) AS pos,
             (SELECT url FROM rank_checks WHERE keyword_id = k.id AND tenant_id = $2 ORDER BY checked_at DESC LIMIT 1) AS url,
             (SELECT position FROM rank_checks WHERE keyword_id = k.id AND tenant_id = $2 ORDER BY checked_at DESC LIMIT 1 OFFSET 1) AS prev,
@@ -92,10 +92,10 @@ export async function getSiteInsights(tenantId: string, siteId: string, q: Query
   }
 
   // 3) Content gaps: high-volume tracked keywords ranking poorly or not at all.
+  // D1-L-7: volume comes from the main query above — no per-row SELECT.
   for (const r of rows) {
     if (r.pos != null && r.pos <= 20) continue;
-    const kw = await q(`SELECT volume FROM keywords WHERE id = $1 AND tenant_id = $2`, [r.id, tenantId]);
-    const volume = Number(kw.rows[0]?.volume ?? 0);
+    const volume = Number(r.volume ?? 0);
     if (volume < 500) continue;
     actions.push({
       type: r.pos == null ? 'unranked_keyword' : 'content_gap',

@@ -48,7 +48,7 @@ export async function registerApiKeyRoutes(fastify: FastifyInstance) {
 
     authed.get('/apikeys/scopes', async () => ({ scopes: API_SCOPES }));
 
-    authed.get('/apikeys', { preHandler: requireHumanSession }, async (req) => {
+    authed.get('/apikeys', { preHandler: [requireHumanSession, requireRole('owner', 'admin')] }, async (req) => { // D1-L-11: key metadata enumeration is owner/admin only
       const { page, limit, offset } = paginate(req);
       const [rows, count] = await Promise.all([
         query(

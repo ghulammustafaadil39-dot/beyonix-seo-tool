@@ -98,4 +98,25 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
       return reply.redirect(`/api/v1/gsc/callback?code=mock&state=${encodeURIComponent(state)}`);
     });
   }
+
+  // D1-L-10: GSC disconnect — clears the OAuth grant so users can unlink
+  // their Google account (mirrors GA4's disconnect).
+  fastify.register(async (authed) => {
+    authed.post(
+      '/sites/:id/gsc/disconnect',
+      {
+        schema: { params: idParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'sites:write'),
+      },
+      async (req) => {
+        const { id } = req.params as { id: string };
+        await requireSite(req.tenant.tenantId, id);
+        await query(
+          'UPDATE sites SET gsc_connected = false, gsc_refresh_token_enc = NULL WHERE id = $1 AND tenant_id = $2',
+          [id, req.tenant.tenantId],
+        );
+        return { ok: true };
+      },
+    );
+  });
 }
