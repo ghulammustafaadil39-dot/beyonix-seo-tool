@@ -78,9 +78,12 @@ async function releaseFlightLock(key: string): Promise<void> {
 async function readFreshSnapshot(
   q: QueryFn,
   cacheKey: string,
-): Promise<{ id: string; items: SerpItem[]; features: string[] } | null> {
+): Promise<{ id: string; items: SerpItem[]; features: string[]; sourceProvider: string } | null> {
+  // B1-4: select source_provider so cache hits report the honest
+  // providerIsMock label (a mock-fetched snapshot served from cache must
+  // not be labeled as real data).
   const r = await q(
-    `SELECT id, items, features FROM serp_snapshots
+    `SELECT id, items, features, source_provider FROM serp_snapshots
      WHERE cache_key = $1 AND fetched_at > now() - ($2 || ' days')::interval`,
     [cacheKey, String(SNAPSHOT_TTL_DAYS)],
   );
@@ -89,7 +92,18 @@ async function readFreshSnapshot(
     id: r.rows[0].id as string,
     items: (r.rows[0].items ?? []) as SerpItem[],
     features: (r.rows[0].features ?? []) as string[],
+    sourceProvider: (r.rows[0].source_provider as string) ?? 'unknown',
   };
+}
+
+/**
+ * B1-4: honesty label for cache hits. Mirrors the fetch path
+ * (`providerIsMock: provider.isMock`): every mock provider in this
+ * codebase is named `mock*` (mock, mock-dataforseo, mock-google,
+ * mock-stripe), so a prefix check is the faithful equivalent.
+ */
+function isMockProviderName(name: string): boolean {
+  return name.startsWith('mock');
 }
 
 async function fetchFreshSnapshot(
@@ -143,7 +157,7 @@ export async function getSerpSnapshot(
       pixelRank: own.position,
       notRanked: own.position === null,
       cached: true,
-      providerIsMock: false,
+      providerIsMock: isMockProviderName(fresh.sourceProvider),
     };
   }
 
@@ -164,7 +178,7 @@ export async function getSerpSnapshot(
           pixelRank: own.position,
           notRanked: own.position === null,
           cached: true,
-          providerIsMock: false,
+          providerIsMock: isMockProviderName(retry.sourceProvider),
         };
       }
     }

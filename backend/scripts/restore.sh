@@ -19,15 +19,20 @@ shift
 : "${DATABASE_URL:?DATABASE_URL must be set — refusing to guess the restore target}"
 [[ -f "$IN" ]] || { echo "restore: file not found: $IN" >&2; exit 1; }
 
+# B2-L3: split DATABASE_URL into PG* env vars — the password must never
+# appear as a command-line argument (visible via `ps`).
+# shellcheck source=_pg_env.sh
+source "$(dirname "$0")/_pg_env.sh"
+
 if head -c 5 "$IN" | grep -q "PGDMP"; then
   # Custom format: drop-and-recreate objects from the archive. --if-exists
   # keeps --clean idempotent; --no-owner avoids superuser-only ALTER OWNER.
   pg_restore --clean --if-exists --no-owner --no-privileges \
-    --dbname="$DATABASE_URL" "$@" "$IN"
+    --dbname="$PGDATABASE" "$@" "$IN"
 else
   # Plain SQL dump: replay through psql. ON_ERROR_STOP so a partial
   # restore fails loudly instead of silently half-applying.
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 "$@" -f "$IN"
+  psql -v ON_ERROR_STOP=1 "$@" -f "$IN"
 fi
 
-echo "restore ok: $IN -> ${DATABASE_URL%@*}@<redacted>"
+echo "restore ok: $IN -> ${PGHOST:-localhost}:${PGPORT:-5432}/${PGDATABASE} (user ${PGUSER:-$USER})"

@@ -1,5 +1,5 @@
 import { renderPrompt } from './prompt.js';
-import { sanitizeJsonLdForScript } from './promptSafety.js';
+import { delimitUntrusted, sanitizeJsonLdForScript } from './promptSafety.js';
 import { generateMetered } from './llmMetered.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -27,11 +27,13 @@ export async function generateOutline(
   input: OutlineInput,
   q: QueryFn = defaultQuery,
 ): Promise<string> {
+  // B1-R2 (S-09): user-controlled template vars are delimited as
+  // untrusted data, same convention as onpage/geo/brief.
   const prompt = await renderPrompt('content-outline', {
-    keyword: input.keyword,
-    title: input.title,
-    tone: input.tone,
-    siteDomain: input.siteDomain,
+    keyword: delimitUntrusted(input.keyword, { label: 'keyword', maxChars: 200 }),
+    title: delimitUntrusted(input.title, { label: 'title', maxChars: 300 }),
+    tone: delimitUntrusted(input.tone, { label: 'tone', maxChars: 100 }),
+    siteDomain: delimitUntrusted(input.siteDomain, { label: 'site-domain', maxChars: 253 }),
   });
   const res = await generateMetered(tenantId, { prompt, maxWords: 400, siteId: input.siteId }, q);
   return res.text;
@@ -43,11 +45,12 @@ export async function generateDraft(
   input: DraftInput,
   q: QueryFn = defaultQuery,
 ): Promise<{ text: string; words: number }> {
+  // B1-R2 (S-09): see generateOutline above.
   const prompt = await renderPrompt('content-draft', {
-    keyword: input.keyword,
-    title: input.title,
-    outline: input.outline,
-    tone: input.tone,
+    keyword: delimitUntrusted(input.keyword, { label: 'keyword', maxChars: 200 }),
+    title: delimitUntrusted(input.title, { label: 'title', maxChars: 300 }),
+    outline: delimitUntrusted(input.outline, { label: 'outline', maxChars: 8000 }),
+    tone: delimitUntrusted(input.tone, { label: 'tone', maxChars: 100 }),
     targetWords: input.targetWords,
   });
   const res = await generateMetered(tenantId, { prompt, maxWords: input.targetWords + 200, siteId: input.siteId }, q);

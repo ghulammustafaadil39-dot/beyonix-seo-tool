@@ -16,18 +16,12 @@ import { config } from '../config.js';
 import { createShareToken, hashShareToken, verifyShareTokenFormat, deriveShareTokenKey } from '../services/shareTokens.js';
 import { createPdf, drawCover, drawSectionTitle, drawKeyValues, drawIssues } from '../services/pdf.js';
 import { getBranding } from '../services/branding.js';
-
-/** ISO week key used for crawl idempotency: `YYYY-Www` (e.g. `2026-W41`). */
-export function isoWeekKey(d: Date = new Date()): string {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const dayNum = (date.getUTCDay() + 6) % 7; // Monday = 0
-  date.setUTCDate(date.getUTCDate() - dayNum + 3); // shift to Thursday of this week
-  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
-  const firstDayNum = (firstThursday.getUTCDay() + 6) % 7;
-  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3);
-  const week = 1 + Math.round((date.getTime() - firstThursday.getTime()) / 604800000);
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
-}
+// B1-8: the local isoWeekKey copy mixed local date getters into Date.UTC()
+// (the N-A2-2 bug class); the canonical UTC-only implementation lives in
+// weekKey.ts — one copy, shared with the scheduler.
+import { isoWeek } from '../weekKey.js';
+/** Backwards-compatible alias for the old local name (used by p2 tests). */
+export const isoWeekKey = isoWeek;
 
 const uuidParams = (name: string) => ({
   type: 'object',

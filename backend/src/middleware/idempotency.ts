@@ -6,6 +6,16 @@ import { query } from '../db.js';
  * Idempotency keys for POSTs that create paid work (C-07).
  *
  * Clients send `Idempotency-Key: <uuid>`; the key is scoped per tenant.
+ * Without the header the wrapper is a pass-through (no behavior change).
+ *
+ * B2-L8: current adoption — only POST /billing/checkout is wrapped. The
+ * queue-backed POSTs (audits, ranks/backlinks refresh, reports/generate,
+ * content, keyword jobs) rely on BullMQ `jobId` dedupe and route-level
+ * guards instead (A1-H1's partial unique index for audits, `enqueueDeduped`
+ * windows for the manual refresh routes). Those dedupe per queue/id key,
+ * not per client request: a client that wants request-level idempotency on
+ * those routes should send `Idempotency-Key` AND have the route wrapped —
+ * wrapping is a safe no-op for clients that don't send the header.
  * - The key is CLAIMED before the handler runs (C-01 fix): the first
  *   request INSERTs a pending row (response/status NULL) and only then
  *   executes. A concurrent duplicate sees the claim, WAITS for it to

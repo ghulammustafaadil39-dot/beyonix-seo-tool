@@ -7,21 +7,11 @@ import { processBillingGrace } from './services/billing.js';
 import { runRetentionCleanup } from './services/retention.js';
 import { processWebhookRetries } from './services/webhookDelivery.js';
 import { processDigests } from './services/notifications.js';
+import { isoWeek } from './weekKey.js';
 
-/**
- * ISO week key, computed with UTC getters ONLY (N-A2-2). The old version
- * mixed local date parts into Date.UTC(), producing the wrong week key near
- * midnight for non-UTC server timezones and breaking the idempotency
- * dedupe that relies on it.
- */
-export function isoWeek(d = new Date()): string {
-  const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-  const day = dt.getUTCDay() || 7;
-  dt.setUTCDate(dt.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((dt.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-  return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
-}
+// B1-8: the canonical ISO-week helper lives in weekKey.ts (side-effect
+// free); re-exported here so existing `scheduler.js` imports keep working.
+export { isoWeek };
 
 // One leader-election gate shared by every tick (N-A2-2): N worker
 // processes each run the scheduler, but exactly one tick executes.
@@ -179,10 +169,37 @@ export const SCHEDULES: ScheduleDef[] = [
       if (n > 0) console.log(`[scheduler] digests: processed ${n} user(s)`);
     },
   },
+  {
+    name: 'stuck-audit-reaper',
+    cron: '*/15 * * * *', // every 15 min — reap orphan 'queued' audits (B1-5)
+    run: async () => {
+      const n = await reapStuckAudits();
+      if (n > 0) console.log(`[scheduler] stuck-audit-reaper: marked ${n} audit(s) failed`);
+    },
+  },
 ];
 
 /** All cron schedules evaluate in UTC (C-03: "cron uses UTC consistently"). */
 export const SCHEDULER_TIMEZONE = 'UTC' as const;
+
+/**
+ * B1-5: reaps audits stuck in 'queued'. The worker picks up queued audits
+ * within seconds of enqueue, so a row still 'queued' after 2h is an orphan
+ * (crash between the INSERT and the enqueue-failure marking, or between
+ * enqueue and the worker's claim). Without this, the row 409s every future
+ * audit for the site forever AND the audits_one_active_per_site partial
+ * unique index blocks worker recovery inserts. Same 2h predicate as
+ * migration 041's one-time cleanup; 'running' rows are left alone — the
+ * worker owns their lifecycle. Exported for tests.
+ */
+export async function reapStuckAudits(): Promise<number> {
+  const r = await query(
+    `UPDATE audits SET status = 'failed', finished_at = now(),
+            error = 'stale queued audit reaped by scheduler (older than 2h)'
+     WHERE status = 'queued' AND started_at < now() - interval '2 hours'`,
+  );
+  return r.rowCount ?? 0;
+}
 
 /** Enqueues all recurring work. Idempotent jobIds make overlaps safe. */
 export function startScheduler(): ScheduledTask[] {

@@ -248,7 +248,13 @@ export async function reserveUsage(
   units: number,
   opts: ReserveOpts = {},
 ): Promise<Reservation> {
-  const take = Math.max(0, Math.round(units));
+  // B2-L1: usage_reservations.units has CHECK (units > 0). Reserving zero
+  // (or negative) units is a caller bug — fail with a clean 400 instead of
+  // a raw PG check-violation 500.
+  const take = Math.round(units);
+  if (!Number.isFinite(take) || take < 1) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `units must be a positive integer (got ${units})`);
+  }
   const limit = opts.limitOverride ?? limitForKind(planId, kind);
   const client = await pool.connect();
   try {
@@ -332,29 +338,42 @@ export async function commitUsage(
   actualUnits?: number,
   q: QueryFn = defaultQuery,
 ): Promise<void> {
-  const units = actualUnits === undefined ? undefined : Math.max(0, Math.round(actualUnits));
+  const units = actualUnits === undefined ? undefined : Math.round(actualUnits);
+  // B2-L1: usage_reservations.units has CHECK (units > 0). A caller reporting
+  // 0 consumption (e.g. generateMetered with an empty LLM response) must
+  // release the hold instead of tripping a raw PG check-violation 500.
+  if (units !== undefined && units <= 0) {
+    await cancelUsage(reservationId, q);
+    return;
+  }
+  // B2-M3: the reservation flip AND the usage_events INSERT are one atomic
+  // statement (CTE). Two separate statements had a window where the spend
+  // was counted in NEITHER table (getUsage sums usage_events + reserved
+  // holds), letting concurrent reserveUsage calls grant over the limit;
+  // a crash between them lost the spend evidence while the reservation
+  // was already committed. A single statement is atomic even when the
+  // caller passes a non-transactional QueryFn.
   const r = await q(
-    `UPDATE usage_reservations SET status = 'committed', units = COALESCE($2, units)
-     WHERE id = $1 AND status = 'reserved'
-     RETURNING tenant_id, site_id, event_type, units, meta`,
+    `WITH u AS (
+       UPDATE usage_reservations SET status = 'committed', units = COALESCE($2, units)
+       WHERE id = $1 AND status = 'reserved'
+       RETURNING tenant_id, site_id, event_type, units, meta
+     ),
+     i AS (
+       -- A1-M1: committing must also record the usage_events row (dashboards,
+       -- billing evidence, getUsage all read it). 'sites'/'keywords_tracked'
+       -- are pure counts (no usage_events row); every other kind's
+       -- event_type IS the UsageEventType (see KIND_EVENT).
+       INSERT INTO usage_events (id, tenant_id, site_id, event_type, units, meta)
+       SELECT gen_random_uuid(), tenant_id, site_id, event_type, units, meta
+       FROM u
+       WHERE event_type NOT IN ('sites', 'keywords_tracked')
+     )
+     SELECT count(*)::int AS committed FROM u`,
     [reservationId, units ?? null],
   );
-  if (r.rows.length === 0) throw new ApiError(404, 'NOT_FOUND', 'Reservation not found or already finalized');
-  // A1-M1: committing must also record the usage_events row. The old
-  // checkLimit + recordUsage flow wrote usage_events, and dashboards,
-  // billing evidence, and getUsage all read it — without this, metered
-  // spend was invisible everywhere except the reservations table.
-  // 'sites' / 'keywords_tracked' are pure counts (no usage_events row);
-  // every other kind's event_type IS the UsageEventType (see KIND_EVENT).
-  const row = r.rows[0];
-  const isCountKind = row.event_type === 'sites' || row.event_type === 'keywords_tracked';
-  if (!isCountKind) {
-    await q(
-      `INSERT INTO usage_events (id, tenant_id, site_id, event_type, units, meta)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)`,
-      [row.tenant_id, row.site_id, row.event_type, row.units, row.meta],
-    );
-  }
+  if (Number(r.rows[0]?.committed ?? 0) === 0)
+    throw new ApiError(404, 'NOT_FOUND', 'Reservation not found or already finalized');
 }
 
 /** Releases a reservation without consuming budget. */

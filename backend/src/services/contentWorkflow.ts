@@ -254,8 +254,10 @@ export async function generateSeoAssets(
   q: QueryFn = defaultQuery,
 ): Promise<SeoAssets> {
   const n = Math.min(10, Math.max(1, input.imageCount ?? 3));
+  // B1-R2 (S-09): title/keyword are user-controlled — delimit as untrusted
+  // data like `topics` below already is.
   const prompt =
-    `You are an SEO assistant. For the article titled "${input.title}" targeting the keyword "${input.keyword}", ` +
+    `You are an SEO assistant. For the article titled ${delimitUntrusted(input.title, { label: 'title', maxChars: 300 })} targeting the keyword ${delimitUntrusted(input.keyword, { label: 'keyword', maxChars: 200 })}, ` +
     `produce STRICT JSON (no markdown, no commentary) with exactly these keys:\n` +
     `{"altTexts": ["alt text 1", ... ${n} items, each under 125 chars, descriptive, keyword-aware], ` +
     `"metaTitle": "under 60 chars, keyword near start", ` +

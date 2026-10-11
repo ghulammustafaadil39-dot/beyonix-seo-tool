@@ -5,7 +5,7 @@ import { pool, query, type QueryFn } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
 import { authPlugin, signToken, setAuthCookie, setCsrfCookie } from '../middleware/auth.js';
 import { issueCsrfToken } from '../middleware/csrf.js';
-import { actorUserId, canAssignRole, requireHumanSession, requireRole, requireScope } from '../middleware/access.js';
+import { actorUserId, canAssignRole, humanUserId, requireHumanSession, requireRole, requireScope } from '../middleware/access.js';
 import { DEFAULT_RETENTION_POLICIES } from '../services/retention.js';
 import { getQueue, QUEUES } from '../queues.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
@@ -309,10 +309,14 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
     await authPlugin(authed);
     const t = (req: any) => (req.tenant.tenantId as string);
-    const u = (req: any) => (req.tenant.userId as string);
+    // B1-R1: null for API-key callers (keys have no user). User-scoped
+    // queries then match nothing instead of 500ing on UUID columns;
+    // user-scoped MUTATIONS carry requireHumanSession instead.
+    const u = (req: any) => (req.tenant.userId as string | null);
 
     // ---- Team members (F-09) ----
-    authed.get('/account/members', async (req) => {
+    // B1-M1: API keys need account:read (session users pass through).
+    authed.get('/account/members', { preHandler: requireScope('account:read') }, async (req) => {
       const r = await query(
         `SELECT id, email, name, role, created_at FROM users WHERE tenant_id = $1 ORDER BY created_at ASC`,
         [t(req)],
@@ -462,9 +466,14 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       return { ok: true };
     });
 
-    authed.post('/account/invitations/accept', { schema: acceptInviteSchema }, async (req, reply) => {
+    // B1-R1: accepting an invitation moves the USER between tenants and
+    // mints them a session token — API keys have no user to move.
+    authed.post('/account/invitations/accept', { schema: acceptInviteSchema, preHandler: requireHumanSession }, async (req, reply) => {
       const { token } = req.body as { token: string };
       const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      // B1-R1: this flow moves the human user between tenants — resolve
+      // the user id once (throws for API keys even if the gate is lost).
+      const uid = humanUserId(req);
       // NEW-1: the whole accept flow — invitation/user reads, shell
       // guards, invitation claim, user move, shell dissolve, activity
       // log — runs in ONE transaction on a single pooled client. The
@@ -496,7 +505,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       if (row.revoked_at || row.accepted_at || new Date(row.expires_at).getTime() < Date.now()) {
         throw new ApiError(410, 'INVITE_EXPIRED', 'This invitation has expired or was revoked');
       }
-      const me = await cq(`SELECT id, email, tenant_id, role FROM users WHERE id = $1`, [u(req)]);
+      const me = await cq(`SELECT id, email, tenant_id, role FROM users WHERE id = $1`, [uid]);
       if (me.rows.length === 0) throw new ApiError(401, 'UNAUTHORIZED', 'Authentication required');
       if (me.rows[0].email.toLowerCase() !== (row.email as string).toLowerCase()) {
         throw new ApiError(403, 'FORBIDDEN', 'This invitation was sent to a different email address');
@@ -523,7 +532,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         await cq(`SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, [oldTenantId]);
         const others = await cq(
           `SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND id <> $2`,
-          [oldTenantId, u(req)],
+          [oldTenantId, uid],
         );
         if (Number(others.rows[0].c) === 0) {
           // Complete shell guard: one UNION ALL count per curated
@@ -549,7 +558,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         } else if (me.rows[0].role === 'owner') {
           const owners = await cq(
             `SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND role = 'owner' AND id <> $2`,
-            [oldTenantId, u(req)],
+            [oldTenantId, uid],
           );
           if (Number(owners.rows[0].c) === 0) {
             throw new ApiError(
@@ -576,7 +585,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         await cq(`UPDATE users SET tenant_id = $1, role = $2 WHERE id = $3`, [
           row.tenant_id,
           row.role,
-          u(req),
+          uid,
         ]);
         if (dissolveShell) {
           await cq(`DELETE FROM tenants WHERE id = $1`, [oldTenantId]);
@@ -594,7 +603,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       );
       // The move changes the token's tenant binding — issue a fresh session
       // token for the new tenant (the old one 401s by design).
-      const tv = await cq(`SELECT token_version FROM users WHERE id = $1`, [u(req)]);
+      const tv = await cq(`SELECT token_version FROM users WHERE id = $1`, [uid]);
       acceptedTenantId = row.tenant_id as string;
       acceptedRole = row.role as string;
       acceptedTokenVersion = Number(tv.rows[0]?.token_version ?? 0);
@@ -612,9 +621,9 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       } finally {
         client.release();
       }
-      const fresh = signToken(u(req), acceptedTenantId, acceptedTokenVersion);
+      const fresh = signToken(uid, acceptedTenantId, acceptedTokenVersion);
       const dj = jwt.decode(fresh) as { jti?: string } | null;
-      if (dj?.jti) await createSession(u(req), dj.jti, 'invite-accept');
+      if (dj?.jti) await createSession(uid, dj.jti, 'invite-accept');
       // Browser parity with login (issueAuthSession in routes/auth.ts):
       // the pre-move cookie 401s after the move (tenant binding), so the
       // fresh token MUST also land in the httpOnly session cookie (+ CSRF
@@ -626,7 +635,8 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     });
 
     // ---- Client workspaces (F-09) ----
-    authed.get('/account/workspaces', async (req) => {
+    // B1-M1: API keys need account:read.
+    authed.get('/account/workspaces', { preHandler: requireScope('account:read') }, async (req) => {
       const { page, limit, offset } = paginate(req);
       const [rows, count] = await Promise.all([
         query(
@@ -772,7 +782,8 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     });
 
     // ---- Alert rules (F-10) ----
-    authed.get('/account/alert-rules', async (req) => {
+    // B1-M1: API keys need account:read.
+    authed.get('/account/alert-rules', { preHandler: requireScope('account:read') }, async (req) => {
       const r = await query(
         `SELECT id, rule_type, channels, config, enabled, created_at
          FROM notification_rules WHERE tenant_id = $1 AND user_id = $2 ORDER BY created_at ASC`,
@@ -781,7 +792,10 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       return { data: r.rows };
     });
 
-    authed.post('/account/alert-rules', { schema: alertRuleSchema }, async (req) => {
+    // B1-R1: per-user mutations — API keys have no user (userId is null),
+    // so these need a human session (otherwise the INSERT hits the
+    // user_id NOT NULL column with null → 500).
+    authed.post('/account/alert-rules', { schema: alertRuleSchema, preHandler: requireHumanSession }, async (req) => {
       const { ruleType, channels, config, enabled } = req.body as {
         ruleType: string;
         channels: string[];
@@ -802,7 +816,8 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       return r.rows[0];
     });
 
-    authed.delete('/account/alert-rules/:id', async (req) => {
+    // B1-R1: human-only (see POST above).
+    authed.delete('/account/alert-rules/:id', { preHandler: requireHumanSession }, async (req) => {
       const id = assertUuid((req.params as any).id, 'rule id');
       const r = await query(`DELETE FROM notification_rules WHERE id = $1 AND tenant_id = $2 AND user_id = $3`, [
         id,
@@ -814,7 +829,8 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     });
 
     // ---- Digest settings (F-10) ----
-    authed.get('/account/digest', async (req) => {
+    // B1-M1: API keys need account:read.
+    authed.get('/account/digest', { preHandler: requireScope('account:read') }, async (req) => {
       const r = await query(`SELECT frequency, channels, last_sent_at FROM notification_digests WHERE tenant_id = $1 AND user_id = $2`, [
         t(req),
         u(req),
@@ -822,7 +838,9 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       return r.rows[0] ?? { frequency: 'weekly', channels: ['email'], last_sent_at: null };
     });
 
-    authed.put('/account/digest', { schema: digestSchema }, async (req) => {
+    // B1-R1: human-only — a null user_id would never match the
+    // (tenant_id, user_id) upsert key and would insert junk rows.
+    authed.put('/account/digest', { schema: digestSchema, preHandler: requireHumanSession }, async (req) => {
       const { frequency, channels } = req.body as { frequency: string; channels?: string[] };
       const r = await query(
         `INSERT INTO notification_digests (tenant_id, user_id, frequency, channels)
@@ -835,7 +853,8 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     });
 
     // ---- Notification center (F-10) ----
-    authed.get('/account/notifications', async (req) => {
+    // B1-M1: API keys need account:read.
+    authed.get('/account/notifications', { preHandler: requireScope('account:read') }, async (req) => {
       const { page, limit, offset } = paginate(req);
       const [rows, count] = await Promise.all([
         query(
@@ -853,7 +872,8 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     });
 
     // ---- Onboarding progress (F-01 sub-task) ----
-    authed.get('/account/sites/:siteId/onboarding', async (req) => {
+    // B1-M1: API keys need account:read.
+    authed.get('/account/sites/:siteId/onboarding', { preHandler: requireScope('account:read') }, async (req) => {
       const siteId = assertUuid((req.params as any).siteId, 'siteId');
       const site = await query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [siteId, t(req)]);
       if (site.rows.length === 0) throw new ApiError(404, 'NOT_FOUND', 'Site not found');

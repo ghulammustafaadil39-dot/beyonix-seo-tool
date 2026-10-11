@@ -1,5 +1,6 @@
 import { Queue, type JobsOptions } from 'bullmq';
 import { Redis } from 'ioredis';
+import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
 import { ApiError } from './errors.js';
 import { query } from './db.js';
@@ -133,6 +134,47 @@ export async function checkTenantRateLimit(tenantId: string, queue: string, max 
   const key = `${redisKeyPrefix()}rl:${tenantId}:${queue}`;
   const count = await incrWithTtl(getConnection(), key, RL_WINDOW);
   return count <= max;
+}
+
+/**
+ * B1-M3: honest idempotent enqueue for manual refresh routes
+ * (ranks/refresh, backlinks/refresh, reports/generate).
+ *
+ * BullMQ dedupes silently on jobId — `Queue.add` with a duplicate id
+ * returns the pre-existing job (even completed ones, kept by
+ * removeOnComplete), so a repeat click used to get a fake
+ * `{ok:true, queued:true}` while nothing was queued (same silent-dedupe
+ * class as the A1-H1 audit-race bug).
+ *
+ * This helper claims the idempotency window atomically in Redis (SET NX):
+ * exactly one caller per window enqueues; every repeat click gets
+ * `{ deduplicated: true }` and the route reports
+ * `{ok:true, queued:false, deduplicated:true}` honestly. If the enqueue
+ * itself throws (e.g. the per-tenant 429), the claim is released so the
+ * next click can retry — a failed enqueue must not burn the window.
+ */
+export async function enqueueDeduped(
+  queueName: string,
+  jobName: string,
+  data: Record<string, unknown>,
+  idempotencyKey: string,
+  ttlSec = 86400,
+): Promise<{ deduplicated: boolean }> {
+  const redis = getConnection();
+  const mapKey = `${redisKeyPrefix()}dedup:${idempotencyKey}`;
+  const claimed = await redis.set(mapKey, '1', 'EX', ttlSec, 'NX');
+  if (!claimed) return { deduplicated: true };
+  try {
+    // BullMQ custom jobIds may contain ':' only in the legacy 3-part
+    // repeatable shape — sanitize so any idempotency key works here; the
+    // Redis claim above (not the jobId) is the dedupe arbiter.
+    const jobId = `${idempotencyKey.replaceAll(':', '-')}-${randomUUID()}`;
+    await enqueue(queueName, jobName, data, { idempotencyKey: jobId });
+  } catch (err) {
+    await redis.del(mapKey);
+    throw err;
+  }
+  return { deduplicated: false };
 }
 
 // ---- Dead-letter queue (C-03) ----

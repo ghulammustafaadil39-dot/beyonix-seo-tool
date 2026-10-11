@@ -49,6 +49,10 @@ class GeminiProvider implements LLMProvider {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      // B2-M5: a stalled provider (hung TLS, black-holed host) must not hang
+      // the caller until the server kills the socket — the breaker only
+      // counts THROWN errors, and a hung socket throws nothing by itself.
+      signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
         contents: [{ parts: [{ text: opts.prompt }] }],
         generationConfig: { temperature: opts.temperature ?? 0.7, maxOutputTokens: 4096 },
@@ -71,6 +75,8 @@ class OpenAIProvider implements LLMProvider {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+      // B2-M5: see GeminiProvider above.
+      signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
         model: config.openaiModel,
         messages: [{ role: 'user', content: opts.prompt }],

@@ -9,8 +9,15 @@
 //     npx tsx scripts/rotate-encryption-keys.ts [--dry-run]
 //
 // The new primary key comes FIRST; old keys are retained after it so existing
-// ciphertext still decrypts. --dry-run reports without writing.
+// ciphertext still decrypts — B2-M6: this holds for BOTH kid-tagged
+// `enc2:<kid>:` rows (resolved by kid) AND legacy kid-less `enc:` rows
+// (decryptWithKeys now tries every known key, primary first). No two-step
+// rotation is required; rows are re-encrypted to the new primary anyway.
+// --dry-run reports without writing.
 // Plaintext is NEVER logged — only ids, kids, and counts.
+//
+// B2-L6: KEYS are memoized per process — after rotating, RESTART the api
+// and worker processes so they pick up the new primary for encryption.
 import { config } from '../src/config.js';
 import { decryptWithKeys, encryptWithKey, parseEncryptionKeys, type ParsedKeys } from '../src/crypto.js';
 import { pool } from '../src/db.js';
@@ -107,7 +114,9 @@ async function main(): Promise<void> {
     console.error(`[rotate] ${failed} row(s) failed — investigate before removing old keys`);
     process.exit(1);
   }
-  console.log('[rotate] done');
+  // B2-L6: the crypto key set is memoized per process (crypto.ts keys()) —
+  // the operator MUST restart api/worker for the new primary to take effect.
+  console.log('[rotate] done — restart the api and worker processes to pick up the new primary key');
 }
 
 const isMain = process.argv[1]?.endsWith('rotate-encryption-keys.ts');

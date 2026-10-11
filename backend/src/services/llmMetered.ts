@@ -19,6 +19,16 @@ export async function llmCostCap(tenantId: string, q: QueryFn = defaultQuery): P
 }
 
 export async function assertLlmCap(tenantId: string, q: QueryFn = defaultQuery): Promise<void> {
+  // B2-L5: this cap is advisory under concurrency. It is a tenant self-
+  // imposed cost cap read via getUsage and enforced outside the atomic
+  // reservation; two concurrent generateMetered calls can each pass the
+  // check before either commits, collectively overshooting by up to the
+  // reserved estimate. That is acceptable here: the hard budget (plan
+  // ai_words limit) IS enforced atomically via withUsageReservation in
+  // generateMetered, so overshoot is bounded and can never exceed
+  // plan limits. Folding the cap into reserveUsage's lock was rejected —
+  // the cap lives in tenants.llm_cost_cap_words, not the plan table, and
+  // coupling them would serialize unrelated tenants' metering.
   const cap = await llmCostCap(tenantId, q);
   if (cap === null) return;
   const used = await getUsage(tenantId, 'ai_words', q);

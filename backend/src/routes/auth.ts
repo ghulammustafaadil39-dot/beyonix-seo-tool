@@ -12,6 +12,7 @@ import {
   signToken,
   verifyPassword,
 } from '../middleware/auth.js';
+import { humanUserId, requireHumanSession } from '../middleware/access.js';
 import { issueCsrfToken } from '../middleware/csrf.js';
 import { getGoogle } from '../providers/google.js';
 import { getCaptcha, isCaptchaRequired } from '../providers/captcha.js';
@@ -666,9 +667,11 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     // S-05: change password. Requires the current password; revokes ALL
     // sessions (the caller's included) so a compromised password dies
     // everywhere at once.
+    // B1-R1: human-only — API keys have no user (userId is null for them).
     authed.post(
       '/auth/password/change',
       {
+        preHandler: requireHumanSession,
         schema: {
           body: {
             type: 'object',
@@ -686,7 +689,8 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
           currentPassword?: string;
           newPassword?: string;
         };
-        const r = await query('SELECT password_hash FROM users WHERE id = $1', [req.tenant.userId]);
+        const userId = humanUserId(req);
+        const r = await query('SELECT password_hash FROM users WHERE id = $1', [userId]);
         const hash = r.rows[0]?.password_hash as string | null;
         if (!hash || !(await verifyPassword(currentPassword ?? '', hash))) {
           throw new ApiError(401, 'INVALID_CREDENTIALS', 'Current password is incorrect');
@@ -694,19 +698,21 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
         const problems = await validatePassword(newPassword ?? '');
         if (problems.length > 0) throw validationError(problems[0]);
         await query('UPDATE users SET password_hash = $2 WHERE id = $1', [
-          req.tenant.userId,
+          userId,
           await hashPassword(newPassword!),
         ]);
-        await revokeAllSessions(req.tenant.userId);
+        await revokeAllSessions(userId);
         return { ok: true };
       },
     );
 
     // S-05: request an email change. The NEW address must be verified before
     // it takes effect (existing /auth/email/verify + confirmEmailChange).
+    // B1-R1: human-only.
     authed.post(
       '/auth/email/change',
       {
+        preHandler: requireHumanSession,
         schema: {
           body: {
             type: 'object',
@@ -724,8 +730,9 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
         if (clash.rows.length > 0) {
           throw conflict('EMAIL_EXISTS', 'That email address is already in use');
         }
-        await query('UPDATE users SET pending_email = $2 WHERE id = $1', [req.tenant.userId, cleanEmail]);
-        const rawToken = await issueVerificationToken(req.tenant.userId, 'email_change');
+        const userId = humanUserId(req);
+        await query('UPDATE users SET pending_email = $2 WHERE id = $1', [userId, cleanEmail]);
+        const rawToken = await issueVerificationToken(userId, 'email_change');
         await sendEmailChangeEmail(cleanEmail, req.tenant.name, rawToken);
         return { ok: true, ...testVerifyTokenField(rawToken) };
       },
@@ -736,9 +743,11 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     // require a TOTP code when 2FA is on, and must set a password first
     // otherwise. The tenant row is purged when its last user is gone
     // (cascades to sites, audits, keywords, content, sessions, tokens).
+    // B1-R1: human-only.
     authed.delete(
       '/auth/account',
       {
+        preHandler: requireHumanSession,
         schema: {
           body: {
             type: 'object',
@@ -752,7 +761,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       },
       async (req, reply) => {
         const { password, code } = req.body as { password?: string; code?: string };
-        const userId = req.tenant.userId;
+        const userId = humanUserId(req);
         const tenantId = req.tenant.tenantId;
         const r = await query('SELECT password_hash FROM users WHERE id = $1', [userId]);
         const hash = r.rows[0]?.password_hash as string | null;
@@ -783,17 +792,21 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
 
     // S-05: TOTP setup — generates the secret, stores it encrypted (not yet
     // enabled). The secret is shown ONCE; enable with a valid code.
-    authed.post('/auth/totp/setup', async (req) => {
-      const { enabled } = await getTotpState(req.tenant.userId);
+    // B1-R1: human-only.
+    authed.post('/auth/totp/setup', { preHandler: requireHumanSession }, async (req) => {
+      const userId = humanUserId(req);
+      const { enabled } = await getTotpState(userId);
       if (enabled) throw new ApiError(400, 'TOTP_ALREADY_ENABLED', 'Two-factor is already enabled');
-      return beginTotpSetup(req.tenant.userId);
+      return beginTotpSetup(userId);
     });
 
     // S-05: TOTP enable — verifies the code, enables 2FA, returns one-time
     // backup codes (shown ONCE).
+    // B1-R1: human-only.
     authed.post(
       '/auth/totp/enable',
       {
+        preHandler: requireHumanSession,
         schema: {
           body: {
             type: 'object',
@@ -805,19 +818,22 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       },
       async (req) => {
         const { code } = req.body as { code?: string };
-        const codes = await enableTotp(req.tenant.userId, code ?? '');
+        const userId = humanUserId(req);
+        const codes = await enableTotp(userId, code ?? '');
         if (!codes) throw new ApiError(400, 'INVALID_CODE', 'Invalid code — 2FA was not enabled');
         // New factor, new session baseline: revoke everything EXCEPT the
         // session that just enabled 2FA (don't log the user out mid-setup).
-        await revokeAllSessions(req.tenant.userId, req.tenant.jti);
+        await revokeAllSessions(userId, req.tenant.jti);
         return { ok: true, backupCodes: codes };
       },
     );
 
     // S-05: TOTP disable — requires the account password.
+    // B1-R1: human-only.
     authed.post(
       '/auth/totp/disable',
       {
+        preHandler: requireHumanSession,
         schema: {
           body: {
             type: 'object',
@@ -829,23 +845,26 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       },
       async (req) => {
         const { password } = req.body as { password?: string };
-        const r = await query('SELECT password_hash FROM users WHERE id = $1', [req.tenant.userId]);
+        const userId = humanUserId(req);
+        const r = await query('SELECT password_hash FROM users WHERE id = $1', [userId]);
         const hash = r.rows[0]?.password_hash as string | null;
         if (!hash || !(await verifyPassword(password ?? '', hash))) {
           throw new ApiError(401, 'INVALID_CREDENTIALS', 'Password is incorrect');
         }
-        await disableTotp(req.tenant.userId);
+        await disableTotp(userId);
         return { ok: true };
       },
     );
 
     // S-05: session list. Never exposes token material — only metadata.
-    authed.get('/auth/sessions', async (req) => {
-      const sessions = await listSessions(req.tenant.userId);
+    // B1-R1: human-only.
+    authed.get('/auth/sessions', { preHandler: requireHumanSession }, async (req) => {
+      const userId = humanUserId(req);
+      const sessions = await listSessions(userId);
       const currentHash = req.tenant.jti ? hashJti(req.tenant.jti) : null;
       const rows = await query(
         'SELECT id, jti_hash FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL',
-        [req.tenant.userId],
+        [userId],
       );
       const hashById = new Map((rows.rows as any[]).map((x) => [x.id as string, x.jti_hash as string]));
       return {
@@ -861,18 +880,20 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     });
 
     // S-05: revoke one session (not-found when it isn't yours).
-    authed.delete('/auth/sessions/:id', async (req) => {
+    // B1-R1: human-only.
+    authed.delete('/auth/sessions/:id', { preHandler: requireHumanSession }, async (req) => {
       const { id } = req.params as { id: string };
       if (!/^[0-9a-fA-F-]{36}$/.test(id)) throw validationError('Invalid session id');
-      const ok = await revokeSession(req.tenant.userId, id);
+      const ok = await revokeSession(humanUserId(req), id);
       if (!ok) throw new ApiError(404, 'NOT_FOUND', 'Session not found');
       return { ok: true };
     });
 
     // S-05: log out everywhere — revokes all sessions and bumps
     // token_version (kills even session-less legacy tokens).
-    authed.post('/auth/logout-everywhere', async (req, reply) => {
-      await revokeAllSessions(req.tenant.userId);
+    // B1-R1: human-only.
+    authed.post('/auth/logout-everywhere', { preHandler: requireHumanSession }, async (req, reply) => {
+      await revokeAllSessions(humanUserId(req));
       clearAuthCookie(reply);
       return { ok: true };
     });

@@ -7,7 +7,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
-import { requireRoleOrScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { query } from '../db.js';
 import { badRequest, notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -49,7 +49,8 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
 
     // ---- CRUD ----
 
-    app.get('/sites/:id/competitors', { schema: { params: idParams } }, async (req) => {
+    // B1-M1: reads need competitors:read for API keys (session users pass through).
+    app.get('/sites/:id/competitors', { schema: { params: idParams }, preHandler: requireScope('competitors:read') }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const r = await query(
@@ -112,7 +113,7 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
 
     // ---- Visibility comparison ----
 
-    app.get('/sites/:id/competitors/compare', { schema: { params: idParams } }, async (req) => {
+    app.get('/sites/:id/competitors/compare', { schema: { params: idParams }, preHandler: requireScope('competitors:read') }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const compDomains = await listCompetitorDomains(site.tenant_id, site.id);
@@ -177,6 +178,7 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
           properties: { limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
         },
       },
+      preHandler: requireScope('competitors:read'),
     }, async (req) => {
       const { id } = req.params as { id: string };
       const { limit = 50 } = req.query as { limit?: number };
@@ -231,6 +233,7 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
           properties: { limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
         },
       },
+      preHandler: requireScope('competitors:read'),
     }, async (req) => {
       const { id } = req.params as { id: string };
       const { limit = 50 } = req.query as { limit?: number };
@@ -280,7 +283,7 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
 
     // ---- Backlink comparison (honest: own data only) ----
 
-    app.get('/sites/:id/competitors/backlinks', { schema: { params: idParams } }, async (req) => {
+    app.get('/sites/:id/competitors/backlinks', { schema: { params: idParams }, preHandler: requireScope('competitors:read') }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const compDomains = await listCompetitorDomains(site.tenant_id, site.id);

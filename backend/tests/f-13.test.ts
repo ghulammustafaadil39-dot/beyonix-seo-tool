@@ -75,7 +75,8 @@ describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
       method: 'POST',
       url: '/api/v1/apikeys',
       headers: auth(u.token),
-      payload: { name: 'reader', scopes: ['sites:read'] },
+      // B1-M1: GET /settings now needs settings:read for API keys.
+      payload: { name: 'reader', scopes: ['sites:read', 'settings:read'] },
     });
     const raw = (created.json() as any).key as string;
 
@@ -146,7 +147,9 @@ describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
       method: 'POST',
       url: '/api/v1/apikeys',
       headers: auth(u.token),
-      payload: { name: 'doomed', scopes: ['sites:read'] },
+      // B1-M1: GET /settings needs settings:read for API keys (the
+      // revocation check below would 403 on a sites:read-only key).
+      payload: { name: 'doomed', scopes: ['sites:read', 'settings:read'] },
     });
     const { key: raw, id } = created.json() as any;
 
@@ -171,7 +174,8 @@ describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
       method: 'POST',
       url: '/api/v1/apikeys',
       headers: auth(u.token),
-      payload: { name: 'limited', scopes: ['sites:read'], rateLimitPerMin: 2 },
+      // B1-M1: GET /settings needs settings:read for API keys.
+      payload: { name: 'limited', scopes: ['sites:read', 'settings:read'], rateLimitPerMin: 2 },
     });
     const raw = (created.json() as any).key as string;
     const h = { 'x-api-key': raw };
@@ -205,11 +209,12 @@ describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
     tc.add(u.tenantId);
 
     // A normal key the admin-scoped key will try (and fail) to revoke.
+    // B1-M1: needs settings:read so the final stillWorks check passes.
     const created = await app.inject({
       method: 'POST',
       url: '/api/v1/apikeys',
       headers: auth(u.token),
-      payload: { name: 'victim', scopes: ['sites:read'] },
+      payload: { name: 'victim', scopes: ['sites:read', 'settings:read'] },
     });
     const victimId = (created.json() as any).id as string;
     const victimRaw = (created.json() as any).key as string;

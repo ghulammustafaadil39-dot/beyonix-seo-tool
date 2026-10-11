@@ -50,7 +50,10 @@ export async function getKeywordMetrics(
           [m.keyword.toLowerCase(), locationCode, m.volume, m.difficulty, provider.name],
         );
       }
-      return { value: undefined as void, actualUnits: missing.length };
+      // B1-9: commit what the provider actually returned, not what we
+      // asked for — partial provider results (silently dropped rows) must
+      // not be recorded as full spend.
+      return { value: undefined as void, actualUnits: fresh.length };
     });
   }
   return uniq.map((k) => hit.get(k)!).filter(Boolean);
