@@ -36,6 +36,9 @@ import { registerCompetitorRoutes } from './routes/competitors.js';
 import { registerGeoRoutes } from './routes/geo.js';
 import { registerReportRoutes } from './routes/reports.js';
 import { registerSettingsRoutes } from './routes/settings.js';
+import { registerWellKnownRoutes } from './routes/wellKnown.js';
+import { registerInsightRoutes } from './routes/insights.js';
+import { registerJobEventRoutes } from './routes/jobEvents.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -162,9 +165,14 @@ export async function buildApp() {
       await registerGeoRoutes(v1);
       await registerReportRoutes(v1);
       await registerSettingsRoutes(v1);
+      await registerInsightRoutes(v1);
+      await registerJobEventRoutes(v1);
     },
     { prefix: '/api/v1' },
   );
+
+  // W-07: /.well-known/security.txt lives at the app root (not /api/v1).
+  await registerWellKnownRoutes(app);
 
   return app;
 }

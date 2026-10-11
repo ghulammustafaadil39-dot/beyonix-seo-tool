@@ -10,7 +10,7 @@
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
 import { renderPrompt } from './prompt.js';
-import { getLLM } from '../providers/llm.js';
+import { generateMetered } from './llmMetered.js';
 import { recordUsage } from '../metering.js';
 import { requireSite } from './sites.js';
 
@@ -74,8 +74,11 @@ export function extractCitations(text: string): string[] {
  * detects competitor brand mentions (from the site's competitors table)
  * so share-of-voice can be computed later.
  *
- * Metering: geo checks consume the plan's geo_checks budget only (not
- * ai_words) — the feature is budgeted as its own unit.
+ * Metering: geo checks consume the plan's geo_checks budget; the LLM
+ * simulation calls now ALSO go through the metered LLM path (SEC-FIX
+ * Wave-3) so the tenant's llm_cost_cap_words (W-03), ai_words metering, and
+ * BYOK key selection apply — a viewer can no longer trigger unbounded LLM
+ * spend via GEO runs.
  */
 export async function runGeoCheck(
   tenantId: string,
@@ -91,11 +94,12 @@ export async function runGeoCheck(
   const brands: string[] = [site.domain, ...compRows.map((c) => c.domain)];
 
   const results: GeoCheckResult[] = [];
-  const llm = getLLM();
-  const engineVersion = llm.constructor.name.replace(/Provider$/, '').toLowerCase();
   for (const platform of platforms) {
     const prompt = await renderPrompt('geo-answer', { platform, query: queryText });
-    const res = await llm.generate({ prompt, maxWords: 220 });
+    // SEC-FIX (Wave-3): metered path — enforces llm_cost_cap_words (402 when
+    // tripped), records ai_words, and honors the tenant's BYOK key.
+    const res = await generateMetered(tenantId, { prompt, maxWords: 220, siteId }, q);
+    const engineVersion = res.provider.replace(/Provider$/, '').toLowerCase();
     const mentioned = detectMention(res.text, site.domain);
     const snippet = res.text.slice(0, 500);
     const sentiment = analyzeSentiment(snippet);

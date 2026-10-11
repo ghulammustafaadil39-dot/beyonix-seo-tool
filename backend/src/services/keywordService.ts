@@ -4,7 +4,8 @@ import { query as defaultQuery, type QueryFn } from '../db.js';
 import { DEFAULT_LOCATION_CODE, getKeywordMetrics } from './keywordCache.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 import { expandSeed, parseKeywordBulkImport } from './keywordText.js';
-import { recordProviderSpend } from '../metering.js';
+import { recordProviderSpend, assertDataBudget } from '../metering.js';
+import { assertGlobalProviderBudget } from './providerGuard.js';
 import { getGoogle } from '../providers/google.js';
 import { requireSite, siteUrl } from './sites.js';
 
@@ -418,6 +419,12 @@ export async function keywordGap(
 
   const provider = getKeywordSerpProvider();
   const dataSource = provider.isMock ? 'mock' : 'real';
+  if (provider.competitorKeywords) {
+    // SEC-FIX (Wave-3 W-01): same budget guards as the other paid miss
+    // paths (keywordCache/serpSnapshots) before the billable call.
+    await assertDataBudget(tenantId, 'keyword_metrics', 1, q);
+    await assertGlobalProviderBudget(q); // W-01: global daily circuit
+  }
   const compKws = provider.competitorKeywords
     ? await provider.competitorKeywords(comp)
     : [];

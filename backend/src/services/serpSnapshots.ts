@@ -10,6 +10,7 @@
 
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 import { assertDataBudget, recordUsage, recordProviderSpend } from '../metering.js';
+import { assertGlobalProviderBudget } from './providerGuard.js';
 import type { SerpItem, SerpSnapshotResult, KeywordSerpProvider } from '../providers/types.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -172,15 +173,16 @@ export async function getSerpSnapshot(
 
   try {
     await assertDataBudget(tenantId, 'serp_checks', 1, q);
+    await assertGlobalProviderBudget(q); // W-01: global daily circuit
     const provider = providerOverride ?? getKeywordSerpProvider();
     const snap = await fetchFreshSnapshot(tenantId, keyword, domain, locationCode, device, provider);
     const ins = await q(
-      `INSERT INTO serp_snapshots (id, cache_key, keyword, location_code, device, language, fetched_at, items, features)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), $6, $7)
+      `INSERT INTO serp_snapshots (id, cache_key, keyword, location_code, device, language, fetched_at, items, features, source_provider)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), $6, $7, $8)
        ON CONFLICT (cache_key) DO UPDATE SET
-         fetched_at = now(), items = EXCLUDED.items, features = EXCLUDED.features
+         fetched_at = now(), items = EXCLUDED.items, features = EXCLUDED.features, source_provider = EXCLUDED.source_provider
        RETURNING id`,
-      [key, keyword.trim().toLowerCase(), locationCode, device, language, JSON.stringify(snap.items), JSON.stringify(snap.features)],
+      [key, keyword.trim().toLowerCase(), locationCode, device, language, JSON.stringify(snap.items), JSON.stringify(snap.features), provider.name],
     );
     await recordUsage(tenantId, 'serp_check', 1, undefined, { cache: 'miss', shared: true, snapshot: true }, q);
     const own = findOwnPosition(snap.items, domain);

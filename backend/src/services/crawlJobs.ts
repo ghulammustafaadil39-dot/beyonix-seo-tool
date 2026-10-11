@@ -29,6 +29,7 @@ import { findOrphanPages } from './sitemap.js';
 import { clusterNearDuplicates } from './simhash.js';
 import { impactScore, diffIssues } from './auditDiff.js';
 import { Jobs } from '../queues.js';
+import { runPluginHooks } from './plugins.js';
 
 export interface CrawlJobData {
   siteId: string;
@@ -453,6 +454,11 @@ async function runCrawlSite(data: CrawlJobData, q: QueryFn = query): Promise<unk
     const errors = issues.filter((i) => i.severity === 'error');
     if (errors.length > 0) await notifyErrors(tenant, site.domain, errors);
 
+    // W-06: plugin hooks (errors isolated — never break the crawl result).
+    void runPluginHooks('audit.completed', { tenantId, siteId, resourceId: auditId, payload: { score } }).catch((e) =>
+      console.error('[plugin] audit.completed hooks failed:', e.message),
+    );
+
     return {
       auditId,
       score,
@@ -514,6 +520,11 @@ async function runLightCheck(data: CrawlJobData, q: QueryFn = query): Promise<un
     });
     await notifyErrors(tenant, site.domain, errors);
   }
+
+  // W-06: plugin hooks (errors isolated).
+  void runPluginHooks('audit.completed', { tenantId, siteId, resourceId: auditId, payload: { score, lightCheck: true } }).catch((e) =>
+    console.error('[plugin] audit.completed hooks failed:', e.message),
+  );
 
   return {
     auditId,

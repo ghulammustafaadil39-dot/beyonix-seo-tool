@@ -16,6 +16,20 @@ pool.on('error', (err) => {
   console.error('[db] pool error', err);
 });
 
+// W-08: query budget guardrail. When DB_STATEMENT_TIMEOUT_MS is set (>0),
+// every pooled connection gets a Postgres statement_timeout — runaway
+// queries are killed server-side instead of holding API workers. OFF by
+// default (0) because migrations/index builds legitimately run long;
+// operators enable it for API/worker roles only.
+const statementTimeoutMs = Number(config.nodeEnv === 'test' ? 0 : process.env.DB_STATEMENT_TIMEOUT_MS ?? 0);
+if (statementTimeoutMs > 0) {
+  pool.on('connect', (client) => {
+    client.query(`SET statement_timeout = ${Math.floor(statementTimeoutMs)}`).catch((e) => {
+      console.error('[db] failed to set statement_timeout', e);
+    });
+  });
+}
+
 // Narrow query type used across services so tests can inject a fake.
 export type QueryFn = (text: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }>;
 
