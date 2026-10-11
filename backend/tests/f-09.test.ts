@@ -13,6 +13,19 @@ import { auth, signupVerified, tenantCollector, uniqueEmail, uniquePassword } fr
  */
 const HAS_TEST_DB = /test/i.test(process.env.DATABASE_URL ?? '');
 
+/**
+ * D3-M-1: POST /account/invitations/accept delivers the fresh session ONLY
+ * via the httpOnly cookie — never in the JSON body (A3-H1 cookie-only
+ * policy). Tests that need the post-accept session extract it here.
+ */
+function acceptSessionToken(res: { headers: any }): string {
+  const raw = res.headers['set-cookie'];
+  const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const hit = list.find((c: string) => c.startsWith('bseo_token='));
+  if (!hit) throw new Error('expected bseo_token cookie in invite-accept response');
+  return hit.split(';')[0].slice('bseo_token='.length);
+}
+
 describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
   let app: FastifyInstance;
   const tc = tenantCollector();
@@ -65,8 +78,9 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
     const emails = (members.json() as any).data.map((m: any) => `${m.email}:${m.role}`);
     expect(emails).toContain(`${inviteEmail}:editor`);
 
-    // Re-accepting the same token is rejected (use the fresh session token).
-    const freshToken = (accept.json() as any).token as string;
+    // Re-accepting the same token is rejected (use the fresh session token
+    // from the accept response's httpOnly cookie — D3-M-1).
+    const freshToken = acceptSessionToken(accept);
     const again = await app.inject({
       method: 'POST',
       url: '/api/v1/account/invitations/accept',
@@ -134,16 +148,17 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
     expect(accept.statusCode).toBe(200);
     const acceptBody = accept.json() as any;
     expect(acceptBody.tenantId).toBe(owner.tenantId);
-    // Body token kept for API clients…
-    expect(typeof acceptBody.token).toBe('string');
-    // …and the SAME fresh token must arrive as the httpOnly session cookie.
+    // D3-M-1: the session JWT is delivered ONLY via the httpOnly cookie —
+    // never in the JSON body (A3-H1 cookie-only policy).
+    expect('token' in acceptBody).toBe(false);
+    // …and the fresh session MUST arrive as the httpOnly session cookie.
     const setCookieRaw = accept.headers['set-cookie'];
     const setCookieList: string[] = Array.isArray(setCookieRaw) ? setCookieRaw : setCookieRaw ? [setCookieRaw] : [];
     const authCookie = setCookieList.find((c: string) => c.startsWith('bseo_token='));
     expect(authCookie).toBeTruthy();
     expect(authCookie!.toLowerCase()).toContain('httponly');
     const newCookie = cookieValue(accept, 'bseo_token');
-    expect(newCookie).toBe(acceptBody.token);
+    expect(newCookie).toBeTruthy();
     expect(newCookie).not.toBe(preMoveCookie);
 
     // A subsequent cookie-only request succeeds WITHOUT re-login and is
@@ -186,7 +201,7 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       payload: { token: (invEd.json() as any).token },
     });
     expect(accepted.statusCode).toBe(200);
-    const editorToken = (accepted.json() as any).token as string;
+    const editorToken = acceptSessionToken(accepted);
 
     // Editor inviting an admin (above own role) -> 403.
     const denied = await app.inject({
@@ -463,7 +478,7 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       payload: { token: (inv.json() as any).token },
     });
     expect(accepted.statusCode).toBe(200);
-    const memberToken = (accepted.json() as any).token as string;
+    const memberToken = acceptSessionToken(accepted);
 
     // Promote viewer -> editor.
     const members = (await app.inject({

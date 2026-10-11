@@ -121,12 +121,12 @@ describe('Wave-2 gate: team + API key journey', () => {
     const body = accept.json() as any;
     expect(body).toMatchObject({ tenantId: owner.tenantId, role: 'editor' });
 
-    // Invite-accept cookie fix (345b563): the response SETS a fresh
-    // bseo_token cookie — the same token returned in the body — so the
-    // browser session works without a re-login.
+    // D3-M-1: the session JWT is delivered ONLY via the httpOnly cookie —
+    // never in the JSON body (A3-H1 cookie-only policy). The browser
+    // session works without a re-login via the cookie.
     const setCookie = cookieValue(accept, 'bseo_token');
     expect(setCookie).toBeTruthy();
-    expect(setCookie).toBe(body.token as string);
+    expect('token' in body).toBe(false);
     const raw = accept.headers['set-cookie'];
     const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
     expect(list.find((c: string) => c.startsWith('bseo_token='))!.toLowerCase()).toContain('httponly');
@@ -135,7 +135,7 @@ describe('Wave-2 gate: team + API key journey', () => {
     const me = await app.inject({
       method: 'GET',
       url: '/api/v1/auth/me',
-      headers: auth(body.token as string),
+      headers: auth(setCookie as string),
     });
     expect(me.statusCode).toBe(200);
     expect((me.json() as any).tenant.id).toBe(owner.tenantId);

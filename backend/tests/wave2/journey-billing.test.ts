@@ -305,7 +305,10 @@ describe('Wave-2 gate: billing journey', () => {
     const tenant = await query(`SELECT plan_id FROM tenants WHERE id = $1`, [tenantId]);
     expect(tenant.rows[0].plan_id).toBe('starter');
     const sub = await query(`SELECT status FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
-    expect(sub.rows[0].status).toBe('canceled');
+    // D1-H-1: grace-expiry downgrade keeps the local row 'past_due' (the
+    // Stripe subscription is still alive and retrying) — 'canceled' is
+    // reserved for genuine Stripe-side termination.
+    expect(sub.rows[0].status).toBe('past_due');
 
     const ledger = await query(`SELECT COUNT(*)::int AS c FROM stripe_webhook_events WHERE event_type = 'invoice.paid'`);
     expect(ledger.rows[0].c).toBe(1);
