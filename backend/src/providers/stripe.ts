@@ -242,6 +242,40 @@ class RealStripeProvider implements PaymentsProvider {
     }
     return { canceled };
   }
+
+  /**
+   * D5-L-2: pauses billing for every active subscription of the customer via
+   * Stripe pause_collection (behavior mark_uncollectible: no invoices while
+   * paused, the subscription itself stays alive and resumes cleanly).
+   * Reversible via resumeSubscription — used by admin suspend/unsuspend.
+   */
+  async pauseSubscription(customerId: string): Promise<{ paused: string[] }> {
+    const paused: string[] = [];
+    const subs = await this.stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 100 });
+    for (const s of subs.data) {
+      if (['active', 'trialing', 'past_due', 'incomplete'].includes(s.status) && !s.pause_collection) {
+        await this.stripe.subscriptions.update(s.id, { pause_collection: { behavior: 'mark_uncollectible' } });
+        paused.push(s.id);
+      }
+    }
+    return { paused };
+  }
+
+  /**
+   * D5-L-2: clears pause_collection on subscriptions paused via
+   * pauseSubscription.
+   */
+  async resumeSubscription(customerId: string): Promise<{ resumed: string[] }> {
+    const resumed: string[] = [];
+    const subs = await this.stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 100 });
+    for (const s of subs.data) {
+      if (s.pause_collection) {
+        await this.stripe.subscriptions.update(s.id, { pause_collection: null as unknown as undefined });
+        resumed.push(s.id);
+      }
+    }
+    return { resumed };
+  }
 }
 
 /**
@@ -249,10 +283,12 @@ class RealStripeProvider implements PaymentsProvider {
  * Checkout returns a fake URL that points back to a local confirm endpoint
  * so the full subscribe flow is testable without Stripe.
  */
+/** D5-L-2 (mock): remembers pre-pause statuses for pauseSubscription. */
+const mockPausedStatus = new Map<string, string>();
+
 class MockStripeProvider implements PaymentsProvider {
   name = 'mock-stripe';
   isMock = true;
-
   async createCustomer(email: string, tenantId: string) {
     return { customerId: `cus_mock_${tenantId.slice(0, 8)}` };
   }
@@ -299,6 +335,38 @@ class MockStripeProvider implements PaymentsProvider {
       [customerId],
     );
     return { canceled: r.rows.map((x: any) => (x.stripe_sub_id as string) ?? 'mock') };
+  }
+
+  /**
+   * D5-L-2 (mock): pause flips billable rows to status 'paused' and remembers
+   * the pre-pause status in memory; resume restores it. Dev/test only.
+   */
+  async pauseSubscription(customerId: string): Promise<{ paused: string[] }> {
+    const r = await query(
+      `UPDATE subscriptions SET status = 'paused'
+       WHERE stripe_customer_id = $1 AND status IN ('active', 'trialing', 'past_due', 'incomplete')
+       RETURNING stripe_sub_id, status`,
+      [customerId],
+    );
+    const paused: string[] = [];
+    for (const row of r.rows) {
+      const subId = (row.stripe_sub_id as string) ?? 'mock';
+      mockPausedStatus.set(`${customerId}:${subId}`, 'active');
+      paused.push(subId);
+    }
+    return { paused };
+  }
+
+  async resumeSubscription(customerId: string): Promise<{ resumed: string[] }> {
+    const r = await query(
+      `UPDATE subscriptions SET status = 'active'
+       WHERE stripe_customer_id = $1 AND status = 'paused'
+       RETURNING stripe_sub_id`,
+      [customerId],
+    );
+    const resumed = r.rows.map((x: any) => (x.stripe_sub_id as string) ?? 'mock');
+    for (const subId of resumed) mockPausedStatus.delete(`${customerId}:${subId}`);
+    return { resumed };
   }
 
   async constructWebhookEvent(rawBody: Buffer | string, signature: string) {
@@ -891,6 +959,16 @@ class DisabledPaymentsProvider implements PaymentsProvider {
    */
   async cancelSubscription(): Promise<{ canceled: string[] }> {
     return { canceled: [] };
+  }
+  /**
+   * D5-L-2: billing was never configured, so no subscription can exist —
+   * pause/resume are honest no-ops.
+   */
+  async pauseSubscription(): Promise<{ paused: string[] }> {
+    return { paused: [] };
+  }
+  async resumeSubscription(): Promise<{ resumed: string[] }> {
+    return { resumed: [] };
   }
 }
 

@@ -242,6 +242,12 @@ export interface ReserveOpts {
   meta?: Record<string, unknown>;
   /** Test/override hook: bypass the plan table for the limit value. */
   limitOverride?: number;
+  /**
+   * D1-M-4: reservation TTL in minutes. Defaults to 15 (the column default).
+   * Long-running work (e.g. large crawls) should scale this with the reserved
+   * units so the hold doesn't expire mid-work and get double-reserved.
+   */
+  ttlMinutes?: number;
 }
 
 export interface Reservation {
@@ -281,6 +287,10 @@ export async function reserveUsage(
   if (!Number.isFinite(take) || take < 1) {
     throw new ApiError(400, 'VALIDATION_ERROR', `units must be a positive integer (got ${units})`);
   }
+  // D1-M-4: TTL for the reservation hold. Callers doing long-running work
+  // pass ttlMinutes scaled to the job size; default 15 preserves the old
+  // column-default behavior for everything else.
+  const ttlMins = Math.max(1, Math.min(1440, Math.round(opts.ttlMinutes ?? 15)));
   const limit = opts.limitOverride ?? limitForKind(planId, kind);
   const client = await pool.connect();
   try {
@@ -333,9 +343,9 @@ export async function reserveUsage(
         throw limitExceededError(used, limit, kind, take);
       }
       const ins = await client.query(
-        `INSERT INTO usage_reservations (id, tenant_id, event_type, units, status, site_id, meta)
-         VALUES (gen_random_uuid(), $1, $2, $3, 'reserved', $4, $5) RETURNING id`,
-        [tenantId, event ?? kind, take, opts.siteId ?? null, opts.meta ? JSON.stringify(opts.meta) : null],
+        `INSERT INTO usage_reservations (id, tenant_id, event_type, units, status, site_id, meta, expires_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, 'reserved', $4, $5, now() + make_interval(mins => $6)) RETURNING id`,
+        [tenantId, event ?? kind, take, opts.siteId ?? null, opts.meta ? JSON.stringify(opts.meta) : null, ttlMins],
       );
       await client.query('COMMIT');
       const reservationId = ins.rows[0].id as string;

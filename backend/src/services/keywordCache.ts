@@ -1,6 +1,6 @@
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
-import { recordProviderSpend, withUsageReservation } from '../metering.js';
-import { assertGlobalProviderBudget } from './providerGuard.js';
+import { withUsageReservation } from '../metering.js';
+import { reserveGlobalProviderBudget, commitGlobalProviderSpend, releaseGlobalProviderSpend, priceProviderUnits } from './providerGuard.js';
 import type { KeywordMetric, SerpResult, KeywordSerpProvider } from '../providers/types.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -37,10 +37,24 @@ export async function getKeywordMetrics(
     // assertDataBudget + recordUsage pair was check-then-act: concurrent
     // callers could overspend the real DataForSEO budget.
     await withUsageReservation(tenantId, 'keyword_metrics', missing.length, async () => {
-      await assertGlobalProviderBudget(q); // W-01: global daily circuit
+      // D5-L-3: atomic reserve → billable call → commit/release. The old
+      // assertGlobalProviderBudget + recordProviderSpend pair was
+      // check-then-act across tenants: concurrent callers could all pass
+      // the check and overshoot the global daily cap.
+      const g = await reserveGlobalProviderBudget(tenantId, 'dataforseo', 'keyword_metrics', missing.length, q);
       const provider = providerOverride ?? getKeywordSerpProvider();
-      const fresh = await provider.keywordMetrics(missing, locationCode);
-      if (!provider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'keyword_metrics', missing.length, 0, q);
+      let fresh;
+      try {
+        fresh = await provider.keywordMetrics(missing, locationCode);
+      } catch (e) {
+        await releaseGlobalProviderSpend(g.reservationId, q);
+        throw e;
+      }
+      if (!provider.isMock) {
+        await commitGlobalProviderSpend(g.reservationId, missing.length, priceProviderUnits('dataforseo', 'keyword_metrics', missing.length), q);
+      } else {
+        await releaseGlobalProviderSpend(g.reservationId, q);
+      }
       for (const m of fresh) {
         hit.set(m.keyword.toLowerCase(), { keyword: m.keyword, volume: m.volume, difficulty: m.difficulty, source: provider.name });
         await q(
@@ -79,11 +93,22 @@ export async function getSerp(
     return { position: row.position, url: row.url, features: row.serp_features ?? [] };
   }
   // A1-M1: atomic reserve → billable call → commit(actual) (see above).
+  // D5-L-3: the global circuit is reserve → call → commit/release too.
   const fresh = await withUsageReservation(tenantId, 'serp_checks', 1, async () => {
-    await assertGlobalProviderBudget(q); // W-01: global daily circuit
+    const g = await reserveGlobalProviderBudget(tenantId, 'dataforseo', 'serp', 1, q);
     const serpProvider = providerOverride ?? getKeywordSerpProvider();
-    const serp = await serpProvider.serp(keyword, domain, locationCode);
-    if (!serpProvider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'serp', 1, 0, q);
+    let serp;
+    try {
+      serp = await serpProvider.serp(keyword, domain, locationCode);
+    } catch (e) {
+      await releaseGlobalProviderSpend(g.reservationId, q);
+      throw e;
+    }
+    if (!serpProvider.isMock) {
+      await commitGlobalProviderSpend(g.reservationId, 1, priceProviderUnits('dataforseo', 'serp', 1), q);
+    } else {
+      await releaseGlobalProviderSpend(g.reservationId, q);
+    }
     await q(
       `INSERT INTO serp_cache (cache_key, position, url, serp_features, fetched_at, source_provider)
        VALUES ($1, $2, $3, $4, now(), $5)

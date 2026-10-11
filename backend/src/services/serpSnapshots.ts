@@ -9,8 +9,8 @@
 // - 7-day TTL. "Not in top 100" = own domain absent from the 100 items.
 
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
-import { recordProviderSpend, withUsageReservation } from '../metering.js';
-import { assertGlobalProviderBudget } from './providerGuard.js';
+import { withUsageReservation } from '../metering.js';
+import { reserveGlobalProviderBudget, commitGlobalProviderSpend, releaseGlobalProviderSpend, priceProviderUnits } from './providerGuard.js';
 import type { SerpItem, SerpSnapshotResult, KeywordSerpProvider } from '../providers/types.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -116,12 +116,12 @@ async function fetchFreshSnapshot(
 ): Promise<SerpSnapshotResult> {
   if (provider.serpFull) {
     const full = await provider.serpFull(keyword, domain, locationCode, device);
-    if (!provider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'serp_snapshot', 1, 0);
+    // D5-L-3: spend is recorded by the caller's global reservation — do NOT
+    // record here (would double-count).
     return full;
   }
   // Fallback for providers without serpFull: synthesize a 1-item snapshot.
   const s = await provider.serp(keyword, domain, locationCode);
-  if (!provider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'serp_snapshot', 1, 0);
   const items: SerpItem[] = s.position
     ? [{ position: s.position, url: s.url ?? '', domain, title: null, itemType: 'organic' }]
     : [];
@@ -189,9 +189,21 @@ export async function getSerpSnapshot(
     // A1-M1: atomic reserve → billable call → commit(actual). The old
     // assertDataBudget + recordUsage pair was check-then-act.
     const snap = await withUsageReservation(tenantId, 'serp_checks', 1, async () => {
-      await assertGlobalProviderBudget(q); // W-01: global daily circuit
+      // D5-L-3: atomic global reserve → call → commit/release.
+      const g = await reserveGlobalProviderBudget(tenantId, 'dataforseo', 'serp_snapshot', 1, q);
       const provider = providerOverride ?? getKeywordSerpProvider();
-      const fresh = await fetchFreshSnapshot(tenantId, keyword, domain, locationCode, device, provider);
+      let fresh;
+      try {
+        fresh = await fetchFreshSnapshot(tenantId, keyword, domain, locationCode, device, provider);
+      } catch (e) {
+        await releaseGlobalProviderSpend(g.reservationId, q);
+        throw e;
+      }
+      if (!provider.isMock) {
+        await commitGlobalProviderSpend(g.reservationId, 1, priceProviderUnits('dataforseo', 'serp_snapshot', 1), q);
+      } else {
+        await releaseGlobalProviderSpend(g.reservationId, q);
+      }
       const ins = await q(
         `INSERT INTO serp_snapshots (id, cache_key, keyword, location_code, device, language, fetched_at, items, features, source_provider)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), $6, $7, $8)
