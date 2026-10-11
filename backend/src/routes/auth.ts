@@ -233,7 +233,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
   // S-01: consume an email-verification token (signup or email change).
   fastify.post('/auth/email/verify', { schema: verifyEmailSchema, ...strictRateLimit }, async (req) => {
     const { token } = req.body as { token?: string };
-    if (!token) throw badRequest('Verification token is required');
+    if (!token) throw validationError('Verification token is required');
     const consumed = await consumeVerificationToken(token);
     if (!consumed) throw new ApiError(400, 'INVALID_TOKEN', 'This verification link is invalid or has expired');
     if (consumed.purpose === 'email_change') {

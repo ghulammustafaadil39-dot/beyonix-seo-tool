@@ -1,9 +1,7 @@
 /**
  * Self-test for the malicious-site fixture (tests/fixtures/malicious-site/).
  * Proves every attack route is armed correctly. Uses plain fetch — NOT
- * safeFetch (which blocks loopback by design; see the fixture's TESTABILITY
- * GAP note). Wave 3 crawler tests will consume these routes once S-02
- * provides a test hook for loopback fetching.
+ * safeFetch — except for the S-02 bypass test below.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Server } from 'node:http';
@@ -13,7 +11,7 @@ import {
   FIXTURE_PORT,
   MALICIOUS_HTML,
 } from './fixtures/malicious-site/server.js';
-import { safeFetch } from '../src/services/safeFetch.js';
+import { safeFetch, isLoopbackBypassActive } from '../src/services/safeFetch.js';
 
 const base = `http://127.0.0.1:${FIXTURE_PORT}`;
 let server: Server;
@@ -91,8 +89,17 @@ describe('malicious-site fixture', () => {
     expect(html).toContain('<h1>Control page</h1>');
   });
 
-  it('safeFetch still refuses loopback outright (current SSRF contract)', async () => {
-    await expect(safeFetch(`${base}/ok`)).rejects.toThrow(/SSRF blocked/);
+  it('safeFetch test-only loopback bypass is active in test env, refused elsewhere (S-02)', async () => {
+    // The bypass exists so the crawler can be tested against this local
+    // fixture. It must be impossible to activate outside NODE_ENV=test.
+    expect(isLoopbackBypassActive('test')).toBe(true);
+    expect(isLoopbackBypassActive('production')).toBe(false);
+    expect(isLoopbackBypassActive('development')).toBe(false);
+    expect(isLoopbackBypassActive('')).toBe(false);
+    // In this test env the bypass is active, so the fixture IS fetchable.
+    const res = await safeFetch(`${base}/ok`);
+    expect(res.status).toBe(200);
+    await res.arrayBuffer();
   });
 
   it('raw HTML fixtures exist for direct analyzePage tests', () => {
