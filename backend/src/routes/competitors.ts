@@ -39,6 +39,28 @@ async function listCompetitorDomains(tenantId: string, siteId: string): Promise<
   return r.rows.map((row: { domain: string }) => row.domain);
 }
 
+interface SnapshotItem {
+  position: number;
+  domain: string;
+}
+
+/**
+ * C1-M-8: batch-fetch snapshot items for many keywords in ONE query.
+ * The old code issued one `SELECT items FROM serp_snapshots WHERE id = $1`
+ * per keyword (N+1) — a 1,000-keyword site fired ~1,000 sequential DB
+ * round-trips and could time out behind the route budget.
+ */
+async function snapshotItemsById(snapshotIds: Array<string | null>): Promise<Map<string, SnapshotItem[]>> {
+  const uniq = [...new Set(snapshotIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  const out = new Map<string, SnapshotItem[]>();
+  if (uniq.length === 0) return out;
+  const r = await query(`SELECT id, items FROM serp_snapshots WHERE id = ANY($1)`, [uniq]);
+  for (const row of r.rows as Array<{ id: string; items: unknown }>) {
+    out.set(row.id, Array.isArray(row.items) ? (row.items as SnapshotItem[]) : []);
+  }
+  return out;
+}
+
 export async function registerCompetitorRoutes(fastify: FastifyInstance) {
   // Encapsulated child: the auth hook below must cover only this
   // file's routes. Calling fastify.register(authPlugin) directly on the
@@ -143,13 +165,10 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
         visTotals[domain] = t;
       };
 
+      // C1-M-8: one batched snapshot fetch for all keywords (was N+1).
+      const snapshots = await snapshotItemsById(rows.map((r) => r.snapshot_id));
       for (const row of rows) {
-        let items: Array<{ position: number; domain: string }> = [];
-        if (row.snapshot_id) {
-          const sr = await query(`SELECT items FROM serp_snapshots WHERE id = $1`, [row.snapshot_id]);
-          const parsed = sr.rows[0]?.items as Array<{ position: number; domain: string }> | undefined;
-          if (Array.isArray(parsed)) items = parsed;
-        }
+        const items = row.snapshot_id ? (snapshots.get(row.snapshot_id) ?? []) : [];
         const compPos = competitorPositions(items, compDomains);
         keywordRows.push({
           keyword: row.keyword, volume: row.volume, sitePosition: row.position, competitors: compPos,
@@ -202,11 +221,12 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
         keyword: string; volume: number | null; sitePosition: number | null;
         competitor: string; competitorPosition: number;
       }> = [];
+      // C1-M-8: one batched snapshot fetch for all keywords (was N+1).
+      const snapshots = await snapshotItemsById(rows.map((r) => r.snapshot_id));
       for (const row of rows) {
         if (!row.snapshot_id) continue;
-        const sr = await query(`SELECT items FROM serp_snapshots WHERE id = $1`, [row.snapshot_id]);
-        const items = sr.rows[0]?.items as Array<{ position: number; domain: string }> | undefined;
-        if (!Array.isArray(items)) continue;
+        const items = snapshots.get(row.snapshot_id);
+        if (!items) continue;
         const compPos = competitorPositions(items, compDomains);
         for (const d of compDomains) {
           const cp = compPos[d];
@@ -260,11 +280,12 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
       );
 
       const gaps: Array<{ keyword: string; volume: number | null; competitor: string; competitorPosition: number; suggestion: string }> = [];
+      // C1-M-8: one batched snapshot fetch for all keywords (was N+1).
+      const snapshots = await snapshotItemsById(rows.map((r) => r.snapshot_id));
       for (const row of rows) {
         if (covered.has(row.keyword_id) || !row.snapshot_id) continue;
-        const sr = await query(`SELECT items FROM serp_snapshots WHERE id = $1`, [row.snapshot_id]);
-        const items = sr.rows[0]?.items as Array<{ position: number; domain: string }> | undefined;
-        if (!Array.isArray(items)) continue;
+        const items = snapshots.get(row.snapshot_id);
+        if (!items) continue;
         const compPos = competitorPositions(items, compDomains);
         for (const d of compDomains) {
           const cp = compPos[d];

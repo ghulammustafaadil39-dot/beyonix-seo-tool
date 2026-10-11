@@ -2,6 +2,7 @@ import { ApiError } from './errors.js';
 import { getPlan, isPlanId, type PlanId } from './plans.js';
 import type { QueryFn } from './db.js';
 import { pool, query as defaultQuery } from './db.js';
+import { priceProviderUnits } from './services/providerGuard.js';
 
 export type UsageEventType = 'ai_words' | 'serp_check' | 'keyword_metric' | 'geo_check' | 'crawl_page';
 
@@ -132,12 +133,37 @@ export async function checkLimit(
     case 'sites':
       // A1-M3/A2-M2: soft-deleted sites must not burn the plan slot —
       // every other count path (listings, downgrade logic) uses deleted_at IS NULL.
-      used = Number((await q('SELECT COUNT(*)::int c FROM sites WHERE tenant_id=$1 AND deleted_at IS NULL', [tenantId])).rows[0].c);
+      // C5-L-5: count unexpired 'reserved' holds too, exactly like reserveUsage
+      // does — otherwise this pre-flight disagrees with the atomic path by
+      // the in-flight hold amount.
+      used = Number(
+        (
+          await q(
+            `SELECT (COUNT(*)::int + COALESCE(
+               (SELECT SUM(units)::int FROM usage_reservations
+                WHERE tenant_id = $1 AND event_type = 'sites'
+                  AND status = 'reserved' AND expires_at > now()), 0)) AS c
+             FROM sites WHERE tenant_id = $1 AND deleted_at IS NULL`,
+            [tenantId],
+          )
+        ).rows[0].c,
+      );
       break;
     case 'keywords_tracked':
       used = Number(
         // A1-M3: keywords on soft-deleted sites must not burn quota either.
-        (await q('SELECT COUNT(*)::int c FROM keywords k WHERE k.tenant_id=$1 AND k.tracked=TRUE AND NOT EXISTS (SELECT 1 FROM sites s WHERE s.id = k.site_id AND s.deleted_at IS NOT NULL)', [tenantId])).rows[0].c,
+        // C5-L-5: same reservation-hold accounting as 'sites' above.
+        (
+          await q(
+            `SELECT (COUNT(*)::int + COALESCE(
+               (SELECT SUM(units)::int FROM usage_reservations
+                WHERE tenant_id = $1 AND event_type = 'keywords_tracked'
+                  AND status = 'reserved' AND expires_at > now()), 0)) AS c
+             FROM keywords k WHERE k.tenant_id = $1 AND k.tracked = TRUE
+               AND NOT EXISTS (SELECT 1 FROM sites s WHERE s.id = k.site_id AND s.deleted_at IS NOT NULL)`,
+            [tenantId],
+          )
+        ).rows[0].c,
       );
       break;
     default: {
@@ -332,7 +358,7 @@ export async function reserveUsage(
   }
 }
 
-/** Finalizes a reservation with the actual units consumed (<= reserved). */
+/** Finalizes a reservation with the actual units consumed (clamped to the reserved amount). */
 export async function commitUsage(
   reservationId: string,
   actualUnits?: number,
@@ -353,10 +379,22 @@ export async function commitUsage(
   // a crash between them lost the spend evidence while the reservation
   // was already committed. A single statement is atomic even when the
   // caller passes a non-transactional QueryFn.
+  //
+  // C1-M-4 / C5-M-4: the commit is clamped to the reserved amount —
+  // LEAST(COALESCE($2, units), units) reads the CURRENT (reserved) row
+  // value on the right-hand side, so a caller reporting actualUnits >
+  // reserved can never overshoot the atomic guarantee of reserveUsage.
+  //
+  // C2-L5: an EXPIRED reservation can no longer be committed — the hold was
+  // already freed from getUsage's accounting (expired holds don't count),
+  // so committing it would re-add budget and let concurrent callers
+  // collectively overshoot. The caller must re-reserve (or recordUsage
+  // directly) instead.
   const r = await q(
     `WITH u AS (
-       UPDATE usage_reservations SET status = 'committed', units = COALESCE($2, units)
-       WHERE id = $1 AND status = 'reserved'
+       UPDATE usage_reservations
+       SET status = 'committed', units = LEAST(COALESCE($2, units), units)
+       WHERE id = $1 AND status = 'reserved' AND expires_at > now()
        RETURNING tenant_id, site_id, event_type, units, meta
      ),
      i AS (
@@ -372,8 +410,22 @@ export async function commitUsage(
      SELECT count(*)::int AS committed FROM u`,
     [reservationId, units ?? null],
   );
-  if (Number(r.rows[0]?.committed ?? 0) === 0)
+  if (Number(r.rows[0]?.committed ?? 0) === 0) {
+    // Distinguish "expired" from "missing/already finalized" so callers and
+    // operators get an honest error instead of a misleading 404.
+    const st = await q(
+      `SELECT expires_at <= now() AS expired FROM usage_reservations WHERE id = $1`,
+      [reservationId],
+    );
+    if (st.rows.length > 0 && st.rows[0].expired === true) {
+      throw new ApiError(
+        410,
+        'RESERVATION_EXPIRED',
+        'Usage reservation expired before commit; the budget hold was already released.',
+      );
+    }
     throw new ApiError(404, 'NOT_FOUND', 'Reservation not found or already finalized');
+  }
 }
 
 /** Releases a reservation without consuming budget. */
@@ -487,10 +539,16 @@ export async function recordProviderSpend(
   costCents: number,
   q: QueryFn = defaultQuery,
 ): Promise<void> {
+  const u = Math.max(0, Math.round(units));
+  // C5-M-3: callers record unpriced units (costCents = 0). Apply the default
+  // per-feature unit price so the GLOBAL_PROVIDER_DAILY_CAP_CENTS circuit
+  // can actually trip. An explicit caller-supplied costCents > 0 always wins.
+  let cents = Math.max(0, Math.round(costCents));
+  if (cents === 0 && u > 0) cents = priceProviderUnits(provider, feature, u);
   await q(
     `INSERT INTO provider_spend (id, tenant_id, provider, feature, units, cost_cents)
      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)`,
-    [tenantId, provider, feature, Math.max(0, Math.round(units)), Math.max(0, Math.round(costCents))],
+    [tenantId, provider, feature, u, cents],
   );
 }
 

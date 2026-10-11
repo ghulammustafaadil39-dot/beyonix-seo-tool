@@ -15,13 +15,14 @@
 //   issues are carried over as still-open
 
 import type { Job } from 'bullmq';
+import { UnrecoverableError } from 'bullmq';
 import { query, type QueryFn } from '../db.js';
 import { getPlan } from '../plans.js';
-import { recordUsage } from '../metering.js';
+import { recordUsage, reserveUsage, commitUsage, cancelUsage } from '../metering.js';
+import { ApiError } from '../errors.js';
 import { getNotify } from '../providers/notify.js';
 import { crawlSite, type AnalyzedPage, type CrawlState } from './crawler.js';
 import { runRules, scoreFor, type IssueDraft, type RuleCtx } from './auditRules.js';
-import { checkLimit } from '../metering.js';
 import { isPlanId, type PlanId } from '../plans.js';
 import { getPageSpeedMetrics } from './pagespeed.js';
 import { requireSite, siteUrl } from './sites.js';
@@ -316,7 +317,24 @@ async function runCrawlSite(data: CrawlJobData, q: QueryFn = query): Promise<unk
 
   let auditId = data.auditId ?? null;
   if (auditId) {
-    await q(`UPDATE audits SET status = 'running' WHERE id = $1 AND tenant_id = $2`, [auditId, tenantId]);
+    // C2-M-1: claim the row CONDITIONALLY. The stuck-audit reaper marks
+    // 'queued' rows older than 2h as 'failed'; a still-pending (deferred)
+    // BullMQ job for the same audit must NOT resurrect it to 'running' —
+    // that let a zombie audit run concurrently with a user-started
+    // replacement (the partial unique index no longer blocked the site):
+    // double crawl work, double crawl_pages budget burn, duplicate issues.
+    // 0 rows claimed => the audit is gone/reaped/superseded: drop the job
+    // (UnrecoverableError — no retry, no resurrection).
+    const claimed = await q(
+      `UPDATE audits SET status = 'running', started_at = COALESCE(started_at, now())
+       WHERE id = $1 AND tenant_id = $2 AND status = 'queued'`,
+      [auditId, tenantId],
+    );
+    if ((claimed.rowCount ?? 0) === 0) {
+      throw new UnrecoverableError(
+        `crawl: audit ${auditId} is no longer queued (reaped, failed, or superseded) — dropping job`,
+      );
+    }
   } else {
     const ins = await q(
       `INSERT INTO audits (id, tenant_id, site_id, status, started_at)
@@ -326,16 +344,31 @@ async function runCrawlSite(data: CrawlJobData, q: QueryFn = query): Promise<unk
     auditId = ins.rows[0].id as string;
   }
 
+  // C1-M-5: the crawl_pages reservation lives for the whole crawl attempt;
+  // declared outside the try so the catch can release the hold on failure.
+  let crawlReservation: string | null = null;
   try {
     const plan = getPlan(tenant.plan_id);
     const planId: PlanId = isPlanId(tenant.plan_id) ? tenant.plan_id : 'starter';
-    // Monthly crawl-page budget guard at the point of spend (route did a
-    // pre-flight; this is what actually protects us from overshoot).
-    const crawlLim = await checkLimit(tenantId, planId, 'crawl_pages', q);
-    if (crawlLim.used + plan.crawl_pages > crawlLim.limit) {
-      await q(`UPDATE audits SET status = 'failed', finished_at = now(), error = $3
-               WHERE id = $1 AND tenant_id = $2`, [auditId, tenantId, 'Monthly crawl budget reached. Upgrade to continue.']);
-      return { skipped: true, reason: 'crawl_pages_limit' };
+    // Reserve the crawl_pages budget atomically at the point of spend. The
+    // old checkLimit pre-flight (route) + runtime checkLimit here were
+    // check-then-act at BOTH layers: N concurrent audits each saw used <
+    // limit and each crawled up to plan.crawl_pages, overshooting the
+    // monthly budget N×; a crash after the crawl but before recordUsage also
+    // lost the spend evidence permanently.
+    try {
+      const rsv = await reserveUsage(tenantId, planId, 'crawl_pages', plan.crawl_pages, { siteId });
+      crawlReservation = rsv.reservationId;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 402 && err.code === 'LIMIT_EXCEEDED') {
+        await q(
+          `UPDATE audits SET status = 'failed', finished_at = now(), error = $3
+           WHERE id = $1 AND tenant_id = $2`,
+          [auditId, tenantId, 'Monthly crawl budget reached. Upgrade to continue.'],
+        );
+        return { skipped: true, reason: 'crawl_pages_limit' };
+      }
+      throw err;
     }
 
     // Crawl resume: a retried job picks up where the previous attempt stopped.
@@ -422,7 +455,23 @@ async function runCrawlSite(data: CrawlJobData, q: QueryFn = query): Promise<unk
        WHERE id = $1 AND tenant_id = $2`,
       [auditId, tenantId, score, issues.length + carried, pages.length],
     );
-    await recordUsage(tenantId, 'crawl_page', freshPages.length, siteId, undefined, q);
+    // C1-M-5: commit the ACTUAL fresh-page count against the reservation
+    // (304-reused pages cost no crawl budget — only fresh fetches do).
+    // commitUsage clamps to the reserved amount. If the crawl outlasted the
+    // 15-minute reservation TTL, the commit is rejected as expired — fall back
+    // to recordUsage so the spend evidence is never lost.
+    if (crawlReservation) {
+      try {
+        await commitUsage(crawlReservation, freshPages.length, q);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'RESERVATION_EXPIRED') {
+          await recordUsage(tenantId, 'crawl_page', freshPages.length, siteId, undefined, q);
+        } else {
+          throw err;
+        }
+      }
+      crawlReservation = null;
+    }
 
     // F-02: diff vs previous audit + regression alert on new errors.
     let diff: { newIssues: number; resolvedIssues: number; newErrors: number } | null = null;
@@ -469,6 +518,9 @@ async function runCrawlSite(data: CrawlJobData, q: QueryFn = query): Promise<unk
       diff,
     };
   } catch (err) {
+    // C1-M-5: a failed crawl must release its budget hold, not leave it
+    // reserved until the 15-minute expiry.
+    if (crawlReservation) await cancelUsage(crawlReservation, q).catch(() => {});
     await markFailed(q, tenantId, auditId, err);
     throw err;
   }
@@ -481,10 +533,28 @@ async function runLightCheck(data: CrawlJobData, q: QueryFn = query): Promise<un
   const site = await requireSite(tenantId, siteId, q);
   const tenant = await loadTenant(q, tenantId);
 
+  // C1-M-5: the 1-page light check reserves its single crawl_pages unit
+  // instead of bare recordUsage-after-the-fact. Over-limit => skip honestly
+  // (no audit row exists yet, so there is nothing to mark failed).
+  let lightReservation: string | null = null;
+  try {
+    const rsv = await reserveUsage(tenantId, isPlanId(tenant.plan_id) ? tenant.plan_id : 'starter', 'crawl_pages', 1, { siteId });
+    lightReservation = rsv.reservationId;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 402) {
+      return { skipped: true, reason: 'crawl_pages_limit' };
+    }
+    throw err;
+  }
+
   const { pages, brokenLinks, robotsFound, sitemapFound, sitemapUrls, redirectChains } = await crawlSite(
     siteUrl(site.domain),
     { maxPages: 1 },
-  );
+  ).catch((err) => {
+    // C1-M-5: release the budget hold when the crawl itself fails.
+    if (lightReservation) void cancelUsage(lightReservation, q).catch(() => {});
+    throw err;
+  });
   const ctx = buildCtx(pages, robotsFound, sitemapFound, sitemapUrls, redirectChains);
   const issues = runRules(pages, brokenLinks, ctx);
   const score = scoreFor(issues);
@@ -497,7 +567,22 @@ async function runLightCheck(data: CrawlJobData, q: QueryFn = query): Promise<un
   const auditId = ins.rows[0].id as string;
   await insertIssues(q, tenantId, auditId, siteId, issues, ctx.inlinks ?? new Map(), ctx.homepageUrl);
   await insertPages(q, tenantId, auditId, siteId, pages, ctx.inlinks ?? new Map());
-  await recordUsage(tenantId, 'crawl_page', pages.length, siteId, undefined, q);
+  // C1-M-5: commit the actual page count (0 or 1) against the reservation.
+  if (lightReservation) {
+    try {
+      await commitUsage(lightReservation, pages.length, q);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'RESERVATION_EXPIRED') {
+        // Reservation outlived (shouldn't happen on a 1-page check, but be
+        // honest): fall back to recordUsage so the spend evidence is not lost.
+        await recordUsage(tenantId, 'crawl_page', pages.length, siteId, undefined, q);
+      } else {
+        await cancelUsage(lightReservation, q).catch(() => {});
+        throw err;
+      }
+    }
+    lightReservation = null;
+  }
 
   const errors = issues.filter((i) => i.severity === 'error');
   const prev = await q(
