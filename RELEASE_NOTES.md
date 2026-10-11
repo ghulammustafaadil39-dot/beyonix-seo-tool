@@ -195,8 +195,16 @@ public API. Monthly/annual billing via Stripe.
 - Pass #7 (5 auditors): 1 HIGH (CVE-2026-23869 in next@14 — remediated via
   Next 15.5.15 upgrade) + 3 medium (account-security UI gap, checkout
   `incomplete` clobber, invoice.paid recovery) + 5 lows → all fixed.
-- Pass #8 (next): the first of the two consecutive clean passes required
-  before delivery (zero new medium-or-higher findings).
+- Pass #8 (5 auditors): NOT clean — 1 new HIGH (the pass#7 fail-closed
+  write was order-unsafe: a status-less `checkout.session.completed` could
+  clobber a live `active` row and poison the ordering watermark — fixed via
+  a CASE-guarded status write + watermark exemption) + 5 new LOWs
+  (duplicate dunning emails, refund-delta concurrency race, email-dedupe
+  TOCTOU duplicate, signup password-hint mismatch, download-URL encoding)
+  → all fixed + 7 new regression tests.
+- Pass #9 (5 auditors, in progress): the next clean-pass attempt — two
+  consecutive clean passes (zero new medium-or-higher findings) are
+  required before the Final Gate.
 
 ---
 
@@ -204,7 +212,7 @@ public API. Monthly/annual billing via Stripe.
 
 | Check | Last verified figure | Source |
 |---|---|---|
-| Backend test suite | **689 passed / 9 skipped / 0 failed** (81 files) | main, post pass-#1 merge, 2026-10-11 ~19:20 PKT |
+| Backend test suite | **819 passed / 9 skipped / 0 failed** (92 files) | main, post pass-#8 fixes, 2026-10-11 |
 | Wave-3 gate (definitive post-rebase) | 646 passed / 9 skipped / 0 failed (72 files) | LA, 2026-10-11 ~17:45 PKT |
 | Wave-2 gate | 577 passed / 9 skipped / 0 failed (59 files) | LA, 2026-10-11 ~12:15 PKT |
 | Wave-1 gate | 307 passed / 9 skipped / 0 failed | LA, 2026-10-11 ~02:00 PKT |
@@ -243,6 +251,13 @@ honest load proof (10 tenants, 18 jobs/s, fairness measured), chaos DLQ
    `040`–`043`. Harmless (the ledger skips by name), noted for honesty.
 8. **`compose.prod.yml` was not boot-tested** (see #1); same-origin proxy /
    TLS config is file-reviewed only.
+9. **Crawl-reservation `ttlMinutes` remedy is dead code (D1-M-4):** the
+   reservation-expiry hook has zero callers, so a crashed crawl worker's
+   reservation is never proactively reaped. Bounded impact: at most one
+   extra `plan.crawl_pages` reservation, and only with concurrent crawls
+   running past the 30-minute TTL; the global provider-spend circuit
+   breaker backstops real money. Documented, not fixed — the audit loop
+   froze the tree for verification.
 
 ---
 
