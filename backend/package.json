@@ -3,6 +3,7 @@
     "@fastify/cookie": "^10.0.1",
     "@fastify/cors": "^10.0.1",
     "@fastify/rate-limit": "^10.1.1",
+    "@types/pdfkit": "^0.17.6",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.12.0",
     "cheerio": "^1.0.0",
@@ -14,6 +15,7 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^6.10.0",
     "otplib": "^13.5.0",
+    "pdfkit": "^0.20.2",
     "pg": "^8.13.1",
     "stripe": "^17.5.0",
     "undici": "7.30.0"
