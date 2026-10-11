@@ -27,12 +27,38 @@ export interface SerpResult {
   url: string | null;
   features: string[];
 }
+/** One result item of a full SERP snapshot (C-05). */
+export interface SerpItem {
+  /** 1-based absolute rank (DataForSEO rank_absolute — pixel-rank approximation) */
+  position: number;
+  url: string;
+  domain: string;
+  title: string | null;
+  /** DataForSEO item type: organic, ai_overview, featured_snippet, local_pack, ... */
+  itemType: string;
+}
+export interface SerpSnapshotResult {
+  items: SerpItem[];
+  /** page-level SERP features present */
+  features: string[];
+}
 export interface KeywordSerpProvider {
   name: string;
   isMock: boolean;
   /** locationCode = DataForSEO location_code (default 2840 = United States). */
   keywordMetrics(keywords: string[], locationCode?: number): Promise<KeywordMetric[]>;
   serp(keyword: string, domain: string, locationCode?: number): Promise<SerpResult>;
+  /**
+   * C-05: full top-100 SERP snapshot (optional — backwards compatible).
+   * Implementations that cannot fetch a full page may omit this; callers
+   * fall back to `serp()`.
+   */
+  serpFull?(keyword: string, domain: string, locationCode?: number, device?: string): Promise<SerpSnapshotResult>;
+  /**
+   * F-03/F-07: keywords a competitor domain ranks for (optional).
+   * Real: DataForSEO Labs ranked_keywords. Mock: deterministic fake list.
+   */
+  competitorKeywords?(competitorDomain: string, locationCode?: number): Promise<Array<{ keyword: string; position: number; url: string }>>;
 }
 
 // ---------- Payments ----------
