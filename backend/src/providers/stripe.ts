@@ -576,23 +576,51 @@ export async function applyPaymentEvent(
       // AND active predicate (C5-L-3) stops coupons deactivated mid-flight
       // from redeeming (the Stripe-side discount attached at session
       // creation cannot be revoked locally — documented limitation).
-      const red = await q(
-        `UPDATE billing_coupons
-         SET redeemed_count = redeemed_count + 1,
-             reserved_count = GREATEST(reserved_count - 1, 0)
-         WHERE code = $1 AND active
-           AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`,
-        [couponCode.toUpperCase()],
-      );
-      if ((red.rowCount ?? 0) === 0) {
-        console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted, inactive, or unknown at completion`);
-        // D5-L-1: the reserved hold must be released even when the redeem
-        // predicate fails (e.g. admin deactivated the coupon mid-flight) —
-        // otherwise the slot leaks against max_redemptions forever.
-        await q(
-          `UPDATE billing_coupons SET reserved_count = GREATEST(reserved_count - 1, 0) WHERE code = $1`,
-          [couponCode.toUpperCase()],
+      // F1-L-2: make the redeem idempotent on the webhook event id. The
+      // E4-M-2 fix reprocesses crashed events (ledger row exists but
+      // processed_at IS NULL); the coupon increment is the one
+      // non-idempotent handler path (the subscription upsert above is
+      // ON CONFLICT-idempotent), so a crash between the increment and
+      // markProcessed used to double-count redeemed_count and
+      // double-release the reserved slot. The guard insert is atomic
+      // (ON CONFLICT DO NOTHING on coupon_redemptions.event_id): the first
+      // attempt records the event id and redeems; a crash-retry (or a
+      // concurrent duplicate delivery) sees the conflict and skips.
+      // Accepted residual trade-off: a crash BETWEEN the guard insert and
+      // the UPDATE below leaks one reserved slot instead of
+      // double-counting — a far narrower window than the reprocess one,
+      // and the same class of leak the D5-L-1 release path already
+      // handles. Without an eventId (direct callers) there is no guard —
+      // behavior unchanged.
+      const upperCoupon = couponCode.toUpperCase();
+      let redeemSkipped = false;
+      if (eventId) {
+        const guard = await q(
+          `INSERT INTO coupon_redemptions (event_id, tenant_id, coupon_code)
+           VALUES ($1, $2, $3) ON CONFLICT (event_id) DO NOTHING`,
+          [eventId, tenantId, upperCoupon],
         );
+        redeemSkipped = (guard.rowCount ?? 0) === 0;
+      }
+      if (!redeemSkipped) {
+        const red = await q(
+          `UPDATE billing_coupons
+           SET redeemed_count = redeemed_count + 1,
+               reserved_count = GREATEST(reserved_count - 1, 0)
+           WHERE code = $1 AND active
+             AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`,
+          [upperCoupon],
+        );
+        if ((red.rowCount ?? 0) === 0) {
+          console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted, inactive, or unknown at completion`);
+          // D5-L-1: the reserved hold must be released even when the redeem
+          // predicate fails (e.g. admin deactivated the coupon mid-flight) —
+          // otherwise the slot leaks against max_redemptions forever.
+          await q(
+            `UPDATE billing_coupons SET reserved_count = GREATEST(reserved_count - 1, 0) WHERE code = $1`,
+            [upperCoupon],
+          );
+        }
       }
     }
     const { emitBillingEvent } = await import('../services/billing.js');
