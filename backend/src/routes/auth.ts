@@ -15,7 +15,14 @@ import { getGoogle } from '../providers/google.js';
 import { getCaptcha, isCaptchaRequired } from '../providers/captcha.js';
 import { getRedis } from '../redis.js';
 import { getPlan } from '../plans.js';
-import { consumeSigninState, createSigninState } from '../services/oauthState.js';
+import {
+  OAUTH_STATE_COOKIE,
+  clearOAuthStateCookie,
+  consumeSigninState,
+  createSigninState,
+  setOAuthStateCookie,
+  verifyOAuthStates,
+} from '../services/oauthState.js';
 import { isDisposableEmail } from '../services/disposableEmail.js';
 import {
   clearLoginAttempts,
@@ -342,17 +349,28 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     return { ok: true };
   });
 
-  fastify.get('/auth/google', async (_req, reply) => {
-    const state = createSigninState();
-    return reply.redirect(getGoogle().getAuthUrl(state));
+  fastify.get('/auth/google', async (req, reply) => {
+    // S-04: state lives in Redis (shared across instances), is bound to this
+    // browser via a signed httpOnly cookie, and carries a PKCE verifier.
+    const { state, codeChallenge } = await createSigninState();
+    setOAuthStateCookie(reply, state, req);
+    return reply.redirect(getGoogle().getAuthUrl(state, { codeChallenge }));
   });
 
   fastify.get('/auth/google/callback', { schema: oauthCallbackSchema }, async (req, reply) => {
     const { code, state } = req.query as { code?: string; state?: string };
-    if (!state || !consumeSigninState(state) || !code) {
+    // S-04: the state must have been initiated by THIS browser (signed
+    // cookie) — otherwise an attacker could complete their OAuth flow in the
+    // victim's browser (login CSRF).
+    const cookieVal = (req as any).cookies?.[OAUTH_STATE_COOKIE] as string | undefined;
+    if (!state || !verifyOAuthStates(cookieVal, state)) {
       throw new ApiError(400, 'INVALID_STATE', 'Invalid or expired OAuth state');
     }
-    const profile = await getGoogle().getProfile(code);
+    const consumed = await consumeSigninState(state);
+    if (!consumed || !code) {
+      throw new ApiError(400, 'INVALID_STATE', 'Invalid or expired OAuth state');
+    }
+    const profile = await getGoogle().getProfile(code, consumed.codeVerifier);
     const cleanEmail = profile.email.trim().toLowerCase();
 
     let userId: string;
@@ -427,6 +445,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
 
     const token = signToken(userId, tenantId, tokenVersion);
     setAuthCookie(reply, token);
+    clearOAuthStateCookie(reply); // S-04: flow complete, drop the binding cookie
     return reply.redirect(`${config.appUrl}/dashboard`);
   });
 

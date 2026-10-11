@@ -39,6 +39,10 @@ export const config = {
   // env fallback so tests/ops can tune it without a reboot.
   tenantExpensiveLimitPerHour: parseInt(opt('TENANT_EXPENSIVE_LIMIT_PER_HOUR', '30'), 10),
   jwtSecret: opt('JWT_SECRET', 'dev-only-jwt-secret-change-me'),
+  // S-04: HMAC secret for the signed OAuth-state binding cookie. Falls back
+  // to the JWT secret so the binding is never unsigned by misconfiguration —
+  // but operators should set a dedicated value (see .env.example).
+  cookieSecret: opt('COOKIE_SECRET', ''),
   // Local signing secret for the mock Stripe webhook (dev/test only).
   // Mock webhooks are rejected when this is unset, and always in production.
   mockWebhookSecret: opt('MOCK_WEBHOOK_SECRET', ''),

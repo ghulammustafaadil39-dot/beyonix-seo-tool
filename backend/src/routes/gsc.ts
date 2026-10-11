@@ -5,7 +5,14 @@ import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
 import { getGoogle } from '../providers/google.js';
-import { consumeGscState, createGscState } from '../services/oauthState.js';
+import {
+  OAUTH_STATE_COOKIE,
+  clearOAuthStateCookie,
+  consumeGscState,
+  createGscState,
+  setOAuthStateCookie,
+  verifyOAuthStates,
+} from '../services/oauthState.js';
 import { requireSite, siteUrl } from '../services/sites.js';
 
 const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
@@ -38,11 +45,13 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
     await authPlugin(authed);
 
-    authed.get('/sites/:id/gsc/auth-url', { schema: { params: idParamSchema } }, async (req) => {
+    authed.get('/sites/:id/gsc/auth-url', { schema: { params: idParamSchema } }, async (req, reply) => {
       const { id } = req.params as { id: string };
       await requireSite(req.tenant.tenantId, id);
-      const state = createGscState({ tenantId: req.tenant.tenantId, siteId: id });
-      return { url: getGoogle().getAuthUrl(state) };
+      // S-04: Redis state + signed-cookie browser binding + PKCE.
+      const { state, codeChallenge } = await createGscState({ tenantId: req.tenant.tenantId, siteId: id });
+      setOAuthStateCookie(reply, state, req);
+      return { url: getGoogle().getAuthUrl(state, { codeChallenge }) };
     });
 
     authed.get('/sites/:id/gsc/queries', { schema: { params: idParamSchema } }, async (req) => {
@@ -58,16 +67,22 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
 
   fastify.get('/gsc/callback', { schema: callbackQuerySchema }, async (req, reply) => {
     const { code, state } = req.query as { code?: string; state?: string };
-    const s = state ? consumeGscState(state) : null;
+    // S-04: browser binding first (login-CSRF defense), then one-time consume.
+    const cookieVal = (req as any).cookies?.[OAUTH_STATE_COOKIE] as string | undefined;
+    if (!state || !verifyOAuthStates(cookieVal, state)) {
+      throw new ApiError(400, 'INVALID_STATE', 'Invalid or expired OAuth state');
+    }
+    const s = await consumeGscState(state);
     if (!s || !code) {
       throw new ApiError(400, 'INVALID_STATE', 'Invalid or expired OAuth state');
     }
-    const { refreshToken } = await getGoogle().exchangeCode(code);
+    const { refreshToken } = await getGoogle().exchangeCode(code, s.codeVerifier);
     await query(
       'UPDATE sites SET gsc_connected = true, gsc_refresh_token_enc = $1 WHERE id = $2 AND tenant_id = $3',
-      [encrypt(refreshToken), s.siteId, s.tenantId],
+      [encrypt(refreshToken), s.data.siteId, s.data.tenantId],
     );
-    return reply.redirect(`${config.appUrl}/dashboard/sites/${s.siteId}?gsc=1`);
+    clearOAuthStateCookie(reply);
+    return reply.redirect(`${config.appUrl}/dashboard/sites/${s.data.siteId}?gsc=1`);
   });
 
   // Mock consent page exists ONLY when Google is not configured.

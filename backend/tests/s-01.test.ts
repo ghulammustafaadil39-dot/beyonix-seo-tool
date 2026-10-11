@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/index.js';
 import { query } from '../src/db.js';
-import { createSigninState } from '../src/services/oauthState.js';
+import { createSigninState, OAUTH_STATE_COOKIE, signOAuthStates } from '../src/services/oauthState.js';
 import {
   authHeaders,
   createTestSite,
@@ -252,9 +252,15 @@ describe('S-01 unverified accounts cannot use paid/crawl features', () => {
 });
 
 describe('S-01 Google merge rules (pre-account-hijack defense)', () => {
+  // S-04: the test browser carries the signed state cookie, like a real one.
   async function googleCallback() {
-    const state = createSigninState();
-    return app.inject({ method: 'GET', url: `/api/v1/auth/google/callback?code=mock&state=${state}` });
+    const { state } = await createSigninState();
+    const cookie = signOAuthStates([state]);
+    return app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/google/callback?code=mock&state=${state}`,
+      headers: { cookie: `${OAUTH_STATE_COOKIE}=${cookie}` },
+    });
   }
 
   it('verified Google + unverified local account -> links, verifies, drops untrusted password, revokes sessions', async () => {
@@ -327,12 +333,18 @@ describe('S-01 Google merge rules (pre-account-hijack defense)', () => {
 
   it('OAuth state is one-time: replaying a state fails', async () => {
     process.env.MOCK_GOOGLE_EMAIL_VERIFIED = 'true';
-    const state = createSigninState();
-    const first = await app.inject({ method: 'GET', url: `/api/v1/auth/google/callback?code=mock&state=${state}` });
+    const { state } = await createSigninState();
+    const headers = { cookie: `${OAUTH_STATE_COOKIE}=${signOAuthStates([state])}` };
+    const first = await app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/google/callback?code=mock&state=${state}`,
+      headers,
+    });
     expect(first.statusCode).toBe(302);
     const replay = await app.inject({
       method: 'GET',
       url: `/api/v1/auth/google/callback?code=mock&state=${state}`,
+      headers,
     });
     expect(replay.statusCode).toBe(400);
   });
