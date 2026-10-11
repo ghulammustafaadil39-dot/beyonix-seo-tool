@@ -1,0 +1,218 @@
+# Q-05: production deployment configuration.
+#
+# STATIC FILE ONLY — verified with a YAML parser in this environment; it has
+# NOT been run under `docker compose` because this VM has no Docker daemon
+# (user decision: Docker verifications deferred). Review before first prod
+# deploy and re-run the Final Gate once Docker access exists.
+#
+# Bring-up (from a wiped machine):
+#   cp .env.example .env   # then fill in every value (compose fails fast on :? guards)
+#   docker compose -f docker-compose.prod.yml up --build -d
+#
+# TLS: Caddy terminates HTTPS automatically (ACME) for APP_HOST/API_HOST.
+# Point both DNS A records at this host before first boot.
+#
+# Zero-downtime deploys: see RUNBOOK.md ("Zero-downtime deploy").
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_USER: bseo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: bseo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bseo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: 1G }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  redis:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 256M }
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  migrate:
+    build: ./backend
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://bseo:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/bseo
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379
+    command: ["node", "dist/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 512M }
+
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://bseo:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/bseo
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379
+      PORT: 4000
+      TRUST_PROXY: '1'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4000/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: 1G }
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
+
+  worker:
+    build: ./backend
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://bseo:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/bseo
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379
+      TRUST_PROXY: '1'
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node --input-type=module -e \"const{Redis}=await import('ioredis');const r=new Redis(process.env.REDIS_URL||'redis://redis:6379',{lazyConnect:true});await r.ping();await r.quit();\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    deploy:
+      resources:
+        limits: { cpus: '2.0', memory: 2G }
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
+
+  # NOTE (W-01, Backend-owned): the BullMQ scheduler currently runs inside
+  # the worker process (worker.ts starts it). A standalone scheduler service
+  # can be added once the Backend Lead splits the entry point; until then
+  # this compose file does NOT define one. The scheduler profile below is a
+  # reserved placeholder — do not use it yet.
+  # scheduler: <reserved for W-01 Backend split>
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
+    env_file: .env
+    environment:
+      API_INTERNAL_URL: http://api:4000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: 1G }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+
+  # Reverse proxy with automatic TLS. Caddy obtains and renews certificates
+  # for the configured hostnames on first boot (ports 80/443 must be open).
+  caddy:
+    image: caddy:2-alpine  # TODO(prod): pin to a reviewed digest in CI before first deploy (Trivy job covers this)
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 256M }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+
+  # Backup sidecar: nightly pg_dump to a local volume + optional S3 sync.
+  # Restore procedure: see RUNBOOK.md ("Backups & restore").
+  backup:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      AWS_ACCESS_KEY_ID: ${BACKUP_S3_KEY:-}
+      AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET:-}
+    volumes:
+      - pgbackups:/backups
+      - ./backend/scripts/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./backend/scripts/restore.sh:/usr/local/bin/restore.sh:ro
+    entrypoint: ["sh", "-c", "while true; do sleep 86400; /usr/local/bin/backup.sh /backups/bseo-$$(date +%F).dump; done"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: '0.25', memory: 256M }
+
+volumes:
+  pgdata:
+  redisdata:
+  pgbackups:
+  caddydata:
+  caddyconfig:
