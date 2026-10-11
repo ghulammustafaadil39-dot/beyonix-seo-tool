@@ -432,3 +432,9 @@ on boot.
 - Invite accept refuses (409 `INVITE_WOULD_ORPHAN_DATA`) when the shell tenant has any subscriptions/invoices/tenant_credits rows (cascade-delete hazard).
 - Invite accept is transactional: guard counts rows across SHELL_TENANT_TABLES (29 tenant-scoped tables); any row → 409 `INVITE_WOULD_ORPHAN_DATA`, invitation not burned.
 - Idempotency pending claims older than 5 min (same request hash) are abandoned/reclaimable; retention sweep reaps them. Webhook deliveries carry a 30s overall deadline. `charge.refunded` does not advance `subscriptions.last_event_at`.
+
+## Addendum — Frontend wiring outcomes (LA, 2026-10-11)
+- Checkout payload field is `couponCode` (not `coupon`), with `interval` monthly|annual.
+- There are NO `PATCH /billing/email` / `DELETE /billing/subscription` endpoints: billing email is the tenant `notify_email` (GET/PATCH /settings) — the address dunning/receipts use; cancellation happens in the Stripe portal and surfaces as `cancel_at_period_end` via webhook.
+- Onboarding state: `GET/PUT /api/v1/account/sites/:siteId/onboarding` → `{ siteId, steps: [{ step, completed, completed_at }] }`; step keys incl. `connect_gsc`.
+- Team/notifications live under `/api/v1/account/*`; API keys under `/api/v1/apikeys` (create returns `key` once; prefix `bseo_` + hex).
