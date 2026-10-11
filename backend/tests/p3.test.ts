@@ -126,6 +126,17 @@ describe('keywordCache (fake QueryFn, no network/db)', () => {
         inserts.push('usage_events');
         return { rows: [], rowCount: 1 };
       }
+      // D5-L-3: global provider reserve — mock always grants (no cap in unit tests).
+      if (text.includes('INSERT INTO global_provider_guard')) {
+        return { rows: [], rowCount: 1 };
+      }
+      if (text.includes('INSERT INTO provider_spend')) {
+        inserts.push('provider_spend');
+        return { rows: [{ id: '00000000-0000-4000-8000-000000000000' }], rowCount: 1 };
+      }
+      if (text.includes('UPDATE provider_spend') || text.includes('DELETE FROM provider_spend')) {
+        return { rows: [], rowCount: 1 };
+      }
       return { rows: [], rowCount: 0 };
     };
     return { q, inserts };

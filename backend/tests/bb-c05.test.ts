@@ -67,6 +67,16 @@ function stubQuery(): { q: QueryFn; calls: { sql: string; params: unknown[] }[];
       snapshots.set(params[0] as string, row);
       return { rows: [{ id: row.id }], rowCount: 1 };
     }
+    // D5-L-3: global provider reserve — mock always grants (no cap in unit tests).
+    if (sql.includes('INSERT INTO global_provider_guard')) {
+      return { rows: [], rowCount: 1 };
+    }
+    if (sql.includes('INSERT INTO provider_spend')) {
+      return { rows: [{ id: '00000000-0000-4000-8000-000000000000' }], rowCount: 1 };
+    }
+    if (sql.includes('UPDATE provider_spend') || sql.includes('DELETE FROM provider_spend')) {
+      return { rows: [], rowCount: 1 };
+    }
     return { rows: [], rowCount: 0 };
   }) as unknown as QueryFn;
   return { q, calls, snapshots };
