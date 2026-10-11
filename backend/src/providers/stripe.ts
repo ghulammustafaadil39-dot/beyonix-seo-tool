@@ -427,16 +427,6 @@ async function resolveTenantForSubscription(
 }
 
 /**
- * F2-L-1: how long a webhook attempt is considered "in flight" for the
- * started_at lease in stripe_webhook_events. A duplicate delivery arriving
- * while the winner's started_at is fresher than this is treated as a
- * concurrent duplicate and deduped; an older one is treated as a crashed
- * attempt and reprocessed. Normal webhook handling takes seconds; Stripe
- * retries crashed events for hours, so 5 minutes is a safe cut-off.
- */
-const WEBHOOK_INFLIGHT_MS = 5 * 60 * 1000;
-
-/**
  * Applies a Stripe (or mock) event to our billing tables. Shared by the
  * webhook route + tests. C-01: idempotent via stripe_webhook_events
  * (pass eventId), all period/status/plan values come FROM Stripe, never
@@ -469,34 +459,24 @@ export async function applyPaymentEvent(
       : Promise.resolve();
   if (eventId) {
     const ins = await q(
-      `INSERT INTO stripe_webhook_events (event_id, event_type, started_at)
-       VALUES ($1, $2, now()) ON CONFLICT (event_id) DO NOTHING`,
+      `INSERT INTO stripe_webhook_events (event_id, event_type)
+       VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`,
       [eventId, type],
     );
     if ((ins.rowCount ?? 0) === 0) {
       // E4-M-2: if the existing row was never marked processed (previous
       // attempt crashed), reprocess instead of swallowing as duplicate.
-      // F2-L-1: a row with processed_at IS NULL is ALSO what a second
-      // CONCURRENT delivery sees while the first attempt is still in flight
-      // (insert-race loser). started_at disambiguates: a fresh started_at
-      // means the winner is presumably still working -> dedupe (the old,
-      // strictly-safer behavior for concurrent delivery). A stale
-      // started_at means the winner died -> take over and reprocess.
-      const prev = await q(`SELECT processed_at, started_at FROM stripe_webhook_events WHERE event_id = $1`, [
-        eventId,
-      ]);
+      // F2-L-1: a concurrent duplicate (insert-race loser) also lands here.
+      // Reprocessing is safe because every non-idempotent handler below is
+      // guarded by an event-id idempotency key (coupon_redemptions for
+      // coupons, tenant_credits.webhook_event_id for refund credits), so a
+      // reprocessed duplicate cannot double-apply money effects.
+      const prev = await q(`SELECT processed_at FROM stripe_webhook_events WHERE event_id = $1`, [eventId]);
       if (prev.rows[0]?.processed_at) {
         await markProcessed(); // redelivery of an already-handled event
         return { deduplicated: true };
       }
-      const startedAt = prev.rows[0]?.started_at ? new Date(prev.rows[0].started_at).getTime() : 0;
-      if (Date.now() - startedAt < WEBHOOK_INFLIGHT_MS) {
-        await markProcessed(); // concurrent duplicate: first attempt in flight, dedupe
-        return { deduplicated: true };
-      }
-      // Stale (crashed) attempt: take over the lease, then fall through to
-      // reprocess.
-      await q(`UPDATE stripe_webhook_events SET started_at = now() WHERE event_id = $1`, [eventId]);
+      // Fall through to reprocess the crashed event.
     }
   }
 
@@ -974,10 +954,20 @@ export async function applyPaymentEvent(
     }
     // Credit note helper (F-14): the refund is recorded as a tenant credit
     // so support can reconcile it against future invoices.
+    // F2-L-1: idempotency-guarded by the webhook event id — a reprocessed
+    // (crash-retry, E4-M-2) or concurrently-duplicate-delivered refund must
+    // not credit the tenant twice. NULL event ids (mock path without one)
+    // never conflict, preserving the old behavior there.
     await q(
-      `INSERT INTO tenant_credits (id, tenant_id, amount_cents, reason)
-       VALUES (gen_random_uuid(), $1, $2, $3)`,
-      [tenantId, amount, `Refund ${data.id ?? ''}${invoiceId ? ` for invoice ${invoiceId}` : ''}`.trim()],
+      `INSERT INTO tenant_credits (id, tenant_id, amount_cents, reason, webhook_event_id)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4)
+       ON CONFLICT (webhook_event_id) DO NOTHING`,
+      [
+        tenantId,
+        amount,
+        `Refund ${data.id ?? ''}${invoiceId ? ` for invoice ${invoiceId}` : ''}`.trim(),
+        eventId ?? null,
+      ],
     );
     const { emitBillingEvent } = await import('../services/billing.js');
     await emitBillingEvent({ type: 'charge.refunded', tenantId, detail: { amount, invoiceId } });

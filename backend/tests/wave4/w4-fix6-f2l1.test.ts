@@ -1,9 +1,10 @@
 /**
  * Wave-4 Pass#6 fix regression tests (LA).
- * F2-L-1: the E4-M-2 reprocess fix must not reprocess a CONCURRENT
- * duplicate delivery (insert-race loser sees processed_at IS NULL while the
- * first attempt is still in flight). started_at disambiguates:
- * fresh -> dedupe (old, safer behavior); stale -> reprocess (crash recovery).
+ * F2-L-1: the E4-M-2 reprocess path (crashed attempt retried, or a
+ * concurrent duplicate delivery that lost the insert race) must not
+ * double-apply money effects. The charge.refunded -> tenant_credits path
+ * is guarded by the webhook event id (tenant_credits.webhook_event_id);
+ * coupons are guarded by coupon_redemptions (Worker C).
  */
 import { it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -16,7 +17,7 @@ let tenantId: string;
 
 beforeAll(async () => {
   app = await buildTestApp();
-  await ensureMigrated(); // applies 047 (started_at) on a fresh test DB
+  await ensureMigrated(); // applies 046 (coupon_redemptions) + 048 (webhook_event_id)
   await resetDb();
   const owner = await signupOwner(app);
   tenantId = owner.tenantId;
@@ -33,38 +34,30 @@ const refundEvt = () => ({
   data: { id: 'ch_f2l1', amount_refunded: 5000, metadata: { tenantId } },
 });
 
-it('F2-L-1a: concurrent duplicate (fresh started_at, unprocessed) is deduped — no double credit', async () => {
-  const eventId = 'evt_f2l1_concurrent';
-  await query(
-    `INSERT INTO stripe_webhook_events (event_id, event_type, started_at) VALUES ($1, 'charge.refunded', now())`,
-    [eventId],
-  );
-  const before = await creditCount();
-  const res = await applyPaymentEvent(refundEvt(), query, eventId);
-  expect(res.deduplicated).toBe(true);
-  expect(await creditCount()).toBe(before);
+it('F2-L-1a: reprocessing the same refund event (E4-M-2 path) credits exactly once', async () => {
+  const eventId = 'evt_f2l1_refund_reprocess';
+  const first = await applyPaymentEvent(refundEvt(), query, eventId);
+  expect(first.deduplicated).toBe(false);
+  expect(await creditCount()).toBe(1);
+  // Simulate a crash between side effects and markProcessed (or a
+  // concurrent duplicate that lost the insert race): the ledger row exists
+  // but was never marked processed, so the next delivery reprocesses.
+  await query(`UPDATE stripe_webhook_events SET processed_at = NULL WHERE event_id = $1`, [eventId]);
+  const second = await applyPaymentEvent(refundEvt(), query, eventId);
+  expect(second.deduplicated).toBe(false); // it reprocessed...
+  expect(await creditCount()).toBe(1); // ...but the guard held: no double credit
 });
 
-it('F2-L-1b: crashed attempt (stale started_at, unprocessed) is reprocessed — credit applied exactly once', async () => {
-  const eventId = 'evt_f2l1_crashed';
-  await query(
-    `INSERT INTO stripe_webhook_events (event_id, event_type, started_at)
-     VALUES ($1, 'charge.refunded', now() - interval '10 minutes')`,
-    [eventId],
-  );
+it('F2-L-1b: a distinct refund event still credits (guard is per-event, not per-tenant)', async () => {
   const before = await creditCount();
-  const res = await applyPaymentEvent(refundEvt(), query, eventId);
+  const res = await applyPaymentEvent(refundEvt(), query, 'evt_f2l1_refund_distinct');
   expect(res.deduplicated).toBe(false);
   expect(await creditCount()).toBe(before + 1);
 });
 
-it('F2-L-1c: already-processed redelivery is still deduped', async () => {
-  const eventId = 'evt_f2l1_processed';
-  await query(
-    `INSERT INTO stripe_webhook_events (event_id, event_type, started_at, processed_at)
-     VALUES ($1, 'charge.refunded', now() - interval '1 hour', now() - interval '30 minutes')`,
-    [eventId],
-  );
+it('F2-L-1c: already-processed redelivery is still deduped with no new credit', async () => {
+  const eventId = 'evt_f2l1_refund_processed';
+  await applyPaymentEvent(refundEvt(), query, eventId);
   const before = await creditCount();
   const res = await applyPaymentEvent(refundEvt(), query, eventId);
   expect(res.deduplicated).toBe(true);
