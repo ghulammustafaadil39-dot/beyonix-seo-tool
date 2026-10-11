@@ -11,7 +11,7 @@ import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 import { getLLM } from '../providers/llm.js';
 
 const SETTINGS_COLS =
-  'name, plan_id, notify_email, telegram_chat_id, llm_provider, (llm_api_key_enc IS NOT NULL) AS llm_key_set';
+  'name, plan_id, notify_email, telegram_chat_id, llm_provider, llm_cost_cap_words, (llm_api_key_enc IS NOT NULL) AS llm_key_set';
 
 function toSettings(row: any) {
   return {
@@ -21,6 +21,8 @@ function toSettings(row: any) {
     telegram_chat_id: row.telegram_chat_id,
     llm_provider: row.llm_provider,
     llm_key_set: Boolean(row.llm_key_set),
+    // W-03: per-tenant LLM word cap (null = no tenant cap)
+    llm_cost_cap_words: row.llm_cost_cap_words ?? null,
   };
 }
 
@@ -33,6 +35,7 @@ const patchSettingsSchema = {
       telegram_chat_id: { type: ['string', 'null'], maxLength: 100 },
       llm_provider: { type: ['string', 'null'] },
       llm_api_key: { type: 'string', maxLength: 500 },
+      llm_cost_cap_words: { type: ['integer', 'null'], minimum: 0, maximum: 10_000_000 },
     },
     additionalProperties: false,
   },
@@ -56,6 +59,7 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
         telegram_chat_id?: string | null;
         llm_provider?: string | null;
         llm_api_key?: string;
+        llm_cost_cap_words?: number | null;
       };
       // llm_provider: the real provider identifiers the product supports,
       // plus null = "use server default". The Settings UI's legacy 'default'
@@ -85,6 +89,7 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
       if (body.telegram_chat_id !== undefined) push('telegram_chat_id', body.telegram_chat_id);
       if (body.llm_provider !== undefined) push('llm_provider', body.llm_provider);
       if (body.llm_api_key !== undefined) push('llm_api_key_enc', encrypt(body.llm_api_key));
+      if (body.llm_cost_cap_words !== undefined) push('llm_cost_cap_words', body.llm_cost_cap_words);
       if (sets.length > 0) {
         params.push(req.tenant.tenantId);
         await query(`UPDATE tenants SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
