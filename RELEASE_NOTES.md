@@ -136,7 +136,8 @@ public API. Monthly/annual billing via Stripe.
   endpoint, alert rules, admin status page.
 - **Q-04** Docs: README/RUNBOOK/ARCHITECTURE/SECURITY/CHANGELOG refresh,
   methodology doc, compliance notes, `.env.example` proven complete
-  (47 variables).
+  (every variable the backend reads is documented there; exact count not
+  quoted — it changes as knobs are added).
 - **Q-05** Deployment: `docker-compose.prod.yml` (reverse proxy + TLS,
   healthchecks, resource limits, backup sidecar), backup/restore scripts,
   rolling-deploy notes. *(Compose files statically validated; never booted
@@ -223,8 +224,8 @@ honest load proof (10 tenants, 18 jobs/s, fairness measured), chaos DLQ
 6. **No real-browser pass for TOTP login autofill/mobile keyboards** —
    recommend a manual staging check.
 7. **Migration number gaps:** migrations `008`, `009`, `031`–`039` were
-   never issued; 31 additive files cover `001`–`007`, `010`–`030`,
-   `040`–`042`. Harmless (the ledger skips by name), noted for honesty.
+   never issued; 32 additive files cover `001`–`007`, `010`–`030`,
+   `040`–`043`. Harmless (the ledger skips by name), noted for honesty.
 8. **`compose.prod.yml` was not boot-tested** (see #1); same-origin proxy /
    TLS config is file-reviewed only.
 
@@ -238,11 +239,11 @@ honest load proof (10 tenants, 18 jobs/s, fairness measured), chaos DLQ
 - One-shot runner: `node dist/migrate.js`. It uses an advisory lock, runs
   each migration in its own transaction, and records it in the `migrations`
   ledger. The API and worker also run it (advisory-locked) at boot.
-- **Fresh install:** apply all 31 files in order on an empty database
+- **Fresh install:** apply all 32 files in order on an empty database
   (`make dev` does this, plus seeding).
 - **Upgrade from any earlier build:** just deploy + boot — pending
   migrations apply automatically. Wave ranges: `001`–`030` (Waves 0–2),
-  `040` (Wave 3), `041`–`042` (Wave 4). No data-migration or backfill steps
+  `040` (Wave 3), `041`–`043` (Wave 4). No data-migration or backfill steps
   are required; every change is additive.
 - Historical note: migration `003` was edited before it was ever applied
   anywhere (contract exception recorded in PROGRESS.md); the file on disk
@@ -266,7 +267,7 @@ runs in mock mode.**
 | **Telegram** | `TELEGRAM_BOT_TOKEN` → real `sendMessage` | Logged to console | `TELEGRAM_BOT_TOKEN` | `backend/src/providers/notify.ts` |
 | **Slack** | Tenant configures a webhook URL in notification settings → real POST | No-op with clear "not configured" error | notification settings (per tenant), not env | `backend/src/services/notifications.ts` (`sendSlack` via `safeFetch`) |
 | **Outbound webhooks** (F-10, W-06) | Real: HMAC-signed (`X-BSEO-Signature`) POSTs to tenant endpoints, retries + replay | — (no mock path; endpoints are tenant-supplied) | tenant webhook subscriptions | `backend/src/services/webhookDelivery.ts` |
-| **CMS publish** (F-04) | `CMS_PUBLISH_ENABLED=true` + credentials → real WordPress REST / Webflow CMS publish | **Honest mock: returns `{ ok: true, mock: true }`, performs zero network calls** | `CMS_PUBLISH_ENABLED`, `CMS_WP_*`, `CMS_WEBFLOW_*` | `backend/src/services/publishConnector.ts` |
+| **CMS publish** (F-04) | `CMS_PUBLISH_ENABLED=true` + per-request credentials → real WordPress REST / Webflow CMS publish | **Honest mock: returns `{ ok: true, mock: true }`, performs zero network calls** | `CMS_PUBLISH_ENABLED` (credentials are supplied per publish request, not via env) | `backend/src/services/publishConnector.ts` |
 | **GEO / AI visibility** (F-05) | — | **Simulated by design:** our LLM generates a platform-style answer, then we detect brand mentions; every row carries `simulated: true`. Never presented as real platform data. | follows LLM config | `backend/src/services/geoService.ts` |
 | **CAPTCHA** (signup) | `CAPTCHA_PROVIDER=hcaptcha` + `CAPTCHA_SECRET` → real hCaptcha verification, fail-closed on error | `none` (default); `test` provider **refused outside test/development** | `CAPTCHA_PROVIDER`, `CAPTCHA_SECRET` | `backend/src/providers/captcha.ts` |
 | **Crawler** (C-04) | Real HTTP crawling with full SSRF defense (`safeFetch`: DNS pinning, redirect re-validation) | No JS execution — Playwright mode deferred; pages audited as static HTML | — | `backend/src/services/crawler.ts` |

@@ -100,7 +100,8 @@ curl -H "x-api-key: bseo_..." \\
         <section className="mt-10">
           <h2 className="text-xl font-bold text-white">Rate limits</h2>
           <p className="mt-3 text-sm leading-relaxed text-white/65">
-            Limits are per tenant per minute. Exceeding them returns <code className="font-mono text-xs">429</code> with
+            Limits are per API key per minute, on top of a per-IP global limit.
+            Exceeding them returns <code className="font-mono text-xs">429</code> with
             a <code className="font-mono text-xs">Retry-After</code> header — back off and retry.
           </p>
         </section>

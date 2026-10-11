@@ -80,7 +80,7 @@ const FAQ = [
   },
   {
     q: 'Is there a free trial?',
-    a: 'Every plan starts with a free trial — no credit card required. You only pay when you decide to keep it.',
+    a: 'Yes — every new account starts with a 14-day free trial, no credit card required, with full Starter access. Subscribe before it ends to keep your access.',
   },
 ];
 
@@ -110,7 +110,7 @@ export default function HomePage() {
             </p>
             <div className="mt-9 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Link href="/signup" className="bx-btn-primary px-7 py-3 text-base">
-                Start free
+                Start free trial
               </Link>
               <Link href="/pricing" className="bx-btn-secondary px-7 py-3 text-base">
                 See pricing
@@ -199,7 +199,7 @@ export default function HomePage() {
               Simple plans that scale with you
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-white/60">
-              Start free, upgrade when you grow. Monthly or annual billing,
+              Start with a 14-day free trial, upgrade when you grow. Monthly or annual billing,
               cancel anytime, usage limits that are honest about what you get.
             </p>
             <div className="mt-8">

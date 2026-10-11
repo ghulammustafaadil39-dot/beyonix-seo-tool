@@ -654,14 +654,15 @@ export interface InviteCreated {
   token?: string;
 }
 
-/** POST /api/v1/account/invitations/accept response (fresh session token
- *  is also set via cookie by the follow-up login state — the body token
- *  is the new tenant-bound session JWT per the frozen contract addendum). */
+/** POST /api/v1/account/invitations/accept response. The fresh session token
+ *  is set via httpOnly cookie only — the browser-facing contract MUST NOT
+ *  include it in the body (D3-M-1). `token?: never` so no future caller can
+ *  adopt the insecure JWT-in-body pattern. */
 export interface InviteAccepted {
   ok: true;
   tenantId: string;
   role: string;
-  token: string;
+  token?: never;
 }
 
 /** GET /api/v1/account/workspaces row (sites = live site count). */

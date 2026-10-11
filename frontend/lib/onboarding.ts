@@ -101,7 +101,9 @@ export async function deriveCompletions(
 ): Promise<Partial<Record<OnboardingStepKey, boolean>>> {
   const derived: Partial<Record<OnboardingStepKey, boolean>> = {
     verify_site: site.verified,
-    connect_gsc: site.gsc_connected || site.ga4_connected,
+    // D3-L-4: the step is labeled "Connect Search Console" — a GA4-only
+    // connection must not mark it done (matches buildLocalSteps below).
+    connect_gsc: site.gsc_connected,
   };
   try {
     const [audits, keywords, reports] = await Promise.all([

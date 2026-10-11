@@ -23,7 +23,8 @@ const LIMIT_LABELS: Record<string, { label: string; hint?: string }> = {
     label: 'AI words',
     hint: 'Total words the AI writer may generate this billing period across content drafts, GEO checks and report summaries.',
   },
-  audits_month: { label: 'Audits per month' },
+  // D3-L-1: no audits_month label — the backend /api/v1/usage never returns
+  // that key (no such limit exists), so the meter could never render.
   serp_checks: { label: 'Rank checks' },
   keyword_metrics: { label: 'Keyword lookups' },
   crawl_pages: { label: 'Crawled pages' },
@@ -199,7 +200,7 @@ export default function BillingPage() {
       if (plan && ['starter', 'growth', 'pro'].includes(plan)) {
         setNotice({
           kind: 'info',
-          text: `You picked the ${PLAN_NAMES[plan] ?? plan} plan (${billing} billing) — subscribe below to start your free trial.`,
+          text: `You picked the ${PLAN_NAMES[plan] ?? plan} plan (${billing} billing) — you're on your 14-day free trial; subscribe below to keep full access when it ends.`,
         });
       }
     }

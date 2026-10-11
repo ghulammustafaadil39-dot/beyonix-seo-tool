@@ -170,7 +170,11 @@ request and needs no rebuild.
 - [ ] `ENCRYPTION_KEY` — 32-byte hex (or versioned `ENCRYPTION_KEYS`,
       `kid:hex,…`, first entry = primary for new encryptions)
 - [ ] `APP_HOST`, `API_HOST` — bare hostnames; DNS A records → this host
-      **before** first boot (compose fails fast on missing `APP_HOST`)
+      **before** first boot. Only `APP_HOST` has a compose fail-fast guard
+      (`${APP_HOST:?…}`); `API_HOST` is not guarded — leave it empty only
+      for the single-hostname setup (api block commented out in
+      `Caddyfile.prod`), otherwise Caddy fails at boot with
+      "duplicate site address".
 - [ ] `APP_URL=https://$APP_HOST` — used in verification emails/links
 - [ ] `API_URL=https://$API_HOST` (or `https://$APP_HOST` for single-hostname)
 - [ ] `APP_TLS_EMAIL` — ACME account email
