@@ -63,13 +63,13 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| C-01 | Backend-A | 2 | pending | Full Stripe event coverage; trials/coupons/annual/proration/dunning/grace |
-| C-02 | Backend-A | 2 | pending | Reserve-then-commit metering; billing-period windows; 80/100% alerts |
-| C-03 | Backend-A | 2 | pending | Fair scheduling, DLQ+replay, graceful shutdown, leader election, circuit breakers |
+| C-01 | Backend-A | 2 | review | Backend-A branch (rebased, LA-verified suite 394/9/0); webhook idempotency ledger, trials/coupons/annual, dunning, invoices; Security review pending |
+| C-02 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; reserve-then-commit, 20-way concurrency test, 80/100% once-per-period alerts, 402 payloads; suite green |
+| C-03 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; graceful shutdown (API+worker), Redis leader election, DLQ+replay, per-queue timeouts, tenant rate limit wired; suite green |
 | C-04 | Backend-B | 2 | pending | robots crawl-delay, Playwright mode, simhash dupes, sitemap/canonical/hreflang |
 | C-05 | Backend-B | 2 | pending | SERP snapshots, device/location/lang, SERP features, shared cross-tenant cache |
-| C-06 | Backend-A | 2 | pending | Retention+cleanup, EXPLAIN-verified indexes, backups+restore test |
-| C-07 | Backend-A | 2 | pending | Validation everywhere, OpenAPI 3.1 served, idempotency keys, request ids |
+| C-06 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; retention defaults-merge, GDPR export, backup/restore real-script round-trip test, EXPLAIN-verified indexes; suite green |
+| C-07 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; schema-driven OpenAPI 3.1 at /api/v1/openapi.json, /settings/providers mock-real, VALIDATION_ERROR 400s, stable pagination; suite green |
 | F-01 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend progress-state API pending → Backend-A |
 | F-02 | Backend-B | 2 | pending | Audit v2 engine (impact priority, states, history, PDF/CSV); sub-task→Frontend: UI [UI done+merged bd2358e: AuditV2Panel + mock adapter (MockBanner)]
 | F-03 | Backend-B | 2 | pending | Keyword v2 (clustering, gap, cannibalization); sub-task→Frontend: UI [UI done+merged bd2358e: KeywordsV2Panel + mock adapter (MockBanner)]
@@ -78,12 +78,12 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | F-06 | Backend-B | 2 | pending | Backlinks v2 (toxic, anchors, opportunities, disavow); sub-task→Frontend: UI [UI done+merged bd2358e: BacklinksV2Panel + mock adapter (MockBanner)]
 | F-07 | Backend-B | 2 | pending | Competitor analysis; sub-task→Frontend: UI — NOW IN SCOPE [UI done+merged bd2358e: CompetitorsTab + mock adapter (MockBanner)]
 | F-08 | Backend-B | 2 | pending | White-label PDF/HTML reports, scheduling; sub-task→Frontend: report UI — NOW IN SCOPE [UI done+merged bd2358e: ReportsV2Panel + mock adapter (MockBanner)]
-| F-09 | Backend-A | 2 | pending | Agency/team: roles, invites, client workspaces, activity log; sub-task→Frontend: UI — NOW IN SCOPE [UI done+merged bd2358e: /dashboard/team + mock adapter (MockBanner)]
-| F-10 | Backend-A | 2 | pending | Notifications (email/TG/Slack/webhooks, rules, digests); sub-task→Frontend: center UI [UI done+merged bd2358e: /dashboard/notifications + mock adapter (MockBanner)]
+| F-09 | Backend-A | 2 | review | Backend-A branch done (roles, invitations w/ accept-moves-user + orphan guards, workspaces, activity log, onboarding state API); Security review pending 
+| F-10 | Backend-A | 2 | review | Backend-A branch done (alert rules, digests, signed webhooks w/ per-attempt SSRF re-validation, replay); Security review pending 
 | F-11 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend trials/coupons/annual + invoice/email/cancel endpoints pending → Backend-A C-01 |
 | F-12 | Frontend Lead | 2 | verified | Merged bd2358e (LA-reviewed): landing/docs/legal/cookies/sitemap+robots; next build green (28 routes), tsc clean |
-| F-13 | Backend-A | 2 | pending | Public API (keys/scopes/webhooks/rate limits); sub-task→Frontend: docs page [UI done+merged bd2358e: /dashboard/api-keys + /docs/api + mock adapter (MockBanner)]
-| F-14 | Backend-A | 2 | pending | Admin back-office endpoints; sub-task→Frontend: UI [UI done+merged bd2358e: /admin + mock adapter (MockBanner), role-gated]
+| F-13 | Backend-A | 2 | review | Backend-A branch done (sha256-only keys, show-once, scopes :write⊃:read, per-key rate limits); Security review pending 
+| F-14 | Backend-A | 2 | review | Backend-A branch done (tenants, suspend, plan override, impersonate 5-min + audit row, flags, DLQ, spend; 404 for non-admins); Security review pending 
 
 ## Wave 3 — Phase 4 (quality/ops) + Phase 5 (world-class)
 
@@ -141,3 +141,5 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 - 2026-10-11 ~02:40 PKT — LA: merged Frontend Wave-2 (bd2358e: 60 files, +5406/−478, frontend/ only) — LA-verified: scope check ✓, mock-honesty pattern reviewed ✓, ran `npm run build` in worktree — green (28 routes) ✓, node_modules stub restored ✓, api.ts auto-merge verified ✓.
 - 2026-10-11 ~02:55 PKT — LA INCIDENT: discovered an agent ran `git stash` + `git reset --hard` in the MAIN worktree at 02:01:53 UTC, wiping uncommitted board edits (recovered from stash@{0} and re-applied above; stash dropped after verification). LESSON: agents must NEVER run stash/reset/checkout in the main worktree — only inside their own .worktrees/<name>. Warning sent to running agents; repo-local git identity set to la@beyonix.local (an agent had set the GLOBAL identity to frontend-lead, misattributing LA commit 360ff58).
 - 2026-10-11 ~03:00 PKT — LA: merged TOTP login UI (agent/totp/wave2). Covers: ?totp=1&token= challenge step (auto-submit, paste, friendly errors), password-login 2FA handoff (bug caught by agent's jsdom tests), challenge token scrubbed from URL on mount, ?totp=1-without-token expired state. LA addition: backup-code mode toggle (4–32 chars) — backend accepted backup codes but UI only took 6 digits. CSRF concern checked: totp/verify is public-by-design (totpToken is the auth). next build green (28/28). Open: no real-browser pass (autofill/mobile keyboards) — recommend manual staging check.
+- 2026-10-11 ~08:35 PKT (LA): Backend-A report received — C-01/C-02/C-03/C-06/C-07/F-09/F-10/F-13/F-14 all implemented on agent/backend-a/wave2 (9 commits). LA rebased onto main (clean); found 34 post-rebase failures = JWT-in-body rebase fallout in Backend-A test helpers (body.token reads) — LA fixed helpers-ba.ts + c-01.test.ts to extract JWT from set-cookie (commit 134e3f7 on branch); re-run: full suite 394 passed / 9 skipped / 0 failed, tsc clean. Security review dispatched for C-01/F-09/F-10/F-13/F-14 (§8.3); branch merge waits for APPROVED. Backend-B relayed Backend-A integration requests (softDeleteSite wiring, requireScope adoption, recordProviderSpend, circuit breaker, validationError sweep).
+- 2026-10-11 ~08:35 PKT (LA): ENV NOTE — VM snapshot revert changed the local bseo PG role password; Backend-A built a self-healing bootstrap at ~/workspace/.local/ba-env.sh (re-asserts password, ensures bseo_test_ba, exports DATABASE_URL). Source it before backend-a branch test runs. Main-branch tests still use the setup.ts fallback (unchanged).

@@ -416,3 +416,12 @@ on boot.
 - [ ] Every external call behind provider interface with mock fallback.
 - [ ] Every expensive action metered; every limit enforced with 402.
 - [ ] README complete; `docker compose up` works; `next build` clean.
+
+## Addendum — Wave 2 Backend-A (LA-recorded, 2026-10-11)
+- Invitation accept returns `{ ok, tenantId, role, token }` — fresh tenant-bound token; the pre-move token 401s after accept. Guards: `INVITE_WOULD_ORPHAN_DATA` / `INVITE_WOULD_ORPHAN_TENANT` (409).
+- API keys: presented via `x-api-key` header or `Bearer bseo_…`; `INSUFFICIENT_SCOPE` 403 carries `missing[]`; `:write` scope implies `:read`; raw key shown once at creation, only sha256 hash stored.
+- Tenant states: suspended → 403 `TENANT_SUSPENDED` everywhere; read-only → mutations blocked except billing/admin/account/apikeys/settings/auth/webhooks routes.
+- Outbound webhooks signed `X-BSEO-Signature: sha256=<hmac(secret, "<ts>.<body>")>`; fixed event catalog; URL SSRF-validated at registration AND re-validated per delivery attempt.
+- Admin: non-admins get 404 (not 403); impersonation = 5-min token, session-registered, always writes an admin audit row.
+- `GET /api/v1/settings/providers` → `{ providers: [{ name, impl, mode: mock|real }] }`; `GET /api/v1/openapi.json` serves generated OpenAPI 3.1.
+- Retention windows: usage 13mo, audits 12mo, webhook deliveries/DLQ 90d, activity log 24mo; soft-deleted sites hard-purged after 30d. Pending webhook retries are never swept; only resolved DLQ rows swept.
