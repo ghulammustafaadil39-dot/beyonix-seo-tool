@@ -588,6 +588,20 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
         const site = await requireSite(tenantId, req.params.id);
         const piece = await requirePiece(tenantId, req.body.pieceId);
         if (piece.site_id !== site.id) throw notFound('Content piece');
+        // SECURITY (F-04 SSRF fix): the WordPress siteUrl is tenant-supplied
+        // and fetched server-side — https only, rejected here with a clear
+        // 400 before the connector runs (the connector re-checks as well).
+        if (req.body.target === 'wordpress' && req.body.siteUrl) {
+          let parsed: URL | null = null;
+          try {
+            parsed = new URL(req.body.siteUrl);
+          } catch {
+            parsed = null;
+          }
+          if (!parsed || parsed.protocol !== 'https:') {
+            throw badRequest('siteUrl must be a valid https:// URL');
+          }
+        }
         const html = buildGeoHtml(piece.draft ?? '', piece.title ?? '');
         const result = await publishPiece({
           target: req.body.target,

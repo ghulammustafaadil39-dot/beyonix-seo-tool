@@ -413,6 +413,53 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
       return reply.code(201).send({ url, token, expires_at: new Date(expiresAt).toISOString() });
     });
 
+    // List ACTIVE share links for an audit (F-02 revocation support).
+    // SECURITY: returns id/resource/timestamps ONLY — never the token or
+    // its hash (the hash is a bearer-equivalent lookup key).
+    app.get('/audits/:auditId/shares', { preHandler: requireScope('audits:write'),
+      schema: { params: uuidParams('auditId') },
+    }, async (req) => {
+      const { tenantId } = req.tenant;
+      const auditId = (req.params as { auditId: string }).auditId;
+      const own = await query(`SELECT id FROM audits WHERE id = $1 AND tenant_id = $2`, [auditId, tenantId]);
+      if (own.rows.length === 0) throw notFound('Audit');
+      const r = await query(
+        `SELECT id, resource_type, resource_id, created_at, expires_at FROM share_tokens
+         WHERE tenant_id = $1 AND resource_type = 'audit' AND resource_id = $2 AND expires_at > now()
+         ORDER BY created_at DESC`,
+        [tenantId, auditId],
+      );
+      return { data: r.rows };
+    });
+
+    // Revoke one share link (deletes the share_tokens row — the documented
+    // revocation model; the public link 404s immediately afterwards).
+    // Tenant-scoped: another tenant's token id 404s, nothing is deleted.
+    app.delete('/audits/:auditId/shares/:tokenId', { preHandler: requireScope('audits:write'),
+      schema: {
+        params: {
+          type: 'object',
+          properties: {
+            auditId: { type: 'string', format: 'uuid' },
+            tokenId: { type: 'string', format: 'uuid' },
+          },
+          required: ['auditId', 'tokenId'],
+        },
+      },
+    }, async (req, reply) => {
+      const { tenantId } = req.tenant;
+      const { auditId, tokenId } = req.params as { auditId: string; tokenId: string };
+      const own = await query(`SELECT id FROM audits WHERE id = $1 AND tenant_id = $2`, [auditId, tenantId]);
+      if (own.rows.length === 0) throw notFound('Audit');
+      const r = await query(
+        `DELETE FROM share_tokens
+         WHERE id = $1 AND tenant_id = $2 AND resource_type = 'audit' AND resource_id = $3`,
+        [tokenId, tenantId, auditId],
+      );
+      if ((r.rowCount ?? 0) === 0) throw notFound('Share link');
+      return reply.code(204).send();
+    });
+
     // Export an audit as PDF (pdfkit) or CSV (download).
     app.get('/audits/:auditId/export', { preHandler: requireScope('audits:read'),
       schema: {

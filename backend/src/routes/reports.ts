@@ -249,6 +249,59 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
       },
     );
 
+    // List ACTIVE share links for a report (F-08 revocation support).
+    // SECURITY: id/resource/timestamps ONLY — never the token or its hash.
+    app.get(
+      '/reports/:id/shares',
+      { schema: { params: idParams }, preHandler: [requireVerifiedEmail, requireScope('reports:write')] },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const { id } = req.params as { id: string };
+        const own = await query(`SELECT id FROM reports WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+        if (own.rows.length === 0) throw notFound('Report');
+        const r = await query(
+          `SELECT id, resource_type, resource_id, created_at, expires_at FROM share_tokens
+           WHERE tenant_id = $1 AND resource_type = 'report' AND resource_id = $2 AND expires_at > now()
+           ORDER BY created_at DESC`,
+          [tenantId, id],
+        );
+        return { data: r.rows };
+      },
+    );
+
+    // Revoke one report share link (row delete — the documented revocation
+    // model; the public link 404s immediately). Tenant-scoped: another
+    // tenant's token id 404s, nothing is deleted.
+    app.delete(
+      '/reports/:id/shares/:tokenId',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              tokenId: { type: 'string', format: 'uuid' },
+            },
+            required: ['id', 'tokenId'],
+          },
+        },
+        preHandler: [requireVerifiedEmail, requireScope('reports:write')],
+      },
+      async (req, reply) => {
+        const { tenantId } = req.tenant;
+        const { id, tokenId } = req.params as { id: string; tokenId: string };
+        const own = await query(`SELECT id FROM reports WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+        if (own.rows.length === 0) throw notFound('Report');
+        const r = await query(
+          `DELETE FROM share_tokens
+           WHERE id = $1 AND tenant_id = $2 AND resource_type = 'report' AND resource_id = $3`,
+          [tokenId, tenantId, id],
+        );
+        if ((r.rowCount ?? 0) === 0) throw notFound('Share link');
+        return reply.code(204).send();
+      },
+    );
+
     // Scheduled email delivery (rows consumed by the scheduler; Backend-A owns delivery).
     app.get('/sites/:id/reports/schedule', { preHandler: requireScope('reports:read'), schema: { params: idParams } }, async (req) => {
       const { id } = req.params as { id: string };

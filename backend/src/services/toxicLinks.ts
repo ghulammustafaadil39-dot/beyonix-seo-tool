@@ -123,9 +123,12 @@ export async function rescoreToxicLinks(
       domain = null;
     }
     await q(
+      // tenant_id in the WHERE is defence-in-depth: the ids come from the
+      // tenant-scoped SELECT above, but the UPDATE stays safe if that ever
+      // changes (contract: no SQL on tenant tables without tenant_id).
       `UPDATE backlinks SET toxic_flags = $2::text[], toxic_score = $3, referring_domain = $4
-       WHERE id = $1`,
-      [row.id, res.flags, res.score, domain],
+       WHERE id = $1 AND tenant_id = $5`,
+      [row.id, res.flags, res.score, domain, tenantId],
     );
     if (res.score >= TOXIC_THRESHOLD) toxic++;
   }

@@ -2,12 +2,15 @@
 // SECURITY-SENSITIVE. Opaque-token pattern (like Notion/Docs share links):
 //   token = "bseo1.<22-char random id>.<43-char HMAC-SHA256(secret, id)>"
 //
-// The random id is 132 bits (unguessable); the HMAC binds the token to our
-// secret so tokens cannot be minted without it. The resource payload
-// (resource_type, resource_id, tenant_id, expires_at) lives in the
-// share_tokens table keyed by token_hash — this keeps the URL short (Fastify
-// caps route params at 100 chars by default) and makes revocation a row
-// delete.
+// The random id is 128 bits (unguessable); the HMAC binds the token to our
+// secret so tokens cannot be minted without it. NOTE on what the HMAC does
+// and does NOT cover: the signature is over `bseo1.<id>` ONLY — it does not
+// cover the resource, tenant, or expiry. That binding lives in the
+// share_tokens DB row (resource_type, resource_id, tenant_id, expires_at),
+// looked up by token_hash at resolution time — which is also what makes
+// revocation a row delete. The DB row, not the signature, is authoritative
+// for what a token points at and when it dies. This keeps the URL short
+// (Fastify caps route params at 100 chars by default).
 // KEY SEPARATION (Security fix, Wave-2 rebase): call sites must NEVER pass
 // the raw JWT secret. They pass deriveShareTokenKey(config.jwtSecret) —
 // an HMAC-derived, domain-separated key — so a share-token signature can
