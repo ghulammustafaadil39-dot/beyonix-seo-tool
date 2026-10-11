@@ -95,12 +95,11 @@ let cached: LLMProvider | null = null;
 export function getLLM(override?: 'gemini' | 'openai' | 'mock', apiKey?: string): LLMProvider {
   const want = override ?? config.llmProvider;
   if (want === 'mock') return new MockLLMProvider();
-  // A2-H1: NEVER guess the provider for an explicitly-supplied key. A
-  // tenant BYOK key without a known provider would otherwise be handed to
-  // whichever provider the server default picks (e.g. a tenant's OpenAI
-  // key sent in the query string to Google's API) — a live credential
-  // disclosure. Fail closed instead.
-  if (apiKey && !override && !want) {
+  // A2-H1 (hardened per SEC-REVIEW Wave-4): NEVER guess the provider for an
+  // explicitly-supplied key, regardless of server config state. A tenant's
+  // key routed to the config-default provider would be a live credential
+  // disclosure to the wrong third party. Fail closed instead.
+  if (apiKey && !override) {
     throw new Error('getLLM: apiKey supplied without an explicit provider — refusing to guess (A2-H1 fail-closed)');
   }
   if (want === 'gemini' || (!want && (apiKey || config.geminiApiKey)))

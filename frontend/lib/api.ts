@@ -1018,11 +1018,11 @@ export const adminApi = {
       `/api/v1/admin/tenants/${id}/credit`,
       { method: 'POST', body: { amountCents, reason } },
     ),
-  impersonate: (tenantId: string) =>
-    api<{ token: string; tenantId: string; expiresInSec: number }>('/api/v1/admin/impersonate', {
-      method: 'POST',
-      body: { tenantId },
-    }),
+  // SEC-REVIEW (Wave-4): the old impersonate() helper returned the raw JWT
+  // to JS, which led to the document.cookie anti-pattern (A3-H1). It is
+  // intentionally removed — impersonation now goes through the same-origin
+  // route /api/admin/impersonate, which sets the session via HttpOnly
+  // Set-Cookie. Do not re-add a JSON-token impersonate helper.
   failedJobs: (page = 1, limit = 20, status?: string) =>
     api<Paged<AdminFailedJob>>(
       `/api/v1/admin/jobs/failed?page=${page}&limit=${limit}${status ? `&status=${status}` : ''}`,

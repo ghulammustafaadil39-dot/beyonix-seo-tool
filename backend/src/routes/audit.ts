@@ -141,12 +141,22 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
       // A1-H1: enqueue() can throw AFTER the row exists (Redis down, tenant
       // enqueue rate limit) — mark the row 'failed' instead of leaving a
       // permanent orphan 'queued' row that would 409 all future audits.
+      // SEC-REVIEW (Wave-4): the jobId MUST be unique per audit row. BullMQ
+      // silently dedupes on duplicate jobId (returns the existing job, no
+      // error), so a week-scoped key like crawl:<site>:<week> would orphan
+      // any second audit created in the same week: the new 'queued' row
+      // would never be processed and all future audits would 409 forever.
+      // Uniqueness per audit row closes that window; the active-audit
+      // rule itself is enforced by the route + partial unique index above.
+      // NOTE: BullMQ rejects a colon-containing custom jobId unless it
+      // splits into exactly 3 parts — hence the crawl:<auditId>:<week>
+      // shape (unique per audit, still 3 parts).
       try {
         await enqueue(
           QUEUES.crawl,
           Jobs.CRAWL_SITE,
           { siteId, tenantId, auditId: audit.id },
-          { idempotencyKey: `crawl:${siteId}:${isoWeekKey()}` },
+          { idempotencyKey: `crawl:${audit.id}:${isoWeekKey()}` },
         );
       } catch (err: any) {
         const message = `enqueue failed: ${err?.message ?? String(err)}`.slice(0, 1000);

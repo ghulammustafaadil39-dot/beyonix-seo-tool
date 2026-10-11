@@ -229,7 +229,11 @@ describe('Wave-2 gate: core user journey', () => {
     expect((post.json() as any).audit.status).toBe('queued');
 
     // The job really landed on the BullMQ crawl queue in Redis.
-    const job = await getQueue(QUEUES.crawl).getJob(`crawl:${siteId}:${isoWeekKey()}`);
+    // SEC-REVIEW (Wave-4): jobId is unique per audit row
+    // (crawl:<auditId>:<week> — BullMQ needs the 3-part shape; a
+    // site+week-scoped key would let BullMQ dedupe silently orphan a
+    // second same-week audit).
+    const job = await getQueue(QUEUES.crawl).getJob(`crawl:${auditId}:${isoWeekKey()}`);
     expect(job).toBeTruthy();
     expect(job?.name).toBe(Jobs.CRAWL_SITE);
 
