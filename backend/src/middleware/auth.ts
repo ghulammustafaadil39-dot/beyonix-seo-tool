@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { config } from '../config.js';
 import { query } from '../db.js';
-import { unauthorized } from '../errors.js';
+import { ApiError, unauthorized } from '../errors.js';
+import { getRedis, redisKeyPrefix } from '../redis.js';
 import { isSessionActive, touchSession } from '../services/sessions.js';
 import { CSRF_COOKIE } from './csrf.js';
 import { authCookieOptions, csrfCookieOptions } from '../services/securityHeaders.js';
@@ -20,6 +21,16 @@ export interface TenantContext {
   emailVerified: boolean;
   /** S-05: the token's jti (undefined for pre-S-05 legacy tokens). */
   jti?: string;
+  /** F-09: team role — owner|admin|editor|viewer (users.role). */
+  role: string;
+  /** F-14: platform admin (bypasses tenant scoping on /api/v1/admin). */
+  isPlatformAdmin: boolean;
+  /** C-01: downgraded-with-excess-usage tenants are read-only. */
+  readOnly: boolean;
+  /** F-13: set when authenticated via API key instead of a user session. */
+  apiKeyId?: string;
+  /** F-13: scopes granted to the API key (empty = none). */
+  apiKeyScopes?: string[];
 }
 
 declare module 'fastify' {
@@ -86,6 +97,76 @@ function tokenFromRequest(req: FastifyRequest): string | null {
   return c ?? null;
 }
 
+/**
+ * F-13: extracts a raw API key from the request. Keys are `bseo_`-prefixed
+ * (32 random bytes, hex) and travel as `Authorization: Bearer bseo_...` or
+ * the `x-api-key` header. JWT session tokens never have the prefix, so the
+ * two mechanisms cannot collide.
+ */
+function apiKeyFromRequest(req: FastifyRequest): string | null {
+  const h = req.headers.authorization;
+  if (h?.startsWith('Bearer bseo_')) return h.slice(7);
+  const x = req.headers['x-api-key'];
+  if (typeof x === 'string' && x.startsWith('bseo_')) return x;
+  return null;
+}
+
+/**
+ * F-13: resolves an API key to a tenant context. Only the sha256 hash is
+ * stored (017); the raw key is compared by hash, never logged. Revoked keys
+ * are rejected; each key has its own per-minute rate limit.
+ */
+async function tenantFromApiKey(rawKey: string): Promise<{ ctx: TenantContext; suspendedAt: string | null }> {
+  const keyHash = createHash('sha256').update(rawKey).digest('hex');
+  const r = await query(
+    `SELECT k.id, k.tenant_id, k.scopes, k.rate_limit_per_min, k.revoked_at,
+            t.plan_id, t.suspended_at, t.read_only
+     FROM api_keys k JOIN tenants t ON t.id = k.tenant_id
+     WHERE k.key_hash = $1`,
+    [keyHash],
+  );
+  const row = r.rows[0];
+  if (!row || row.revoked_at) throw unauthorized('Invalid or revoked API key');
+
+  // F-13: per-key rate limit (fixed window, Redis).
+  const redis = getRedis();
+  const rlKey = `${redisKeyPrefix()}apikey:${row.id as string}`;
+  const count = await redis.incr(rlKey);
+  if (count === 1) await redis.expire(rlKey, 60);
+  const max = Number(row.rate_limit_per_min ?? 60);
+  if (count > max) {
+    throw new ApiError(429, 'API_KEY_RATE_LIMITED', `API key rate limit exceeded (${max}/min)`, {
+      retryAfterSec: 60,
+    });
+  }
+
+  // Throttled last-used touch (one write per 5 min per key).
+  await query(
+    `UPDATE api_keys SET last_used_at = now()
+     WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '5 minutes')`,
+    [row.id],
+  );
+
+  return {
+    ctx: {
+      userId: `apikey:${row.id as string}`,
+      tenantId: row.tenant_id as string,
+      plan: row.plan_id as PlanId,
+      email: '',
+      name: 'API key',
+      emailVerified: true,
+      // Keys authenticate as the tenant; fine-grained access is gated by
+      // requireScope on each route, not by team roles.
+      role: 'api-key',
+      isPlatformAdmin: false,
+      readOnly: row.read_only === true,
+      apiKeyId: row.id as string,
+      apiKeyScopes: (row.scopes as string[]) ?? [],
+    },
+    suspendedAt: (row.suspended_at as string | null) ?? null,
+  };
+}
+
 /** Fastify plugin: verifies JWT and attaches req.tenant. Use on all tenant routes.
  * NOTE: this plugin MUST stay encapsulated (plain async function, no
  * fastify-plugin wrapper): fastify-plugin would lift the preHandler hook onto
@@ -93,6 +174,15 @@ function tokenFromRequest(req: FastifyRequest): string | null {
  * /auth/signup, /auth/login and /billing/webhook. */
 export async function authPlugin(fastify: FastifyInstance) {
   fastify.addHook('preHandler', async (req) => {
+    // F-13: API keys authenticate as the tenant (Bearer bseo_... or
+    // x-api-key header). JWT session auth is the fallback.
+    const apiKeyRaw = apiKeyFromRequest(req);
+    if (apiKeyRaw) {
+      const { ctx, suspendedAt } = await tenantFromApiKey(apiKeyRaw);
+      req.tenant = ctx;
+      enforceTenantState(req, suspendedAt);
+      return;
+    }
     const token = tokenFromRequest(req);
     if (!token) throw unauthorized('Authentication required');
     let payload: any;
@@ -102,7 +192,8 @@ export async function authPlugin(fastify: FastifyInstance) {
       throw unauthorized('Invalid or expired token');
     }
     const r = await query(
-      `SELECT u.id AS user_id, u.email, u.name, u.tenant_id, u.token_version, u.email_verified_at, t.plan_id
+      `SELECT u.id AS user_id, u.email, u.name, u.tenant_id, u.token_version, u.email_verified_at,
+              u.role, u.is_platform_admin, t.plan_id, t.suspended_at, t.read_only
        FROM users u JOIN tenants t ON t.id = u.tenant_id
        WHERE u.id = $1 AND u.tenant_id = $2`,
       [payload.uid, payload.tid],
@@ -136,6 +227,45 @@ export async function authPlugin(fastify: FastifyInstance) {
       name: row.name,
       emailVerified: row.email_verified_at != null,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined,
+      // F-09/F-13/F-14 (Backend-A): role, platform-admin flag and read-only
+      // state ride on the session context (cross-module addition — flagged
+      // to LA; B1 owns this file).
+      role: (row.role as string) ?? 'owner',
+      isPlatformAdmin: row.is_platform_admin === true,
+      readOnly: row.read_only === true,
     };
+    // C-01/F-14: suspended tenants blocked; read-only tenants limited to
+    // reads + billing/admin/account/apikeys/settings mutations.
+    enforceTenantState(req, row.suspended_at as string | null);
   });
+}
+
+/**
+ * C-01 / F-14: suspended tenants are fully blocked; read-only tenants
+ * (downgraded with excess usage) may read and manage billing/admin/account
+ * but cannot mutate product resources. Enforcement lives here because
+ * authPlugin is the single choke point for every tenant route.
+ */
+function enforceTenantState(req: FastifyRequest, suspendedAt?: string | null): void {
+  if (suspendedAt) {
+    throw new ApiError(
+      403,
+      'TENANT_SUSPENDED',
+      'This workspace has been suspended. Please contact support.',
+    );
+  }
+  const tenant = (req as { tenant?: TenantContext }).tenant;
+  if (!tenant?.readOnly) return;
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return;
+  const url = req.url.split('?')[0];
+  // Billing/admin/account/apikeys/settings stay writable so a read-only
+  // tenant can upgrade, manage their team, and configure alerts.
+  if (/^\/api\/v1\/(billing|admin|account|apikeys|settings|auth|webhooks)(\/|$)/.test(url)) return;
+  throw new ApiError(
+    403,
+    'READ_ONLY_MODE',
+    'Your workspace is in read-only mode because usage exceeds your current plan limits. ' +
+      'Upgrade your plan or remove excess resources to make changes.',
+    { upgrade: true },
+  );
 }
