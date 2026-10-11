@@ -102,6 +102,22 @@ export async function runRetentionCleanup(q: QueryFn = defaultQuery): Promise<Cl
   // Soft-deleted sites: hard-purge after the 30-day restore window (C-06).
   const purge = await q(`DELETE FROM sites WHERE deleted_at IS NOT NULL AND deleted_at < now() - interval '30 days'`);
   results.push({ entity: 'sites.soft_deleted', deleted: purge.rowCount ?? 0 });
+  // NEW-3: stale PENDING idempotency claims (owner crashed mid-request)
+  // are abandoned after 5 minutes — the middleware also takes them over
+  // lazily on the next same-key request; this sweep reaps the ones
+  // nobody retries. Completed claims (status_code NOT NULL) are replay
+  // evidence and are NOT touched here.
+  const idemExists = await q(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'idempotency_keys' AND column_name = 'created_at'`,
+  );
+  if (idemExists.rows.length > 0) {
+    const stale = await q(
+      `DELETE FROM idempotency_keys
+       WHERE status_code IS NULL AND created_at < now() - interval '5 minutes'`,
+    );
+    results.push({ entity: 'idempotency_keys.stale_pending', deleted: stale.rowCount ?? 0 });
+  }
   return results;
 }
 

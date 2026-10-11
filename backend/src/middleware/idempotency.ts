@@ -20,6 +20,12 @@ import { query } from '../db.js';
  *   (failures never poison the key).
  * - A duplicate that waits longer than the wait budget gets a 409
  *   IDEMPOTENCY_IN_PROGRESS instead of executing.
+ * - NEW-3: a claim left `pending` by a process crash is ABANDONED after
+ *   5 minutes — it is never reaped by its owner (there is none), so
+ *   without this the key would be burned forever. A later request with
+ *   the same key AND the same body hash may take the claim over
+ *   (conditional DELETE of the stale row, then a fresh claim) and
+ *   execute. The retention sweep also deletes stale pending claims.
  *
  * Usage: wrap the handler with `withIdempotency('scope', handler)`.
  */
@@ -28,6 +34,9 @@ export const IDEMPOTENCY_HEADER = 'idempotency-key';
 /** How long a concurrent duplicate waits for the claiming request. */
 const WAIT_TIMEOUT_MS = 15_000;
 const WAIT_POLL_MS = 50;
+
+/** NEW-3: a pending claim older than this is abandoned (crashed owner). */
+export const STALE_PENDING_MS = 5 * 60_000;
 
 export function requestHash(req: FastifyRequest): string {
   const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? '');
@@ -93,6 +102,26 @@ async function completeClaim(
 
 async function releaseClaim(tenantId: string, key: string): Promise<void> {
   await query(`DELETE FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`, [tenantId, key]);
+}
+
+/**
+ * NEW-3: deletes a PENDING claim iff it is stale (older than
+ * STALE_PENDING_MS — keep the interval literal below in sync) AND carries
+ * the same request hash. Returns true when this caller reaped it (the
+ * caller may then claim the key itself). The hash predicate means a
+ * different-body reuse can never reap someone else's claim — it still
+ * gets the 422 from replayOrConflict. The status/age predicates make the
+ * delete race-safe: two concurrent takeover attempts, exactly one wins.
+ */
+async function reapStaleClaim(tenantId: string, key: string, hash: string): Promise<boolean> {
+  const r = await query(
+    `DELETE FROM idempotency_keys
+     WHERE tenant_id = $1 AND key = $2 AND request_hash = $3
+       AND status_code IS NULL
+       AND created_at < now() - interval '5 minutes'`,
+    [tenantId, key, hash],
+  );
+  return (r.rowCount ?? 0) > 0;
 }
 
 /**
@@ -181,6 +210,13 @@ export function withIdempotency(
       if (!existing) continue; // claim was just released — try to claim it
       const immediate = replayOrConflict(req, reply, existing, hash);
       if (immediate !== null || existing.response || existing.requestHash !== hash) return immediate;
+
+      // NEW-3: pending claim with OUR hash — if its owner crashed and
+      // the claim is stale, take it over instead of waiting out the
+      // budget and 409ing on a key that would never complete. The
+      // conditional DELETE no-ops for a fresh claim, which then falls
+      // through to the normal wait below.
+      if (await reapStaleClaim(tenantId, key, hash)) continue;
 
       // Pending claim with our hash: wait for it to complete, then replay.
       const deadline = Date.now() + WAIT_TIMEOUT_MS;

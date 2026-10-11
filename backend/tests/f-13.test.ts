@@ -272,7 +272,8 @@ describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
       headers: auth(owner.token),
       payload: { email: viewerEmail, role: 'viewer' },
     });
-    expect(inv.statusCode).toBe(200);
+    // NEW-2: invite create is always 202 (token still present in mock mode).
+    expect(inv.statusCode).toBe(202);
     const viewer = await signupVerified(app, viewerEmail);
     tc.add(viewer.tenantId);
     const accept = await app.inject({

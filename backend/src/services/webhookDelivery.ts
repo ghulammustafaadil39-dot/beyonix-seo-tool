@@ -13,6 +13,16 @@ import { CircuitBreaker } from './circuitBreaker.js';
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3_600_000, 12 * 3_600_000];
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
 
+/**
+ * NEW-5: overall deadline for ONE delivery attempt, across ALL redirect
+ * hops. The per-hop timeout is 15s and safeFetch follows up to 5
+ * redirects, so without an overall cap a single attempt could take
+ * ~90s. safeFetch already supports an absolute deadline
+ * (SafeFetchOpts.deadlineMs, epoch ms) — we pass `now + this` on every
+ * attempt, capping the whole attempt at ~30s.
+ */
+export const WEBHOOK_OVERALL_DEADLINE_MS = 30_000;
+
 const breakers = new Map<string, CircuitBreaker>();
 function breakerFor(host: string): CircuitBreaker {
   let b = breakers.get(host);
@@ -118,6 +128,8 @@ async function deliverOne(
   q: QueryFn,
   delivery: { id: string; event: string; payload: any },
   endpoint: WebhookEndpoint,
+  /** Absolute epoch-ms deadline for the whole attempt (all hops). */
+  deadlineAt: number = Date.now() + WEBHOOK_OVERALL_DEADLINE_MS,
 ): Promise<void> {
   // SSRF re-validation at delivery time (DNS may have changed since
   // registration).
@@ -153,6 +165,9 @@ async function deliverOne(
       15_000,
       5,
       {
+        // NEW-5: overall deadline across every redirect hop (~30s),
+        // on top of the 15s per-hop timeout above.
+        deadlineMs: deadlineAt,
         allowedContentTypes: [
           'text/',
           'application/',
@@ -183,7 +198,12 @@ async function deliverOne(
  * Delivers due webhook retries (called from the scheduler every 5 min, and
  * directly by tests). Returns the number of deliveries attempted.
  */
-export async function processWebhookRetries(q: QueryFn = defaultQuery): Promise<number> {
+export async function processWebhookRetries(
+  q: QueryFn = defaultQuery,
+  /** Overall per-attempt deadline (duration, ms). Tests override it to
+   * prove the deadline plumbing without waiting the full 30s. */
+  overallDeadlineMs: number = WEBHOOK_OVERALL_DEADLINE_MS,
+): Promise<number> {
   const due = await q(
     `SELECT d.id, d.event, d.payload, d.attempts, d.endpoint_id,
             e.url, e.secret_enc, e.tenant_id
@@ -198,14 +218,19 @@ export async function processWebhookRetries(q: QueryFn = defaultQuery): Promise<
     attempted += 1;
     const attempts = Number(row.attempts) + 1;
     try {
-      await deliverOne(q, { id: row.id, event: row.event, payload: row.payload }, {
-        id: row.endpoint_id,
-        tenant_id: row.tenant_id,
-        url: row.url,
-        secret_enc: row.secret_enc,
-        events: [],
-        enabled: true,
-      });
+      await deliverOne(
+        q,
+        { id: row.id, event: row.event, payload: row.payload },
+        {
+          id: row.endpoint_id,
+          tenant_id: row.tenant_id,
+          url: row.url,
+          secret_enc: row.secret_enc,
+          events: [],
+          enabled: true,
+        },
+        Date.now() + overallDeadlineMs,
+      );
     } catch (err) {
       const message = (err as Error)?.message?.slice(0, 1000) ?? String(err);
       if (attempts >= MAX_ATTEMPTS) {

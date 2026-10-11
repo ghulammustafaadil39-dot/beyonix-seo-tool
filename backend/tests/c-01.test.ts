@@ -3,7 +3,7 @@ import { buildApp } from '../src/index.js';
 import type { FastifyInstance } from 'fastify';
 import { pool, query, runMigrations } from '../src/db.js';
 import { applyPaymentEvent, getPayments } from '../src/providers/stripe.js';
-import { withIdempotency } from '../src/middleware/idempotency.js';
+import { requestHash, withIdempotency } from '../src/middleware/idempotency.js';
 import { sessionTokenFromResponse } from './helpers.js';
 import { onBillingEvent, processBillingGrace } from '../src/services/billing.js';
 
@@ -655,6 +655,120 @@ describe.runIf(HAS_TEST_DB)('C-01 billing completeness', () => {
     ]);
     const c = await query(`SELECT redeemed_count FROM billing_coupons WHERE code = 'MAXONE'`);
     expect(Number(c.rows[0].redeemed_count)).toBe(1);
+  });
+
+  it('REGRESSION (NEW-3): a stale pending idempotency claim (crashed owner) is taken over and executes', async () => {
+    // No new signup (rate-limit headroom in this file): reuse the newest
+    // tenant as the FK target, like the withIdempotency wrap test above.
+    const anyTenant = await query(`SELECT id FROM tenants ORDER BY created_at DESC LIMIT 1`);
+    const tenantId = anyTenant.rows[0].id as string;
+    const key = `stale-takeover-${Date.now()}`;
+    const body = { planId: 'growth' };
+    const mkReq = () =>
+      ({
+        headers: { 'idempotency-key': key },
+        tenant: { tenantId },
+        method: 'POST',
+        url: '/api/v1/billing/checkout',
+        body,
+        id: 'stale-test',
+      }) as any;
+    const mkReply = () =>
+      ({
+        statusCode: 200,
+        sent: false,
+        status(c: number) {
+          this.statusCode = c;
+          return this;
+        },
+        send(b: unknown) {
+          this.sent = true;
+          return b;
+        },
+      }) as any;
+    // Simulate a claim orphaned by a crashed process: pending (no
+    // response/status), backdated 10 minutes (> the 5-minute stale bar).
+    const hash = requestHash(mkReq());
+    await query(
+      `INSERT INTO idempotency_keys (key, tenant_id, scope, request_hash, response, status_code, created_at)
+       VALUES ($1, $2, 'billing:checkout', $3, NULL, NULL, now() - interval '10 minutes')`,
+      [key, tenantId, hash],
+    );
+    let executions = 0;
+    const wrapped = withIdempotency('billing:checkout', async () => {
+      executions += 1;
+      return { url: 'https://checkout.test/stale', executions };
+    });
+    const out = await wrapped(mkReq(), mkReply());
+    // The stale claim was reaped, this request claimed the key and the
+    // handler executed (previously: 15s wait, then 409 forever).
+    expect(executions).toBe(1);
+    expect(out).toEqual({ url: 'https://checkout.test/stale', executions: 1 });
+    const row = await query(`SELECT status_code FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`, [
+      tenantId,
+      key,
+    ]);
+    expect(row.rows[0].status_code).toBe(200);
+    await query(`DELETE FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`, [tenantId, key]);
+  });
+
+  it('REGRESSION (NEW-4): charge.refunded does NOT advance subscriptions.last_event_at', async () => {
+    // Direct tenant row (no signup — rate-limit headroom in this file).
+    const t = await query(
+      `INSERT INTO tenants (id, name, plan_id, stripe_customer_id)
+       VALUES (gen_random_uuid(), 'c01-new4', 'growth', 'cus_new4_1') RETURNING id`,
+    );
+    const tenantId = t.rows[0].id as string;
+    tenants.push(tenantId);
+    const watermark = 1_700_000_000; // 2023-11-14
+    await query(
+      `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, stripe_customer_id, plan_id, status, last_event_at)
+       VALUES (gen_random_uuid(), $1, 'sub_new4_1', 'cus_new4_1', 'growth', 'active', to_timestamp($2))`,
+      [tenantId, watermark],
+    );
+    await query(
+      `INSERT INTO invoices (tenant_id, stripe_invoice_id, status, amount_due_cents)
+       VALUES ($1, 'in_new4_1', 'paid', 2900)`,
+      [tenantId],
+    );
+    // A refund created LONG after the watermark (2027) must still be
+    // processed (invoice marked, credit recorded) but must NOT move the
+    // subscription ordering watermark.
+    await applyPaymentEvent({
+      id: `evt_new4_ref_${Date.now()}`,
+      type: 'charge.refunded',
+      created: 1_900_000_000,
+      data: {
+        id: 'ch_new4_1',
+        object: 'charge',
+        amount_refunded: 2900,
+        currency: 'usd',
+        invoice: 'in_new4_1',
+        metadata: { tenantId },
+      },
+    });
+    const inv = await query(`SELECT status FROM invoices WHERE stripe_invoice_id = 'in_new4_1'`);
+    expect(inv.rows[0].status).toBe('refunded');
+    let sub = await query(`SELECT last_event_at FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+    expect(new Date(sub.rows[0].last_event_at).getTime()).toBe(watermark * 1000);
+
+    // And an earlier-created subscription event (between the watermark
+    // and the refund) is therefore NOT dropped as stale — it applies.
+    const mid = await applyPaymentEvent({
+      id: `evt_new4_mid_${Date.now()}`,
+      type: 'customer.subscription.updated',
+      created: 1_800_000_000,
+      data: {
+        id: 'sub_new4_1',
+        object: 'subscription',
+        status: 'active',
+        metadata: { planId: 'pro' },
+      },
+    });
+    expect(mid.stale).toBeFalsy();
+    sub = await query(`SELECT plan_id, last_event_at FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+    expect(sub.rows[0].plan_id).toBe('pro');
+    expect(new Date(sub.rows[0].last_event_at).getTime()).toBe(1_800_000_000_000);
   });
 
   it('customer.subscription.deleted downgrades but never deletes data', async () => {

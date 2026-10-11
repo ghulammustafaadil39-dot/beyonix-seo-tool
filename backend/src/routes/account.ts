@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import type { FastifyInstance } from 'fastify';
-import { query } from '../db.js';
+import { pool, query, type QueryFn } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
 import { authPlugin, signToken } from '../middleware/auth.js';
 import { canAssignRole, requireRole, requireScope } from '../middleware/access.js';
@@ -11,7 +11,7 @@ import { createSession } from '../services/sessions.js';
 import { getPlan, type PlanId } from '../plans.js';
 import { logActivity } from '../services/activityLog.js';
 import { paginate, assertUuid } from '../pagination.js';
-import { config } from '../config.js';
+import { config, hasSmtp } from '../config.js';
 
 const ONBOARDING_STEPS = ['verify_site', 'connect_gsc', 'first_crawl', 'add_keywords', 'first_report'] as const;
 
@@ -118,6 +118,71 @@ const onboardingSchema = {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * NEW-1: every tenant-scoped table whose rows would be destroyed (or
+ * orphaned) by `DELETE FROM tenants`. Curated from the migrations by
+ * grepping for `REFERENCES tenants` / `tenant_id` columns
+ * (001, 010–019) — keep this list in sync when a migration adds a
+ * tenant-scoped table. A shell tenant may be dissolved on invite accept
+ * ONLY when it has zero rows across ALL of these.
+ *
+ * Excluded on purpose:
+ * - `users` — the shell's sole user IS the person moving; the accept
+ *   flow checks for OTHER users separately.
+ * - `admin_audit_log` — references tenants via actor/target columns
+ *   with ON DELETE SET NULL by design (the audit trail must survive).
+ * - `email_verification_tokens` / `user_sessions` — scoped to the user,
+ *   not the tenant; the user (and their rows) move, nothing is lost.
+ */
+export const SHELL_TENANT_TABLES = [
+  'sites',
+  'audits',
+  'audit_issues',
+  'keywords',
+  'rank_checks',
+  'content_pieces',
+  'geo_checks',
+  'backlinks',
+  'usage_events',
+  'subscriptions',
+  'reports',
+  'stripe_webhook_events',
+  'invoices',
+  'usage_reservations',
+  'usage_alert_state',
+  'provider_spend',
+  'dead_letter_jobs',
+  'idempotency_keys',
+  'workspaces',
+  'team_invitations',
+  'activity_log',
+  'notification_rules',
+  'notification_digests',
+  'webhook_endpoints',
+  'webhook_deliveries',
+  'notification_log',
+  'api_keys',
+  'tenant_credits',
+  'onboarding_state',
+] as const;
+
+/**
+ * NEW-2: the invite token may ride in the API response ONLY when mail
+ * is in mock mode — i.e. no real SMTP is configured (the settings
+ * providers view reports notify mode as `hasSmtp() ? 'real' : 'mock'`),
+ * mirroring the signup precedent of returning `verifyToken` only in
+ * test/dev (`testVerifyTokenField` in routes/auth.ts). In test mode the
+ * token is always exposed so integration tests can complete the flow.
+ * With real SMTP configured the token travels by email ONLY.
+ */
+function inviteDebugFields(fields: Record<string, unknown>): Record<string, unknown> {
+  const mailMock = !hasSmtp() || config.nodeEnv === 'test' || config.nodeEnv === 'development';
+  // In production WITH real SMTP, mailMock must be false even if a
+  // stray NODE_ENV slips through: production + SMTP is the real path.
+  if (config.nodeEnv === 'production' && hasSmtp()) return {};
+  return mailMock ? fields : {};
+}
+
 async function requireWorkspace(tenantId: string, workspaceId: string) {
   assertUuid(workspaceId, 'workspaceId');
   const r = await query(`SELECT id, name, limits FROM workspaces WHERE id = $1 AND tenant_id = $2`, [
@@ -203,18 +268,20 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         if (!canAssignRole((req as any).tenant.role, role)) {
           throw new ApiError(403, 'FORBIDDEN', 'You cannot invite a role equal to or above your own');
         }
-        // F-09 enumeration fix: an email registered in ANOTHER tenant must
-        // be indistinguishable at this endpoint — never 409 USER_EXISTS
-        // (that leaked platform-wide registration to any owner/admin/
-        // editor). The invitation is still created and emailed (the
-        // accept flow moves the user with orphan guards), but the response
-        // is a generic 202 with no token/id. An email that is already a
-        // member of THIS tenant is different: the caller can already see
-        // the member list, so saying so leaks nothing.
+        // F-09 enumeration fix + NEW-2: an email registered in ANOTHER
+        // tenant must be indistinguishable at this endpoint — never 409
+        // USER_EXISTS (that leaked platform-wide registration to any
+        // owner/admin/editor). The first fix still returned 200 with a
+        // token payload for brand-new emails vs a generic 202 for
+        // cross-tenant ones — status+shape remained a registration
+        // oracle. NOW both cases return the SAME 202 generic body (see
+        // the tail of this handler). An email that is already a member
+        // of THIS tenant is different: the caller can already see the
+        // member list, so the 409 below leaks nothing cross-tenant.
         const existing = await query(`SELECT id, tenant_id FROM users WHERE email = $1`, [email]);
-        const crossTenantExisting =
-          existing.rows.length > 0 && (existing.rows[0].tenant_id as string) !== t(req);
-        if (existing.rows.length > 0 && !crossTenantExisting) {
+        const sameTenantExisting =
+          existing.rows.length > 0 && (existing.rows[0].tenant_id as string) === t(req);
+        if (sameTenantExisting) {
           throw new ApiError(409, 'USER_EXISTS', 'This email is already a member of your workspace');
         }
         const rawToken = crypto.randomBytes(32).toString('hex');
@@ -242,17 +309,23 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           entityId: inv.rows[0].id as string,
           meta: { email, role },
         });
-        if (crossTenantExisting) {
-          // Generic, non-distinguishing response (see above): no id, no
-          // token, no hint that the email is registered anywhere.
-          return reply.status(202).send({
-            ok: true,
-            message: 'If this email can be invited, an invitation has been sent.',
-          });
-        }
-        // The raw token is returned so API clients (and tests) can complete
-        // the flow; email remains the primary channel.
-        return { id: inv.rows[0].id, email, role, expires_at: inv.rows[0].expires_at, token: rawToken };
+        // NEW-2: ALWAYS the same 202 + shape, whether the email is
+        // brand-new or registered to another tenant — nothing in the
+        // status or body distinguishes the two. The debug fields
+        // (id/expires_at/token) are included in BOTH cases identically,
+        // and only when mail is in mock mode (inviteDebugFields); with
+        // real SMTP the token travels by email only.
+        return reply.status(202).send({
+          ok: true,
+          message: 'If this email can be invited, an invitation has been sent.',
+          ...inviteDebugFields({
+            id: inv.rows[0].id,
+            email,
+            role,
+            expires_at: inv.rows[0].expires_at,
+            token: rawToken,
+          }),
+        });
       },
     );
 
@@ -280,7 +353,28 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     authed.post('/account/invitations/accept', { schema: acceptInviteSchema }, async (req) => {
       const { token } = req.body as { token: string };
       const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-      const inv = await query(
+      // NEW-1: the whole accept flow — invitation/user reads, shell
+      // guards, invitation claim, user move, shell dissolve, activity
+      // log — runs in ONE transaction on a single pooled client. The
+      // old flow used sequential pool queries, so a tenant-scoped row
+      // landing between the guard reads and the DELETE was silently
+      // destroyed by the cascade. Inside the transaction the shell
+      // tenant row is also locked FOR UPDATE (below): an INSERT into
+      // any tenant-scoped table takes a KEY SHARE lock on the tenant
+      // row for its FK check, which conflicts with FOR UPDATE — so a
+      // concurrent insert either committed BEFORE our guard reads (and
+      // is counted) or waits until we commit (and then hits a missing
+      // tenant if we dissolved). Never in between.
+      const client = await pool.connect();
+      let inTx = false;
+      let acceptedTenantId = '';
+      let acceptedRole = '';
+      let acceptedTokenVersion = 0;
+      try {
+        await client.query('BEGIN');
+        inTx = true;
+        const cq: QueryFn = (text, params) => client.query(text, params as any[]) as any;
+      const inv = await cq(
         `SELECT id, tenant_id, email, role, expires_at, accepted_at, revoked_at
          FROM team_invitations WHERE token_hash = $1`,
         [tokenHash],
@@ -290,7 +384,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       if (row.revoked_at || row.accepted_at || new Date(row.expires_at).getTime() < Date.now()) {
         throw new ApiError(410, 'INVITE_EXPIRED', 'This invitation has expired or was revoked');
       }
-      const me = await query(`SELECT id, email, tenant_id, role FROM users WHERE id = $1`, [u(req)]);
+      const me = await cq(`SELECT id, email, tenant_id, role FROM users WHERE id = $1`, [u(req)]);
       if (me.rows.length === 0) throw new ApiError(401, 'UNAUTHORIZED', 'Authentication required');
       if (me.rows[0].email.toLowerCase() !== (row.email as string).toLowerCase()) {
         throw new ApiError(403, 'FORBIDDEN', 'This invitation was sent to a different email address');
@@ -300,37 +394,39 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       // - sole user of an empty shell tenant -> the shell is dissolved;
       // - sole user of a tenant WITH data -> refused (no silent data loss);
       // - last owner of a shared tenant -> refused (would orphan it).
-      // "Empty" must mean NO billing footprint either: DELETE FROM tenants
-      // cascade-deletes subscriptions, invoices and tenant_credits
-      // (all ON DELETE CASCADE), so a shell with zero sites but a paid
-      // subscription would silently lose its billing history on dissolve.
+      // "Empty" (NEW-1) means zero rows across EVERY tenant-scoped
+      // table (SHELL_TENANT_TABLES): DELETE FROM tenants cascade-deletes
+      // far more than sites + billing — usage_events, provider_spend,
+      // workspaces, api_keys, webhook rows, invitations, activity, …
+      // would all be silently erased by a dissolve. Any row anywhere
+      // refuses the move with 409 (guard runs before the claim, inside
+      // this transaction, so the invitation is NOT burned).
       const oldTenantId = me.rows[0].tenant_id as string;
       // Guards first (pure reads), claim second, writes last — so a refused
       // accept never burns the invitation.
       let dissolveShell = false;
       if (oldTenantId !== row.tenant_id) {
-        const others = await query(
+        // Serialize against concurrent tenant-scoped inserts into the
+        // shell (see the transaction comment above).
+        await cq(`SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, [oldTenantId]);
+        const others = await cq(
           `SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND id <> $2`,
           [oldTenantId, u(req)],
         );
-        const oldSites = await query(`SELECT COUNT(*)::int c FROM sites WHERE tenant_id = $1`, [oldTenantId]);
         if (Number(others.rows[0].c) === 0) {
-          // Billing footprint guard: subscriptions / invoices /
-          // tenant_credits are all ON DELETE CASCADE from tenants, so
-          // dissolving the shell would erase them. Refuse the move with
-          // the same 409 as the sites guard (safest option: the guard
-          // runs before the invitation claim, so the invite is not
-          // burned, and the user keeps access to their billing history
-          // until they cancel/transfer it — moving anyway would leave an
-          // ownerless, unreachable shell tenant behind).
-          const oldBilling = await query(
-            `SELECT
-               (SELECT COUNT(*)::int FROM subscriptions WHERE tenant_id = $1) +
-               (SELECT COUNT(*)::int FROM invoices WHERE tenant_id = $1) +
-               (SELECT COUNT(*)::int FROM tenant_credits WHERE tenant_id = $1) AS c`,
-            [oldTenantId],
-          );
-          if (Number(oldSites.rows[0].c) > 0 || Number(oldBilling.rows[0].c) > 0) {
+          // Complete shell guard: one UNION ALL count per curated
+          // table (table names come from the frozen constant above,
+          // never from input). Existence is checked per table so a
+          // not-yet-migrated table cannot crash the accept flow.
+          let shellRows = 0;
+          for (const table of SHELL_TENANT_TABLES) {
+            const exists = await cq(`SELECT to_regclass($1) AS cls`, [`public.${table}`]);
+            if (!exists.rows[0]?.cls) continue;
+            const c = await cq(`SELECT COUNT(*)::int c FROM ${table} WHERE tenant_id = $1`, [oldTenantId]);
+            shellRows += Number(c.rows[0].c);
+            if (shellRows > 0) break;
+          }
+          if (shellRows > 0) {
             throw new ApiError(
               409,
               'INVITE_WOULD_ORPHAN_DATA',
@@ -339,7 +435,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           }
           dissolveShell = true;
         } else if (me.rows[0].role === 'owner') {
-          const owners = await query(
+          const owners = await cq(
             `SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND role = 'owner' AND id <> $2`,
             [oldTenantId, u(req)],
           );
@@ -356,7 +452,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       // A concurrent double-submit (double-click, retry, two tabs) — both
       // requests can pass the read check above, but only the one whose
       // UPDATE lands first proceeds; the loser gets 410 with NO writes.
-      const claim = await query(
+      const claim = await cq(
         `UPDATE team_invitations SET accepted_at = now()
          WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL`,
         [row.id],
@@ -365,28 +461,49 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         throw new ApiError(410, 'INVITE_EXPIRED', 'This invitation has expired or was revoked');
       }
       if (oldTenantId !== row.tenant_id) {
-        await query(`UPDATE users SET tenant_id = $1, role = $2 WHERE id = $3`, [
+        await cq(`UPDATE users SET tenant_id = $1, role = $2 WHERE id = $3`, [
           row.tenant_id,
           row.role,
           u(req),
         ]);
         if (dissolveShell) {
-          await query(`DELETE FROM tenants WHERE id = $1`, [oldTenantId]);
+          await cq(`DELETE FROM tenants WHERE id = $1`, [oldTenantId]);
         }
       }
-      await logActivity(row.tenant_id as string, {
-        userId: u(req),
-        action: 'invite.accepted',
-        entityType: 'invitation',
-        entityId: row.id as string,
-      });
+      await logActivity(
+        row.tenant_id as string,
+        {
+          userId: u(req),
+          action: 'invite.accepted',
+          entityType: 'invitation',
+          entityId: row.id as string,
+        },
+        cq,
+      );
       // The move changes the token's tenant binding — issue a fresh session
       // token for the new tenant (the old one 401s by design).
-      const tv = await query(`SELECT token_version FROM users WHERE id = $1`, [u(req)]);
-      const fresh = signToken(u(req), row.tenant_id as string, Number(tv.rows[0]?.token_version ?? 0));
+      const tv = await cq(`SELECT token_version FROM users WHERE id = $1`, [u(req)]);
+      acceptedTenantId = row.tenant_id as string;
+      acceptedRole = row.role as string;
+      acceptedTokenVersion = Number(tv.rows[0]?.token_version ?? 0);
+        await client.query('COMMIT');
+        inTx = false;
+      } catch (err) {
+        if (inTx) {
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            /* ignore rollback errors */
+          }
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+      const fresh = signToken(u(req), acceptedTenantId, acceptedTokenVersion);
       const dj = jwt.decode(fresh) as { jti?: string } | null;
       if (dj?.jti) await createSession(u(req), dj.jti, 'invite-accept');
-      return { ok: true, tenantId: row.tenant_id, role: row.role, token: fresh };
+      return { ok: true, tenantId: acceptedTenantId, role: acceptedRole, token: fresh };
     });
 
     // ---- Client workspaces (F-09) ----

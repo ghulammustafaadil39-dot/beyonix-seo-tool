@@ -537,7 +537,11 @@ export async function applyPaymentEvent(
 
   // Record the newest applied event time for the ordering guard. Only
   // flows that actually applied state reach here with a tenant.
-  if (eventAt && tenantForLedger) {
+  // NEW-4: charge.refunded is EXEMPT — it does not mutate subscription
+  // state (it only marks an invoice + records a credit), so it must not
+  // advance the watermark; doing so could make a later-delivered,
+  // earlier-created subscription event look stale and be dropped.
+  if (eventAt && tenantForLedger && type !== 'charge.refunded') {
     await q(
       `UPDATE subscriptions SET last_event_at = GREATEST(COALESCE(last_event_at, $2), $2)
        WHERE tenant_id = $1`,

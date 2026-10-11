@@ -4,7 +4,11 @@ import { buildApp } from '../src/index.js';
 import type { FastifyInstance } from 'fastify';
 import { pool, query, runMigrations } from '../src/db.js';
 import { auth, signupVerified, tenantCollector } from './helpers-ba.js';
-import { processWebhookRetries, signWebhookDelivery } from '../src/services/webhookDelivery.js';
+import {
+  processWebhookRetries,
+  signWebhookDelivery,
+  WEBHOOK_OVERALL_DEADLINE_MS,
+} from '../src/services/webhookDelivery.js';
 import { dispatchNotification } from '../src/services/notifications.js';
 
 /**
@@ -267,6 +271,57 @@ describe.runIf(HAS_TEST_DB)('F-10 notifications', () => {
     const items = (center.json() as any).data;
     expect(items.length).toBeGreaterThanOrEqual(1);
     expect(items[0]).toMatchObject({ notification_type: 'limit_near' });
+  });
+
+  it('REGRESSION (NEW-5): a delivery attempt is bounded by an overall deadline, not just per-hop', async () => {
+    // The production cap is ~30s across all redirect hops (previously a
+    // 15s per-hop timeout x 6 hops could take ~90s per attempt).
+    expect(WEBHOOK_OVERALL_DEADLINE_MS).toBe(30_000);
+    const u = await signupVerified(app);
+    tc.add(u.tenantId);
+
+    // Receiver that hangs for 10s — far beyond the test deadline below.
+    const server = http.createServer((_req, res) => {
+      const timer = setTimeout(() => {
+        try {
+          res.writeHead(200).end('late');
+        } catch {
+          /* client already gone */
+        }
+      }, 10_000);
+      (timer as any).unref?.();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as any).port;
+    try {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/webhooks',
+        headers: auth(u.token),
+        payload: { url: `http://127.0.0.1:${port}/hook`, events: ['limit.near'] },
+      });
+      expect(created.statusCode).toBe(200);
+      const endpointId = (created.json() as any).id as string;
+      await app.inject({ method: 'POST', url: `/api/v1/webhooks/${endpointId}/test`, headers: auth(u.token) });
+
+      // 1s overall deadline override (same plumbing, test-sized budget).
+      const started = Date.now();
+      await processWebhookRetries(undefined, 1_000);
+      const elapsed = Date.now() - started;
+      // Bounded by the overall deadline (~1s + slack), NOT by the 15s
+      // per-hop timeout and certainly not by the receiver's 10s hang.
+      expect(elapsed).toBeLessThan(8_000);
+      const row = await query(
+        `SELECT status, attempts, last_error FROM webhook_deliveries WHERE endpoint_id = $1`,
+        [endpointId],
+      );
+      expect(row.rows[0].status).toBe('pending'); // failed attempt, retry scheduled
+      expect(Number(row.rows[0].attempts)).toBe(1);
+      expect(row.rows[0].last_error).toMatch(/deadline|abort/i);
+    } finally {
+      (server as any).closeAllConnections?.();
+      server.close();
+    }
   });
 
   it('signWebhookDelivery is deterministic and verifiable', () => {

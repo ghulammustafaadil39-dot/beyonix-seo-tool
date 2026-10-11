@@ -39,7 +39,9 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       headers: auth(owner.token),
       payload: { email: inviteEmail, role: 'editor' },
     });
-    expect(inv.statusCode).toBe(200);
+    // NEW-2: invite create is ALWAYS 202 generic (mock mode adds the
+    // debug token fields — see inviteDebugFields in routes/account.ts).
+    expect(inv.statusCode).toBe(202);
     const invBody = inv.json() as any;
     expect(invBody.token).toMatch(/^[0-9a-f]{64}$/);
 
@@ -113,7 +115,7 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       headers: auth(editorToken),
       payload: { email: uniqueEmail('y'), role: 'viewer' },
     });
-    expect(ok.statusCode).toBe(200);
+    expect(ok.statusCode).toBe(202);
 
     // Inviting an email that is ALREADY A MEMBER OF THIS TENANT -> 409.
     // (Changed expectation context, F-09 enumeration fix: this 409 is kept
@@ -144,10 +146,9 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       headers: auth(owner.token),
       payload: { email: stranger.email, role: 'viewer' },
     });
-    // Generic 202 — NOT the old 409 USER_EXISTS, no token, no hint.
+    // Generic 202 — NOT the old 409 USER_EXISTS, no hint in the body.
     expect(res.statusCode).toBe(202);
     expect(res.json()).toMatchObject({ ok: true });
-    expect(res.json()).not.toHaveProperty('token');
     expect(res.body).not.toContain('USER_EXISTS');
     expect(res.body).not.toContain('already has an account');
 
@@ -159,16 +160,23 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
     ]);
     expect(inv.rows[0].c).toBe(1);
 
-    // And a genuinely new email still gets the normal 200 + token shape,
-    // unchanged.
+    // NEW-2 regression: a genuinely new email gets the IDENTICAL 202
+    // status and IDENTICAL body shape (the old code returned 200 +
+    // {id,email,role,expires_at,token} for new emails vs a bare 202
+    // for cross-tenant ones — status+shape was still an oracle). In
+    // mock mail mode both carry the same debug fields (incl. token);
+    // with real SMTP neither would.
     const fresh = await app.inject({
       method: 'POST',
       url: '/api/v1/account/invitations',
       headers: auth(owner.token),
       payload: { email: uniqueEmail('fresh'), role: 'viewer' },
     });
-    expect(fresh.statusCode).toBe(200);
+    expect(fresh.statusCode).toBe(202);
     expect((fresh.json() as any).token).toMatch(/^[0-9a-f]{64}$/);
+    expect((res.json() as any).token).toMatch(/^[0-9a-f]{64}$/);
+    expect(Object.keys(fresh.json() as any).sort()).toEqual(Object.keys(res.json() as any).sort());
+    expect((fresh.json() as any).message).toBe((res.json() as any).message);
   });
 
   it('SECURITY regression (F-09): concurrent double-accept of one invitation succeeds exactly once', async () => {
@@ -181,7 +189,7 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       headers: auth(owner.token),
       payload: { email: inviteEmail, role: 'editor' },
     });
-    expect(inv.statusCode).toBe(200);
+    expect(inv.statusCode).toBe(202);
     const invitee = await signupVerified(app, inviteEmail);
     tc.add(invitee.tenantId);
 
@@ -228,7 +236,7 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       headers: auth(owner.token),
       payload: { email: inviteEmail, role: 'editor' },
     });
-    expect(inv.statusCode).toBe(200);
+    expect(inv.statusCode).toBe(202);
 
     // Invitee signs up fresh: sole user of a shell tenant with ZERO sites
     // (the old guard's only check) — but with a paid billing footprint.
@@ -277,6 +285,74 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       inviteEmail,
     ]);
     expect(invRow.rows[0].accepted_at).toBeNull();
+  });
+
+  it('REGRESSION (NEW-1): shell with ONLY usage_events + a workspace is NOT dissolved (complete guard, transactional)', async () => {
+    const owner = await signupVerified(app);
+    tc.add(owner.tenantId);
+    const inviteEmail = uniqueEmail('shelldata');
+    const inv = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations',
+      headers: auth(owner.token),
+      payload: { email: inviteEmail, role: 'editor' },
+    });
+    expect(inv.statusCode).toBe(202);
+    const inviteToken = (inv.json() as any).token as string;
+
+    // Invitee's shell: NO sites, NO billing rows — only a usage_events
+    // row and a workspace. The old guard (subscriptions/invoices/
+    // credits + sites only) dissolved this shell and cascade-lost both.
+    const invitee = await signupVerified(app, inviteEmail);
+    tc.add(invitee.tenantId);
+    await query(
+      `INSERT INTO usage_events (id, tenant_id, event_type, units) VALUES (gen_random_uuid(), $1, 'serp_check', 3)`,
+      [invitee.tenantId],
+    );
+    await query(
+      `INSERT INTO workspaces (id, tenant_id, name) VALUES (gen_random_uuid(), $1, 'Shell Client')`,
+      [invitee.tenantId],
+    );
+
+    const accept = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations/accept',
+      headers: auth(invitee.token),
+      payload: { token: inviteToken },
+    });
+    expect(accept.statusCode).toBe(409);
+    expect(accept.json().error.code).toBe('INVITE_WOULD_ORPHAN_DATA');
+
+    // Everything intact: shell tenant, both rows, user unmoved, and the
+    // invitation NOT burned (transaction rolled back before the claim).
+    const shell = await query(`SELECT COUNT(*)::int c FROM tenants WHERE id = $1`, [invitee.tenantId]);
+    expect(shell.rows[0].c).toBe(1);
+    const usage = await query(`SELECT COUNT(*)::int c FROM usage_events WHERE tenant_id = $1`, [invitee.tenantId]);
+    expect(usage.rows[0].c).toBe(1);
+    const wss = await query(`SELECT COUNT(*)::int c FROM workspaces WHERE tenant_id = $1`, [invitee.tenantId]);
+    expect(wss.rows[0].c).toBe(1);
+    const me = await query(`SELECT tenant_id FROM users WHERE id = $1`, [invitee.userId]);
+    expect(me.rows[0].tenant_id).toBe(invitee.tenantId);
+    const invRow = await query(`SELECT accepted_at FROM team_invitations WHERE tenant_id = $1 AND email = $2`, [
+      owner.tenantId,
+      inviteEmail,
+    ]);
+    expect(invRow.rows[0].accepted_at).toBeNull();
+
+    // Once the shell is genuinely emptied, the SAME invitation accepts
+    // (proving it stayed usable) and the now-empty shell dissolves.
+    await query(`DELETE FROM usage_events WHERE tenant_id = $1`, [invitee.tenantId]);
+    await query(`DELETE FROM workspaces WHERE tenant_id = $1`, [invitee.tenantId]);
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations/accept',
+      headers: auth(invitee.token),
+      payload: { token: inviteToken },
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ tenantId: owner.tenantId, role: 'editor' });
+    const gone = await query(`SELECT COUNT(*)::int c FROM tenants WHERE id = $1`, [invitee.tenantId]);
+    expect(gone.rows[0].c).toBe(0);
   });
 
   it('members: role change, removal, last-owner protection', async () => {
