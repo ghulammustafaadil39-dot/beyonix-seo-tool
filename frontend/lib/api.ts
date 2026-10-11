@@ -1535,9 +1535,9 @@ export const reportsV2Api = {
 // ---------- W-05: SSE job-progress stream ----------
 
 /**
- * W-05: Backend builds `GET /api/v1/sites/:id/jobs/stream` (SSE) in
- * parallel. Exact event payload lands with their branch; the consumer
- * (lib/useJobStream.ts) normalizes defensively. The path goes through the
+ * W-05: Backend `GET /api/v1/sites/:id/jobs/stream` (SSE) — merged; the
+ * consumer (lib/useJobStream.ts) normalizes the real snapshot/done/error
+ * shapes (wire→UI mapping documented there). The path goes through the
  * same-origin /api proxy, so the API URL is never baked into the bundle.
  * encodeURIComponent guards the site id (path-injection hygiene).
  */
@@ -1550,13 +1550,24 @@ export const jobsApi = {
 
 /**
  * W-04: site-level "do this next" actions from the Insights engine.
- * Backend contract (lands in parallel): GET /api/v1/sites/:id/insights
- * returns ranked actions shaped as:
- *   { type, priority, title, detail, evidence, target }
- * `priority` may be a number (higher = more important) or a string
- * ('critical' | 'high' | 'medium' | 'low'). `target` may be a tab slug
- * ('audit', 'keywords', …), a path ('/dashboard/sites/…'), or
- * { tab, url } — resolveInsightHref() normalizes to a deep link.
+ * REAL backend contract (merged; backend/src/routes/insights.ts +
+ * backend/src/services/insights.ts — authoritative):
+ *   GET /api/v1/sites/:id/insights (scope ranks:read)
+ *   → { engine: 'rules-v1', computedAt,
+ *       actions: [{ type: 'critical_audit_issue' | 'rank_drop' |
+ *                           'content_gap' | 'unranked_keyword',
+ *                   priority: 0–100 (higher first), title, detail, evidence,
+ *                   target: { kind, id?, href }, source: 'computed' }],
+ *       forecast: { kind: 'projection', label, method,
+ *                   visibilityIndexNow, visibilityIndexProjected,
+ *                   horizonDays, basedOnDays } }
+ * `target.href` is always an absolute path shaped like
+ * `/dashboard/sites/<id>?tab=<slug>` — resolveInsightHref() translates it
+ * to this app's path-segment tab routing (`/dashboard/sites/<id>/<slug>`).
+ * The forecast is a PROJECTION (linear trend on the rank-visibility index) —
+ * the UI must label it as estimated, never as measured traffic or a promise.
+ * Legacy shapes (bare array, { data }, { insights }, Paged) are still
+ * accepted by normalizeInsightList as fallback; the real envelope is primary.
  */
 export interface SiteInsight {
   id?: string;
@@ -1567,10 +1578,27 @@ export interface SiteInsight {
   detail?: string | null;
   /** Evidence: string, string[], or a record of label→value pairs. */
   evidence?: unknown;
-  /** Tab slug, path, or { tab?, url? }. */
-  target?: string | { tab?: string; url?: string } | null;
+  /**
+   * Real: { kind, id?, href }. Legacy: tab slug, absolute path,
+   * or { tab?, url? }.
+   */
+  target?: string | { tab?: string; url?: string } | { kind?: string; id?: string; href?: string } | null;
   impact?: number | null;
   created_at?: string | null;
+}
+
+/**
+ * Real forecast shape — a labeled projection, never measured traffic and
+ * never a guarantee. Render with projection labeling (see InsightsTab).
+ */
+export interface SiteForecast {
+  kind: 'projection';
+  label: string;
+  method: string;
+  visibilityIndexNow: number;
+  visibilityIndexProjected: number;
+  horizonDays: number;
+  basedOnDays: number;
 }
 
 const PRIORITY_RANK: Record<string, number> = {
@@ -1613,19 +1641,47 @@ const INSIGHT_TAB_SLUGS = new Set([
 ]);
 
 /**
- * Normalize a backend insight's `target` to an app deep link. Accepts a tab
- * slug, an absolute path, or { tab, url }. Falls back to the site overview
- * for anything unrecognized — never renders a broken or external link.
+ * Normalize a backend insight's `target` to an app deep link. Real shape
+ * first: { kind, id?, href } where href looks like
+ * `/dashboard/sites/<id>?tab=<slug>` — translated to this app's
+ * path-segment tab routing (`/dashboard/sites/<id>/<slug>`); `kind` maps to
+ * a tab slug when href is absent. Legacy tab slugs / absolute paths /
+ * { tab, url } still work. Falls back to the site overview for anything
+ * unrecognized — never renders a broken or external link.
  */
 export function resolveInsightHref(siteId: string, target: SiteInsight['target'], type?: string): string {
   const base = `/dashboard/sites/${siteId}`;
+  const safePath = (h: string): string | null => {
+    const t = h.trim();
+    // Absolute same-origin path only — never protocol-relative or external.
+    if (!t.startsWith('/') || t.startsWith('//')) return null;
+    // Backend query-param form → path-segment tab routing.
+    const m = t.match(/^\/dashboard\/sites\/[^/?]+\?tab=([A-Za-z0-9_-]+)/);
+    if (m) {
+      const slug = m[1].toLowerCase();
+      if (INSIGHT_TAB_SLUGS.has(slug)) return slug === 'insights' ? base : `${base}/${slug}`;
+      return base;
+    }
+    return t;
+  };
   if (target && typeof target === 'object') {
-    if (target.url) return target.url.startsWith('/') ? target.url : base;
-    if (target.tab) return resolveInsightHref(siteId, target.tab, type);
+    if ('href' in target && typeof target.href === 'string') {
+      const p = safePath(target.href);
+      if (p) return p;
+      // href present but unusable — fall through to kind/type fallbacks.
+    } else if ('url' in target && typeof target.url === 'string') {
+      const p = safePath(target.url);
+      if (p) return p;
+    }
+    const tab = 'tab' in target ? target.tab : 'kind' in target ? target.kind : undefined;
+    if (typeof tab === 'string' && tab) return resolveInsightHref(siteId, tab, type);
   }
   if (typeof target === 'string') {
     const t = target.trim();
-    if (t.startsWith('/')) return t;
+    if (t.startsWith('/')) {
+      const p = safePath(t);
+      if (p) return p;
+    }
     const slug = t.replace(/^#/, '').toLowerCase();
     if (INSIGHT_TAB_SLUGS.has(slug)) return slug === 'insights' ? base : `${base}/${slug}`;
   }
@@ -1643,14 +1699,16 @@ export function resolveInsightHref(siteId: string, target: SiteInsight['target']
 
 /**
  * Normalize the backend response into a priority-sorted insight list.
- * Accepts a bare array, { data: [] }, { insights: [] }, or Paged<>.
+ * Real envelope first: { actions: [...] }; then legacy bare array,
+ * { data: [] }, { insights: [] }.
  */
 export function normalizeInsightList(raw: unknown): SiteInsight[] {
   let arr: unknown[] = [];
   if (Array.isArray(raw)) arr = raw;
   else if (raw && typeof raw === 'object') {
     const r = raw as Record<string, unknown>;
-    if (Array.isArray(r.data)) arr = r.data;
+    if (Array.isArray(r.actions)) arr = r.actions;
+    else if (Array.isArray(r.data)) arr = r.data;
     else if (Array.isArray(r.insights)) arr = r.insights;
   }
   const list: SiteInsight[] = arr
@@ -1671,10 +1729,56 @@ export function normalizeInsightList(raw: unknown): SiteInsight[] {
   return list.sort((a, b) => insightPriorityRank(b.priority) - insightPriorityRank(a.priority));
 }
 
+/**
+ * Normalize the real forecast envelope ({ kind: 'projection', … }).
+ * Returns null for anything else — the UI renders no projection rather than
+ * a mislabeled one.
+ */
+export function normalizeForecast(raw: unknown): SiteForecast | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (r.kind !== 'projection') return null;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const now = num(r.visibilityIndexNow);
+  const projected = num(r.visibilityIndexProjected);
+  const horizon = num(r.horizonDays);
+  const basedOn = num(r.basedOnDays);
+  if (now === null || projected === null || horizon === null || basedOn === null) return null;
+  return {
+    kind: 'projection',
+    label: typeof r.label === 'string' ? r.label : 'Visibility projection',
+    method: typeof r.method === 'string' ? r.method : '',
+    visibilityIndexNow: now,
+    visibilityIndexProjected: projected,
+    horizonDays: horizon,
+    basedOnDays: basedOn,
+  };
+}
+
+export interface SiteInsightsResult {
+  insights: SiteInsight[];
+  forecast: SiteForecast | null;
+  computedAt: string | null;
+  engine: string | null;
+}
+
 export const insightsApi = {
-  /** Real endpoint — adapter pattern: normalizeInsightList handles all shapes. */
-  list: async (siteId: string): Promise<SiteInsight[]> => {
+  /**
+   * Real endpoint: GET /api/v1/sites/:id/insights → SiteInsightsResult.
+   * normalizeInsightList/normalizeForecast accept the real envelope;
+   * legacy list shapes still parse as fallback.
+   */
+  get: async (siteId: string): Promise<SiteInsightsResult> => {
     const raw = await api<unknown>(`/api/v1/sites/${encodeURIComponent(siteId)}/insights`);
-    return normalizeInsightList(raw);
+    const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    return {
+      insights: normalizeInsightList(raw),
+      forecast: normalizeForecast(r.forecast),
+      computedAt: typeof r.computedAt === 'string' ? r.computedAt : null,
+      engine: typeof r.engine === 'string' ? r.engine : null,
+    };
   },
+  /** Actions only — back-compat. Prefer get() to also render the forecast. */
+  list: async (siteId: string): Promise<SiteInsight[]> => (await insightsApi.get(siteId)).insights,
 };

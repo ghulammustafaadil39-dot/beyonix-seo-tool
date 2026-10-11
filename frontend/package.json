@@ -21,7 +21,8 @@
     "dev": "next dev",
     "lint": "next lint",
     "start": "next start",
-    "a11y": "node scripts/a11y.mjs"
+    "a11y": "node scripts/a11y.mjs",
+    "smoke": "node scripts/contract-smoke.mjs"
   },
   "version": "1.0.0"
 }
