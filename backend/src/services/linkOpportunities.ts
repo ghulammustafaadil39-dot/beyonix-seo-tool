@@ -96,12 +96,14 @@ export async function findLinkOpportunities(
     });
   }
 
-  for (const u of upserts) {
+  // D1-M-3: batch the upserts with unnest() instead of one INSERT per
+  // opportunity (up to ~150 sequential round-trips before).
+  if (upserts.length > 0) {
     await q(
       `INSERT INTO link_opportunities (tenant_id, site_id, source_url, source_domain, kind, reason)
-       VALUES ($1, $2, $3, $4, $5, $6)
+       SELECT $1, $2, unnest($3::text[]), unnest($4::text[]), unnest($5::text[]), unnest($6::text[])
        ON CONFLICT (site_id, source_url, kind) DO UPDATE SET reason = EXCLUDED.reason`,
-      [tenantId, siteId, u.url, u.domain, u.kind, u.reason],
+      [tenantId, siteId, upserts.map((u) => u.url), upserts.map((u) => u.domain), upserts.map((u) => u.kind), upserts.map((u) => u.reason)],
     );
   }
 

@@ -123,13 +123,25 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       async (req, reply) => {
       const { domain } = req.body as { domain: string };
       const clean = normalizeDomain(domain);
+      // D1-M-2: re-adding a soft-deleted domain restores it instead of 409.
+      // The restore path needs no quota reservation — the site already
+      // counted against the plan when first created.
+      const restored = await query(
+        `UPDATE sites SET deleted_at = NULL
+         WHERE tenant_id = $1 AND domain = $2 AND deleted_at IS NOT NULL
+         RETURNING *`,
+        [req.tenant.tenantId, clean],
+      );
+      if ((restored.rowCount ?? 0) > 0) {
+        return reply.status(200).send({ value: toPublicSite(restored.rows[0]), restored: true });
+      }
       // A1-M1: atomic reservation instead of check-then-act — concurrent
       // POST /sites at the plan limit can no longer both pass the check.
       const site = await withUsageReservation(req.tenant.tenantId, 'sites', 1, async () => {
         const r = await query(
           `INSERT INTO sites (id, tenant_id, domain)
            VALUES (gen_random_uuid(), $1, $2)
-           ON CONFLICT (tenant_id, domain) DO NOTHING
+           ON CONFLICT (tenant_id, domain) WHERE deleted_at IS NULL DO NOTHING
            RETURNING *`,
           [req.tenant.tenantId, clean],
         );

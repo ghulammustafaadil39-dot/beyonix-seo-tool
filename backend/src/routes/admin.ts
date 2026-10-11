@@ -8,6 +8,7 @@ import { createSession } from '../services/sessions.js';
 import { paginate, assertUuid } from '../pagination.js';
 import { isPlanId, type PlanId } from '../plans.js';
 import { getProviderSpend } from '../metering.js';
+import { getPayments } from '../providers/stripe.js';
 import { enqueue } from '../queues.js';
 import { logActivity } from '../services/activityLog.js';
 
@@ -130,23 +131,47 @@ export async function registerAdminRoutes(fastify: FastifyInstance) {
       const id = assertUuid((req.params as any).id, 'tenant id');
       const { reason } = req.body as { reason: string };
       const r = await query(
-        `UPDATE tenants SET suspended_at = now(), suspended_reason = $2 WHERE id = $1 AND suspended_at IS NULL`,
+        `UPDATE tenants SET suspended_at = now(), suspended_reason = $2 WHERE id = $1 AND suspended_at IS NULL
+         RETURNING stripe_customer_id`,
         [id, reason],
       );
       if ((r.rowCount ?? 0) === 0) throw new ApiError(404, 'NOT_FOUND', 'Tenant not found or already suspended');
-      await logAdminAction(req, 'tenant.suspend', id, { reason });
-      return { ok: true };
+      // D5-L-2: a suspended tenant is fully blocked, so pause Stripe billing
+      // too — otherwise the suspended tenant keeps being charged. Best
+      // effort: a Stripe outage must not block the suspend itself.
+      const customerId = (r.rows[0]?.stripe_customer_id as string | null) ?? null;
+      let paused: string[] = [];
+      if (customerId) {
+        try {
+          paused = (await getPayments().pauseSubscription(customerId)).paused;
+        } catch (e) {
+          console.error('[admin] suspend: pauseSubscription failed', { tenantId: id, err: (e as Error).message });
+        }
+      }
+      await logAdminAction(req, 'tenant.suspend', id, { reason, billingPaused: paused });
+      return { ok: true, billingPaused: paused };
     });
 
     admin.post('/admin/tenants/:id/unsuspend', async (req) => {
       const id = assertUuid((req.params as any).id, 'tenant id');
       const r = await query(
-        `UPDATE tenants SET suspended_at = NULL, suspended_reason = NULL WHERE id = $1 AND suspended_at IS NOT NULL`,
+        `UPDATE tenants SET suspended_at = NULL, suspended_reason = NULL WHERE id = $1 AND suspended_at IS NOT NULL
+         RETURNING stripe_customer_id`,
         [id],
       );
       if ((r.rowCount ?? 0) === 0) throw new ApiError(404, 'NOT_FOUND', 'Tenant not found or not suspended');
-      await logAdminAction(req, 'tenant.unsuspend', id);
-      return { ok: true };
+      // D5-L-2: resume the billing that suspend paused.
+      const customerId = (r.rows[0]?.stripe_customer_id as string | null) ?? null;
+      let resumed: string[] = [];
+      if (customerId) {
+        try {
+          resumed = (await getPayments().resumeSubscription(customerId)).resumed;
+        } catch (e) {
+          console.error('[admin] unsuspend: resumeSubscription failed', { tenantId: id, err: (e as Error).message });
+        }
+      }
+      await logAdminAction(req, 'tenant.unsuspend', id, { billingResumed: resumed });
+      return { ok: true, billingResumed: resumed };
     });
 
     admin.post('/admin/tenants/:id/plan', { schema: planOverrideSchema }, async (req) => {

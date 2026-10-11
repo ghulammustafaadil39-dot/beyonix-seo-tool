@@ -114,6 +114,11 @@ export async function rescoreToxicLinks(
     [tenantId, siteId],
   );
   let toxic = 0;
+  // D1-M-3: batch the score writes instead of one UPDATE per link — a 5k-row
+  // CSV upload used to fire 5k sequential round-trips. Scores ride in as a
+  // JSONB array (a 2D text[][] won't work: Postgres requires uniform inner
+  // dimensions) and join in a single UPDATE.
+  const payload = [];
   for (const row of r.rows) {
     const res = analyzeToxicity(row.source_url, row.anchor_text, siteDomain);
     let domain: string | null = null;
@@ -122,15 +127,22 @@ export async function rescoreToxicLinks(
     } catch {
       domain = null;
     }
+    payload.push({ id: row.id, flags: res.flags, score: res.score, domain });
+    if (res.score >= TOXIC_THRESHOLD) toxic++;
+  }
+  if (payload.length > 0) {
     await q(
       // tenant_id in the WHERE is defence-in-depth: the ids come from the
       // tenant-scoped SELECT above, but the UPDATE stays safe if that ever
       // changes (contract: no SQL on tenant tables without tenant_id).
-      `UPDATE backlinks SET toxic_flags = $2::text[], toxic_score = $3, referring_domain = $4
-       WHERE id = $1 AND tenant_id = $5`,
-      [row.id, res.flags, res.score, domain, tenantId],
+      `UPDATE backlinks AS b SET toxic_flags = v.flags, toxic_score = v.score, referring_domain = v.domain
+       FROM (SELECT (x->>'id')::uuid AS id,
+                    ARRAY(SELECT jsonb_array_elements_text(x->'flags')) AS flags,
+                    (x->>'score')::int AS score, x->>'domain' AS domain
+             FROM jsonb_array_elements($1::jsonb) AS x) AS v
+       WHERE b.id = v.id AND b.tenant_id = $2`,
+      [JSON.stringify(payload), tenantId],
     );
-    if (res.score >= TOXIC_THRESHOLD) toxic++;
   }
   return { rescored: r.rows.length, toxic };
 }

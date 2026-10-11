@@ -86,3 +86,100 @@ export async function assertGlobalProviderBudget(q: QueryFn = defaultQuery): Pro
       { ...spend, capCents, capUnits });
   }
 }
+
+/**
+ * D5-L-3: atomic check-AND-reserve for the global daily provider circuit.
+ * assertGlobalProviderBudget was check-then-act: N concurrent tenants could
+ * all pass the check and then all spend, overshooting the cap N×. This
+ * does the check and the provisional spend insert in ONE statement, with
+ * SELECT … FOR UPDATE on the day's guard row serializing concurrent
+ * attempts (READ COMMITTED re-evaluates the totals after the lock, so each
+ * attempt sees the reservations that committed before it).
+ *
+ * Returns the reservation row id. The caller MUST settle it: on provider
+ * success call commitGlobalProviderSpend(id, actualUnits, actualCostCents);
+ * on provider failure call releaseGlobalProviderSpend(id) so the hold
+ * doesn't inflate the daily total.
+ *
+ * Throws 503 PROVIDER_BUDGET_EXCEEDED when the reservation would breach a
+ * configured cap. When both caps are 0 (disabled) it still inserts the row
+ * (spend evidence) and returns its id.
+ */
+export async function reserveGlobalProviderBudget(
+  tenantId: string,
+  provider: string,
+  feature: string,
+  units: number,
+  q: QueryFn = defaultQuery,
+): Promise<{ reservationId: string }> {
+  const { capCents, capUnits } = globalCapsFromEnv();
+  const u = Math.max(0, Math.round(units));
+  const cents = priceProviderUnits(provider, feature, u);
+  // Ensure today's guard row exists (idempotent). Kept as a separate
+  // statement: combining the INSERT with FOR UPDATE on the same row in one
+  // statement makes the lock a no-op in Postgres (the CTE form returns 0
+  // rows), silently disabling the serialization.
+  await q(
+    `INSERT INTO global_provider_guard (day) VALUES ((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING`,
+  );
+  const r = await q(
+    `WITH today AS (
+       SELECT COALESCE(SUM(cost_cents), 0)::int AS cost,
+              COALESCE(SUM(units), 0)::int AS units
+       FROM provider_spend
+       WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+     )
+     INSERT INTO provider_spend (id, tenant_id, provider, feature, units, cost_cents)
+     SELECT gen_random_uuid(), $1, $2, $3, $4, $5
+     FROM today
+     WHERE NOT (($6 > 0 AND today.cost + $5 >= $6)
+             OR ($7 > 0 AND today.units + $4 >= $7))
+       -- Serialize concurrent reserves: the FOR UPDATE waits for any
+       -- in-flight reserve to commit, and READ COMMITTED then re-evaluates
+       -- the daily totals against the committed rows.
+       AND EXISTS (
+         SELECT 1 FROM global_provider_guard
+         WHERE day = (now() AT TIME ZONE 'UTC')::date
+         FOR UPDATE
+       )
+     RETURNING id`,
+    [tenantId, provider, feature, u, cents, capCents, capUnits],
+  );
+  if ((r.rowCount ?? 0) === 0) {
+    const spend = await getGlobalDailySpend(q);
+    throw new ApiError(503, 'PROVIDER_BUDGET_EXCEEDED',
+      'Global daily provider budget reached — paid data calls are paused until tomorrow (UTC). Cached data remains available.',
+      { ...spend, capCents, capUnits });
+  }
+  return { reservationId: r.rows[0].id as string };
+}
+
+/**
+ * D5-L-3: settles a global reservation after the provider call with the
+ * actual units/cost (usually identical to the estimate — the reservation
+ * itself is the spend evidence).
+ */
+export async function commitGlobalProviderSpend(
+  reservationId: string,
+  units: number,
+  costCents: number,
+  q: QueryFn = defaultQuery,
+): Promise<void> {
+  const u = Math.max(0, Math.round(units));
+  const cents = Math.max(0, Math.round(costCents));
+  await q(
+    `UPDATE provider_spend SET units = $2, cost_cents = $3 WHERE id = $1`,
+    [reservationId, u, cents],
+  );
+}
+
+/**
+ * D5-L-3: releases a global reservation when the provider call failed, so
+ * the provisional hold doesn't inflate the daily total.
+ */
+export async function releaseGlobalProviderSpend(
+  reservationId: string,
+  q: QueryFn = defaultQuery,
+): Promise<void> {
+  await q(`DELETE FROM provider_spend WHERE id = $1`, [reservationId]);
+}

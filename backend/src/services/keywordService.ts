@@ -3,8 +3,8 @@ import { query as defaultQuery, type QueryFn } from '../db.js';
 import { DEFAULT_LOCATION_CODE, getKeywordMetrics } from './keywordCache.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 import { expandSeed, parseKeywordBulkImport } from './keywordText.js';
-import { recordProviderSpend, withUsageReservation } from '../metering.js';
-import { assertGlobalProviderBudget } from './providerGuard.js';
+import { withUsageReservation } from '../metering.js';
+import { reserveGlobalProviderBudget, commitGlobalProviderSpend, releaseGlobalProviderSpend, priceProviderUnits } from './providerGuard.js';
 import { getGoogle } from '../providers/google.js';
 import { requireSite, siteUrl } from './sites.js';
 
@@ -429,10 +429,19 @@ export async function keywordGap(
   // real DataForSEO money, so it now counts (1 unit).
   const compKws = provider.competitorKeywords
     ? await withUsageReservation(tenantId, 'keyword_metrics', 1, async () => {
-        await assertGlobalProviderBudget(q); // W-01: global daily circuit
-        const kws = await provider.competitorKeywords!(comp);
+        // D5-L-3: atomic global reserve → call → commit/release.
+        const g = await reserveGlobalProviderBudget(tenantId, 'dataforseo', 'keyword_gap', 1, q);
+        let kws;
+        try {
+          kws = await provider.competitorKeywords!(comp);
+        } catch (e) {
+          await releaseGlobalProviderSpend(g.reservationId, q);
+          throw e;
+        }
         if (!provider.isMock) {
-          await recordProviderSpend(tenantId, 'dataforseo', 'keyword_gap', 1, 0);
+          await commitGlobalProviderSpend(g.reservationId, 1, priceProviderUnits('dataforseo', 'keyword_gap', 1), q);
+        } else {
+          await releaseGlobalProviderSpend(g.reservationId, q);
         }
         return { value: kws, actualUnits: 1 };
       })

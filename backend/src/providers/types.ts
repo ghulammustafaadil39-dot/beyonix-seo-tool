@@ -91,6 +91,18 @@ export interface PaymentsProvider {
    * active subscriptions. Must be called BEFORE deleting tenant/user rows.
    */
   cancelSubscription(customerId: string): Promise<{ canceled: string[] }>;
+  /**
+   * D5-L-2: pauses billing collection for every active subscription owned by
+   * the Stripe customer (reversible — used by admin suspend). Returns the
+   * paused subscription ids; empty when the customer has no active
+   * subscriptions.
+   */
+  pauseSubscription(customerId: string): Promise<{ paused: string[] }>;
+  /**
+   * D5-L-2: resumes billing collection paused by pauseSubscription (used by
+   * admin unsuspend). Returns the resumed subscription ids.
+   */
+  resumeSubscription(customerId: string): Promise<{ resumed: string[] }>;
 }
 
 // ---------- Google ----------
