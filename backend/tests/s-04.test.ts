@@ -16,7 +16,7 @@ import {
   signOAuthStates,
   verifyOAuthStates,
 } from '../src/services/oauthState.js';
-import { authHeaders, createTestSite, createTestUser, ensureTestDb, truncateAll } from './helpers.js';
+import { authHeaders, createTestSite, createTestUser, ensureTestDb, sessionTokenFromResponse, truncateAll } from './helpers.js';
 
 const NS = `bseo:test:s04:${randomBytes(4).toString('hex')}:`;
 const testRedis = new Redis(config.redisUrl);
@@ -181,7 +181,7 @@ describe('S-04 HTTP: GSC connect flow binding', () => {
       url: '/api/v1/auth/login',
       payload: { email: 'gscflow@example.com', password: 'Correct1!' },
     });
-    const token = (login.json() as any).token as string;
+    const token = sessionTokenFromResponse(login);
     const siteId = await createTestSite(app, token);
 
     const authUrl = await app.inject({
@@ -219,7 +219,7 @@ describe('S-04 HTTP: GA4 connect flow binding', () => {
       url: '/api/v1/auth/login',
       payload: { email: 'ga4flow@example.com', password: 'Correct1!' },
     });
-    const token = (login.json() as any).token as string;
+    const token = sessionTokenFromResponse(login);
     const siteId = await createTestSite(app, token);
 
     const authUrl = await app.inject({

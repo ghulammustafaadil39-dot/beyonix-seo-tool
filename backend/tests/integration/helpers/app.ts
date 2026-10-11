@@ -34,7 +34,14 @@ export async function signupUser(app: FastifyInstance, name = 'QA User'): Promis
     throw new Error(`signupUser failed: ${res.statusCode} ${res.body}`);
   }
   const body = res.json() as any;
-  return { token: body.token, userId: body.user.id, email, tenantId: body.tenant.id };
+  // JWT-in-body fix: the session JWT is delivered ONLY via the httpOnly
+  // `bseo_token` cookie, never in the JSON body.
+  const raw = res.headers['set-cookie'];
+  const cookies: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const pair = cookies.find((c: string) => c.startsWith('bseo_token='));
+  if (!pair) throw new Error('signupUser: expected bseo_token cookie in response');
+  const token = pair.split(';')[0].slice('bseo_token='.length);
+  return { token, userId: body.user.id, email, tenantId: body.tenant.id };
 }
 
 export function authHeaders(u: TestUser): Record<string, string> {

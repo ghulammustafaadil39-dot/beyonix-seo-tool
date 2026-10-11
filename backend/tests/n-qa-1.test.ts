@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/index.js';
 import { pool, runMigrations } from '../src/db.js';
+import { sessionTokenFromResponse } from './helpers.js';
 
 /**
  * N-QA-1 (CRITICAL) regression: the auth preHandler hook leaked onto the
@@ -44,7 +45,9 @@ describe.runIf(HAS_TEST_DB)('N-QA-1 public routes are not auth-gated', () => {
       payload: { email, password },
     });
     expect(res.statusCode).toBe(201);
-    expect(res.json().token).toBeTruthy();
+    // JWT-in-body fix: session arrives via httpOnly cookie, never the body.
+    expect(res.json()).not.toHaveProperty('token');
+    expect(sessionTokenFromResponse(res)).toBeTruthy();
   });
 
   it('POST /auth/login reaches the handler without a token (bad creds -> INVALID_CREDENTIALS, not "Authentication required")', async () => {
@@ -115,7 +118,7 @@ describe.runIf(HAS_TEST_DB)('N-QA-1 public routes are not auth-gated', () => {
     const me = await app.inject({
       method: 'GET',
       url: '/api/v1/auth/me',
-      headers: { authorization: `Bearer ${login.json().token}` },
+      headers: { authorization: `Bearer ${sessionTokenFromResponse(login)}` },
     });
     expect(me.statusCode).toBe(200);
   });

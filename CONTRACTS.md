@@ -217,8 +217,11 @@ export type PlanId = keyof typeof PLANS;
 ## 4. Auth & tenant middleware (`middleware/auth.ts`)
 
 - `POST /api/v1/auth/signup {email,password,name}` → creates tenant + owner user,
-  returns `{ token, user, tenant }`. 409 if email exists.
-- `POST /api/v1/auth/login {email,password}` → `{ token, user, tenant }`. 401 bad creds.
+  returns `{ user, tenant }` (session JWT is set ONLY via the httpOnly `bseo_token`
+  cookie — never in the JSON body). 409 if email exists.
+- `POST /api/v1/auth/login {email,password}` → `{ user, tenant }` (cookie-only
+  session token). 401 bad creds. With 2FA enabled: `{ totpRequired: true, totpToken }`
+  (short-lived challenge token — the only body token, required by the 2FA UI step).
 - Passwords: bcrypt (12 rounds). JWT: HS256, 7d expiry, payload `{ uid, tid }`.
 - Token transport: `Authorization: Bearer <t>` OR httpOnly cookie `bseo_token`.
 - `authPlugin` (fastify plugin): verifies token, loads user+tenant(+plan),

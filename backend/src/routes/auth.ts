@@ -284,10 +284,11 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       await sendVerificationEmail(cleanEmail, user.name as string, rawToken);
       // P0-01: sign with the row's token_version (logout revocation compares
       // token tv against users.token_version). S-05: also registers the
-      // server-side session.
-      const token = await issueAuthSession(req, reply, user.id as string, tenantId, Number(user.token_version ?? 0));
+      // server-side session. JWT-in-body fix: the session token is delivered
+      // ONLY via the httpOnly cookie (setAuthCookie inside issueAuthSession)
+      // — never in the JSON body, where any XSS could read it.
+      await issueAuthSession(req, reply, user.id as string, tenantId, Number(user.token_version ?? 0));
       return reply.status(201).send({
-        token,
         user: { id: user.id, email: user.email, name: user.name, emailVerified: false },
         tenant: { id: tenantId, name: t.rows[0].name, plan_id: t.rows[0].plan_id },
         ...testVerifyTokenField(rawToken),
@@ -355,9 +356,10 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     const verified = await isEmailVerified(row.id as string);
     // P0-01: sign with the stored token_version (logout bumps it); a default
     // tv=0 here would be permanently revoked after the first logout.
-    const token = await issueAuthSession(req, reply, row.id as string, row.tenant_id as string, tv);
+    // JWT-in-body fix: session token goes ONLY into the httpOnly cookie —
+    // never the JSON body.
+    await issueAuthSession(req, reply, row.id as string, row.tenant_id as string, tv);
     return {
-      token,
       user: { id: row.id, email: row.email, name: row.name, emailVerified: verified },
       tenant: { id: row.tenant_id, name: row.tenant_name, plan_id: row.plan_id },
     };
@@ -502,9 +504,10 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       );
       const row = r.rows[0];
       if (!row) throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired 2FA challenge');
-      const token = await issueAuthSession(req, reply, row.id as string, row.tenant_id as string, Number(row.token_version ?? 0));
+      // JWT-in-body fix: the full session token is delivered ONLY via the
+      // httpOnly cookie — never in the JSON body.
+      await issueAuthSession(req, reply, row.id as string, row.tenant_id as string, Number(row.token_version ?? 0));
       return {
-        token,
         user: { id: row.id, email: row.email, name: row.name, emailVerified: row.email_verified_at != null },
         tenant: { id: row.tenant_id, name: row.tenant_name, plan_id: row.plan_id },
       };
