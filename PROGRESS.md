@@ -63,7 +63,7 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| C-01 | Backend-A | 2 | review | Backend-A branch (rebased, LA-verified suite 394/9/0); webhook idempotency ledger, trials/coupons/annual, dunning, invoices; Security review pending |
+| C-01 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: MEDIUM idempotency-key race (double checkout), MEDIUM no event-ordering guard, LOWs (past_due plan_id, coupon race) — fix session running |
 | C-02 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; reserve-then-commit, 20-way concurrency test, 80/100% once-per-period alerts, 402 payloads; suite green |
 | C-03 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; graceful shutdown (API+worker), Redis leader election, DLQ+replay, per-queue timeouts, tenant rate limit wired; suite green |
 | C-04 | Backend-B | 2 | review | Backend-B branch done (robots crawl-delay, Playwright mode, simhash dupes, bb-c04 28+4 tests); merge pending LA rebase+reconcile |
@@ -78,12 +78,12 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | F-06 | Backend-B | 2 | review | Backend-B branch done (backlinks v2: heuristic toxic scoring labeled, anchors, opportunities, disavow download, bb-f06 5); merge pending 
 | F-07 | Backend-B | 2 | review | Backend-B branch done (competitors CRUD, visibility compare, keyword/content gaps, backlink compare w/ honest unavailable, bb-f07 5); merge pending 
 | F-08 | Backend-B | 2 | review | Backend-B branch done (white-label branding, branded PDF/HTML, share links, schedules, bb-f08 6); share-token secret fix + Security review pending 
-| F-09 | Backend-A | 2 | review | Backend-A branch done (roles, invitations w/ accept-moves-user + orphan guards, workspaces, activity log, onboarding state API); Security review pending 
-| F-10 | Backend-A | 2 | review | Backend-A branch done (alert rules, digests, signed webhooks w/ per-attempt SSRF re-validation, replay); Security review pending 
+| F-09 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: MEDIUM invite-endpoint user enumeration (409 USER_EXISTS), LOW invite-accept atomicity — fix session running 
+| F-10 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: HIGH SSRF via unvalidated redirects at delivery (PoC) + MEDIUM DNS-rebinding TOCTOU — fix: deliverOne must use safeFetch — fix session running 
 | F-11 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend trials/coupons/annual + invoice/email/cancel endpoints pending → Backend-A C-01 |
 | F-12 | Frontend Lead | 2 | verified | Merged bd2358e (LA-reviewed): landing/docs/legal/cookies/sitemap+robots; next build green (28 routes), tsc clean |
-| F-13 | Backend-A | 2 | review | Backend-A branch done (sha256-only keys, show-once, scopes :write⊃:read, per-key rate limits); Security review pending 
-| F-14 | Backend-A | 2 | review | Backend-A branch done (tenants, suspend, plan override, impersonate 5-min + audit row, flags, DLQ, spend; 404 for non-admins); Security review pending 
+| F-13 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: HIGH admin-scoped API keys mintable → persistence — fix: reject admin scope + key mgmt requires human session — fix session running 
+| F-14 | Backend-A | 2 | review | Backend-A branch done; Security APPROVED (404-for-non-admin, impersonation audit, suspend semantics all verified); flips verified at branch merge 
 
 ## Wave 3 — Phase 4 (quality/ops) + Phase 5 (world-class)
 
@@ -145,3 +145,4 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 - 2026-10-11 ~08:35 PKT (LA): ENV NOTE — VM snapshot revert changed the local bseo PG role password; Backend-A built a self-healing bootstrap at ~/workspace/.local/ba-env.sh (re-asserts password, ensures bseo_test_ba, exports DATABASE_URL). Source it before backend-a branch test runs. Main-branch tests still use the setup.ts fallback (unchanged).
 - 2026-10-11 ~08:50 PKT (LA): Backend-B report received — C-04/C-05/F-02..F-08 + LA relay 1–5 all done on agent/backend-b/wave2 (71 files, +8273); branch suite 396 passed / 9 skipped / 0 failed, tsc clean. MERGE RECONCILIATIONS queued for LA (after Backend-A merges): duplicate services/circuitBreaker.ts (keep Backend-A Redis-backed canonical, adapt B call sites), softDeleteSite/recordProviderSpend canonical versions, requireScope adoption. SECURITY: F-02/F-08 share tokens HMAC-keyed on config.jwtSecret — fix to domain-separated key required before merge + Security review.
 - 2026-10-11 ~08:50 PKT (LA): INFRA — VM restarted ~03:05 PKT (PG/Redis vanished); Backend-B reinstalled via apt + recreated bseo_test_bb; bseo role password kept reverting (cause undetermined); workaround: pg_hba trust lines scoped to local TCP for test DBs. Environment fragile — noted for Q-02 CI planning.
+- 2026-10-11 ~09:05 PKT (LA): Security Lead review of agent/backend-a/wave2 received — F-14 APPROVED; C-01/F-09/F-10/F-13 CHANGES REQUESTED (2 HIGH: F-10 redirect-SSRF via raw fetch in deliverOne, F-13 admin-scope key persistence; 3 MEDIUM: C-01 idempotency race + stale-event overwrite, F-09 invite enumeration; LOWs itemized). Reviewer scratch DB (secrev) dropped by LA. Note: reviewer's "helpers broken as committed" finding was against pre-LA-fix commit 10e97da — LA's 134e3f7 fix already resolved it (suite 394/9/0). Fix session (Backend-A) dispatched for HIGH+MEDIUM+cheap LOWs. ACCEPTED/DEFERRED LOWs (LA decision): raw invite token in API JSON (link-sharing UX, single-use + hashed at rest), mock-confirm state-changing GET (mock-only, authenticated, tenant-scoped), mock webhook replay window (dev-only), shell-tenant dissolve cascade (fix agent to report cascade scope). Process lesson → Q-02: CI must run touched-area suites per commit (§8.2/§8.4).
