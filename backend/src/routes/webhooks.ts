@@ -49,7 +49,7 @@ export async function registerWebhookRoutes(fastify: FastifyInstance) {
     await authPlugin(authed);
     const t = (req: any) => req.tenant.tenantId as string;
 
-    authed.get('/webhooks/events', async () => ({ events: WEBHOOK_EVENT_CATALOG }));
+    authed.get('/webhooks/events', { preHandler: requireScope('webhooks:read') }, async () => ({ events: WEBHOOK_EVENT_CATALOG })); // E1-L-1: scope gate like siblings
 
     authed.get('/webhooks', { preHandler: requireScope('webhooks:read') }, async (req) => {
       const r = await query(

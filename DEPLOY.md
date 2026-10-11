@@ -153,6 +153,18 @@ curl -sk https://$APP_HOST/status
 Rollback: re-checkout the previous tag and repeat; **never roll back across a
 migration that added a NOT NULL column** (RUNBOOK.md).
 
+### Wave-4 billing migrations (E5-L-2)
+- **044** adds `tenants.trial_ends_at` (NOT NULL, backfilled to +100 years for
+  existing tenants = grandfathered) and activates the trial gate: new signups
+  get a 14-day trial (`SIGNUP_TRIAL_DAYS`); after expiry with no live
+  subscription, spend routes return 402 `SUBSCRIPTION_REQUIRED` and the tenant
+  is flipped read-only. Operator-visible behavior change — verify trial
+  expiry handling on first deploy.
+- **045** replaces the sites `UNIQUE (tenant_id, domain)` constraint with a
+  partial unique index (`WHERE deleted_at IS NULL`), so soft-deleted domains
+  can be re-added; and creates `global_provider_guard` (one row per UTC day)
+  backing the atomic global provider-spend circuit.
+
 Note: `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_SITE_URL` are **baked into the
 frontend at build time** (`.env.example` "Frontend / same-origin API proxy"
 section) — changing them requires `up --build`. `API_INTERNAL_URL` is read per
@@ -243,13 +255,11 @@ request and needs no rebuild.
    check, frontend standalone output.
 4. Healthcheck commands not executed (api `/readyz` fetch, worker ioredis
    ping, web `/` fetch, `pg_isready`, `redis-cli -a`).
-5. **Backup sidecar risk**: `backend/scripts/backup.sh` has a
-   `#!/usr/bin/env bash` shebang; it is unconfirmed whether `bash` exists in
-   `postgres:16-alpine`. If not, every backup run fails with "bad
-   interpreter". Verify on first deploy (`docker compose exec backup bash
-   --version`); if missing, the Backend/QA owner must fix (install bash or
-   make the scripts POSIX-`sh` clean — scripts are backend-owned, out of
-   scope for this worker).
+5. **Backup sidecar**: scripts (`backup.sh`, `restore.sh`, `_pg_env.sh`) are
+   POSIX-`sh` clean (E5-L-3: the old bash-shebang concern is resolved — all
+   three use `#!/bin/sh`). The genuinely unverified part is the **restore
+   path**: `restore.sh` has never been executed end-to-end. Test on first
+   deploy with a scratch database before trusting backups.
 6. Caddy ACME issuance/renewal against real DNS, and the "duplicate site
    address" failure mode the `:?` guards protect against, are reasoned from
    docs, not observed.

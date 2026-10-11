@@ -42,10 +42,11 @@ have never been booted.**
 
 ## Environment variables
 
-See [.env.example](.env.example) — every variable is documented there, and
-completeness was proven by grepping every `opt()`/`req()` call in
-`backend/src/config.ts` plus all live `process.env` reads in
-services/providers/routes (Wave 3 audit, 2026-10-11).
+See [.env.example](.env.example) — every variable is documented there.
+Completeness is checked by grepping `opt()`/`req()` in `backend/src/config.ts`
+plus all live `process.env` reads in services/providers/routes/middleware
+(Wave 3 audit 2026-10-11; E5-L-1 fix 2026-10-11 added `SIGNUP_TRIAL_DAYS`
+which a bare `process.env.X` read had missed).
 
 The rule: **anything left empty runs in mock mode** (deterministic,
 offline-testable). Mock mode is the default and the whole app works in it.

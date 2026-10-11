@@ -19,3 +19,17 @@ export function expensiveTenantLimit() {
     keyPrefix: `${redisKeyPrefix()}acct-rl:expensive:`,
   });
 }
+
+/**
+ * E1-L-2: dedicated invitation throttle — separate bucket from the spend
+ * budget (a tenant doing heavy research shouldn't starve invites, and
+ * invite spam shouldn't eat the spend budget). 20/hour/tenant.
+ */
+export function inviteTenantLimit() {
+  return tenantRateLimit({
+    redis: getRedis(),
+    max: () => 20,
+    windowMs: 60 * 60 * 1000,
+    keyPrefix: `${redisKeyPrefix()}acct-rl:invite:`,
+  });
+}

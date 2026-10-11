@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { load } from 'cheerio';
 import { authPlugin } from '../middleware/auth.js';
 import { requireRoleOrScope } from '../middleware/access.js';
+import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { requireSite } from '../services/sites.js';
 import { renderPrompt } from '../services/prompt.js';
 import { delimitUntrusted, sanitizeJsonLdForScript } from '../services/promptSafety.js';
@@ -288,7 +290,8 @@ export async function registerOnpageRoutes(fastify: FastifyInstance) {
           },
         },
         // A1-H2: analysis spends LLM budget — editor+ / onpage:write.
-        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'onpage:write'),
+        // E1-H-1: + S-01 verified gate + trial/subscription gate (LLM spend).
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'onpage:write')],
       },
       async (req) => analyzeUrl(req.tenant.tenantId, req.tenant.plan, req.params.id, req.body.url),
     );
@@ -306,7 +309,8 @@ export async function registerOnpageRoutes(fastify: FastifyInstance) {
           },
         },
         // A1-H2: the GET triggers the same paid LLM work as the POST — editor+ / onpage:write.
-        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'onpage:write'),
+        // E1-H-1: + S-01 verified gate + trial/subscription gate (LLM spend).
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'onpage:write')],
       },
       async (req) => analyzeUrl(req.tenant.tenantId, req.tenant.plan, req.params.id, req.query.url),
     );
