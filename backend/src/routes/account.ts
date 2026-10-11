@@ -3,7 +3,8 @@ import jwt from 'jsonwebtoken';
 import type { FastifyInstance } from 'fastify';
 import { pool, query, type QueryFn } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
-import { authPlugin, signToken } from '../middleware/auth.js';
+import { authPlugin, signToken, setAuthCookie, setCsrfCookie } from '../middleware/auth.js';
+import { issueCsrfToken } from '../middleware/csrf.js';
 import { canAssignRole, requireRole, requireScope } from '../middleware/access.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { getNotify } from '../providers/notify.js';
@@ -373,7 +374,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       return { ok: true };
     });
 
-    authed.post('/account/invitations/accept', { schema: acceptInviteSchema }, async (req) => {
+    authed.post('/account/invitations/accept', { schema: acceptInviteSchema }, async (req, reply) => {
       const { token } = req.body as { token: string };
       const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
       // NEW-1: the whole accept flow — invitation/user reads, shell
@@ -526,6 +527,13 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       const fresh = signToken(u(req), acceptedTenantId, acceptedTokenVersion);
       const dj = jwt.decode(fresh) as { jti?: string } | null;
       if (dj?.jti) await createSession(u(req), dj.jti, 'invite-accept');
+      // Browser parity with login (issueAuthSession in routes/auth.ts):
+      // the pre-move cookie 401s after the move (tenant binding), so the
+      // fresh token MUST also land in the httpOnly session cookie (+ CSRF
+      // cookie), or browser users would have to re-login after accepting.
+      // The body token stays for API clients.
+      setAuthCookie(reply, fresh);
+      setCsrfCookie(reply, issueCsrfToken());
       return { ok: true, tenantId: acceptedTenantId, role: acceptedRole, token: fresh };
     });
 

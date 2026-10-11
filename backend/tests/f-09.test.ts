@@ -2,7 +2,7 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/index.js';
 import type { FastifyInstance } from 'fastify';
 import { pool, query, runMigrations } from '../src/db.js';
-import { auth, signupVerified, tenantCollector, uniqueEmail } from './helpers-ba.js';
+import { auth, signupVerified, tenantCollector, uniqueEmail, uniquePassword } from './helpers-ba.js';
 
 /**
  * F-09 (agency/team) backend: roles, invitations, client workspaces,
@@ -74,6 +74,95 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
       payload: { token: invBody.token },
     });
     expect(again.statusCode).toBe(410);
+  });
+
+  it('REGRESSION: invite accept sets a fresh bseo_token cookie bound to the NEW tenant (no re-login)', async () => {
+    const owner = await signupVerified(app);
+    tc.add(owner.tenantId);
+    const inviteEmail = uniqueEmail('cookieaccept');
+
+    const inv = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations',
+      headers: auth(owner.token),
+      payload: { email: inviteEmail, role: 'editor' },
+    });
+    expect(inv.statusCode).toBe(202);
+    const invToken = (inv.json() as any).token as string;
+
+    // Invitee signs up RAW so we keep the real browser cookie jar
+    // (pre-move bseo_token + bseo_csrf) instead of a Bearer token.
+    const jarFrom = (res: { headers: any }): Record<string, string> => {
+      const raw = res.headers['set-cookie'];
+      const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      const pairs = list.map((c: string) => c.split(';')[0]);
+      const csrf = pairs.find((p) => p.startsWith('bseo_csrf='))?.slice('bseo_csrf='.length) ?? '';
+      return { cookie: pairs.join('; '), 'x-csrf-token': csrf };
+    };
+    const cookieValue = (res: { headers: any }, name: string): string | null => {
+      const raw = res.headers['set-cookie'];
+      const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      const hit = list.find((c: string) => c.startsWith(`${name}=`));
+      return hit ? hit.split(';')[0].slice(name.length + 1) : null;
+    };
+
+    const s = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/signup',
+      payload: { email: inviteEmail, password: uniquePassword(), name: 'Cookie' },
+    });
+    expect(s.statusCode).toBe(201);
+    const sBody = s.json() as any;
+    tc.add(sBody.tenant.id as string);
+    const preMoveJar = jarFrom(s);
+    const preMoveCookie = cookieValue(s, 'bseo_token');
+    expect(preMoveCookie).toBeTruthy();
+    const v = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/email/verify',
+      payload: { token: sBody.verifyToken },
+    });
+    expect(v.statusCode).toBe(200);
+
+    // Accept authenticated ONLY by the pre-move cookie (browser flow).
+    const accept = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations/accept',
+      headers: preMoveJar,
+      payload: { token: invToken },
+    });
+    expect(accept.statusCode).toBe(200);
+    const acceptBody = accept.json() as any;
+    expect(acceptBody.tenantId).toBe(owner.tenantId);
+    // Body token kept for API clients…
+    expect(typeof acceptBody.token).toBe('string');
+    // …and the SAME fresh token must arrive as the httpOnly session cookie.
+    const setCookieRaw = accept.headers['set-cookie'];
+    const setCookieList: string[] = Array.isArray(setCookieRaw) ? setCookieRaw : setCookieRaw ? [setCookieRaw] : [];
+    const authCookie = setCookieList.find((c: string) => c.startsWith('bseo_token='));
+    expect(authCookie).toBeTruthy();
+    expect(authCookie!.toLowerCase()).toContain('httponly');
+    const newCookie = cookieValue(accept, 'bseo_token');
+    expect(newCookie).toBe(acceptBody.token);
+    expect(newCookie).not.toBe(preMoveCookie);
+
+    // A subsequent cookie-only request succeeds WITHOUT re-login and is
+    // bound to the NEW tenant.
+    const me = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: jarFrom(accept),
+    });
+    expect(me.statusCode).toBe(200);
+    expect((me.json() as any).tenant.id).toBe(owner.tenantId);
+
+    // The pre-move cookie is dead after the move (tenant binding).
+    const stale = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: preMoveJar,
+    });
+    expect(stale.statusCode).toBe(401);
   });
 
   it('invitations: editor cannot invite admin; same-tenant member re-invite is 409', async () => {
