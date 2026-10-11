@@ -207,10 +207,20 @@ export async function confirmEmailChange(userId: string): Promise<void> {
   if (clash.rows.length > 0) {
     throw new ApiError(409, 'EMAIL_EXISTS', 'That email address is already in use');
   }
-  await query(
-    `UPDATE users SET email = $2, pending_email = NULL, email_verified_at = now() WHERE id = $1`,
-    [userId, pending],
-  );
+  // C1-L-16: the clash check is check-then-act — two concurrent confirms
+  // for the same address race to the unique constraint. Translate the
+  // 23505 into the same clean 409 as the check above instead of a raw 500.
+  try {
+    await query(
+      `UPDATE users SET email = $2, pending_email = NULL, email_verified_at = now() WHERE id = $1`,
+      [userId, pending],
+    );
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      throw new ApiError(409, 'EMAIL_EXISTS', 'That email address is already in use');
+    }
+    throw err;
+  }
 }
 
 /** S-03: live re-read of the disposable-email toggle (test hook friendly). */
@@ -731,6 +741,9 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
           throw conflict('EMAIL_EXISTS', 'That email address is already in use');
         }
         const userId = humanUserId(req);
+        // C1-L-15: throttle like /auth/email/resend and password reset —
+        // a stolen session must not be usable to email-bomb addresses.
+        await assertResendAllowed(userId);
         await query('UPDATE users SET pending_email = $2 WHERE id = $1', [userId, cleanEmail]);
         const rawToken = await issueVerificationToken(userId, 'email_change');
         await sendEmailChangeEmail(cleanEmail, req.tenant.name, rawToken);
@@ -780,13 +793,64 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
             'Set a password via password reset before deleting a passwordless account',
           );
         }
+        // C1-L-14: a sole owner deleting themselves while other members
+        // remain would orphan the tenant (nobody left to invite/promote).
+        const myRole = await query('SELECT role FROM users WHERE id = $1', [userId]);
+        if (myRole.rows[0]?.role === 'owner') {
+          const counts = await query(
+            `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE role = 'owner')::int AS owners
+             FROM users WHERE tenant_id = $1`,
+            [tenantId],
+          );
+          if (Number(counts.rows[0]?.owners ?? 0) === 1 && Number(counts.rows[0]?.total ?? 0) > 1) {
+            throw new ApiError(
+              400,
+              'LAST_OWNER',
+              'You are the only owner — transfer ownership to another member before deleting your account',
+            );
+          }
+        }
+        // C1-H-1: when this deletion purges the tenant (last user), cancel
+        // the Stripe subscription(s) FIRST. On failure: abort with 502 —
+        // no rows are deleted, so the customer is never charged with no
+        // account left to reach the billing portal.
+        const others = await query(`SELECT COUNT(*)::int AS c FROM users WHERE tenant_id = $1 AND id <> $2`, [
+          tenantId,
+          userId,
+        ]);
+        let canceled: string[] = [];
+        let forfeitedCents = 0;
+        if (Number(others.rows[0]?.c ?? 0) === 0) {
+          const { cancelTenantBilling } = await import('../providers/stripe.js');
+          ({ canceled, creditsCents: forfeitedCents } = await cancelTenantBilling(tenantId));
+        }
+        if (forfeitedCents > 0) {
+          // C1-H-2: outstanding credits (money owed to the customer) are
+          // never silently hard-deleted — the tombstone survives in the
+          // audit log so support can reconcile/refund after the fact.
+          // Inserted BEFORE the deletes (the FK needs the rows to exist;
+          // ON DELETE SET NULL nulls the references afterwards).
+          await query(
+            `INSERT INTO admin_audit_log (id, actor_user_id, actor_tenant_id, action, target_tenant_id, meta)
+             VALUES (gen_random_uuid(), $1, $2, 'billing.credits_forfeited', $2, $3)`,
+            [
+              userId,
+              tenantId,
+              JSON.stringify({
+                tenantId,
+                amountCents: forfeitedCents,
+                reason: 'account deleted with outstanding credit balance; contact support to claim a refund',
+              }),
+            ],
+          );
+        }
         await query('DELETE FROM users WHERE id = $1', [userId]);
         await query(
           'DELETE FROM tenants WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $1)',
           [tenantId],
         );
         clearAuthCookie(reply);
-        return { ok: true };
+        return { ok: true, subscriptionsCanceled: canceled.length, creditsForfeitedCents: forfeitedCents };
       },
     );
 

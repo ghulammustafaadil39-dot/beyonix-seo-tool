@@ -177,11 +177,15 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       const clean = normalizeDomain(domain);
       if (clean === site.domain) return toPublicSite(await requireSite(req.tenant.tenantId, id));
       try {
-        const r = await query('UPDATE sites SET domain = $1 WHERE id = $2 AND tenant_id = $3 RETURNING *', [
-          clean,
-          id,
-          req.tenant.tenantId,
-        ]);
+        // C1-M-1: a domain change invalidates the ownership proof — reset
+        // verification and rotate the token so scheduled crawls/rank-checks
+        // never run against an unverified domain on the tenant's budget.
+        const r = await query(
+          `UPDATE sites
+           SET domain = $1, verified = FALSE, verified_at = NULL, verify_token = $2
+           WHERE id = $3 AND tenant_id = $4 RETURNING *`,
+          [clean, randomBytes(16).toString('hex'), id, req.tenant.tenantId],
+        );
         return toPublicSite(r.rows[0]);
       } catch (err: any) {
         if (err?.code === '23505') throw conflict('SITE_EXISTS', 'This domain is already added');
@@ -217,8 +221,15 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       },
       async (req) => {
       const { id } = req.params as { id: string };
-      const restored = await restoreSite(req.tenant.tenantId, id, query);
-      if (!restored) throw notFound('Site');
+      // C1-M-7: restoring re-activates the site — it must count against the
+      // plan limit again. Reserve first; over-limit restores get a clean 402
+      // (reserveUsage throws LIMIT_EXCEEDED), and a 0-row restore cancels
+      // the reservation via the notFound throw.
+      await withUsageReservation(req.tenant.tenantId, 'sites', 1, async () => {
+        const restored = await restoreSite(req.tenant.tenantId, id, query);
+        if (!restored) throw notFound('Site');
+        return { value: true };
+      });
       return { ok: true };
       },
     );

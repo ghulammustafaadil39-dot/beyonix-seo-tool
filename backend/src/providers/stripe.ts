@@ -100,6 +100,20 @@ export function mockBillingRoutesEnabled(nodeEnv: string = config.nodeEnv): bool
   return nodeEnv !== 'production';
 }
 
+/**
+ * C5-M-6 / C1-L-3: collision-free Stripe coupon id for a local code.
+ * The sanitized code alone collides (`SAVE-20` vs `SAVE_20` vs `SAVE20`
+ * all map to `bseo_SAVE20`), so a sha256 hash suffix of the RAW code is
+ * appended — distinct local codes always map to distinct Stripe ids.
+ * Pure and unit-tested.
+ */
+export function stripeCouponIdFor(code: string): string {
+  const upper = code.toUpperCase();
+  const sanitized = upper.replace(/[^A-Z0-9]/g, '');
+  const hash = crypto.createHash('sha256').update(upper).digest('hex').slice(0, 8);
+  return `bseo_${sanitized}_${hash}`;
+}
+
 const MOCK_WEBHOOK_TOLERANCE_SEC = 300;
 
 /**
@@ -182,12 +196,13 @@ class RealStripeProvider implements PaymentsProvider {
 
   /**
    * A2-L5: creates the Stripe coupon for a local coupon definition.
-   * The Stripe coupon id is namespaced (bseo_<CODE>) so a local code is
-   * never passed to Stripe as-is; creation is idempotent — a second call
+   * The Stripe coupon id is namespaced (bseo_<CODE>_<hash>) so a local
+   * code is never passed to Stripe as-is (C5-M-6: the hash suffix makes
+   * the namespace collision-free); creation is idempotent — a second call
    * with the same code returns the existing coupon.
    */
   async ensureCoupon(def: { code: string; percentOff?: number | null; amountOffCents?: number | null; duration: string }): Promise<string> {
-    const stripeId = `bseo_${def.code.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+    const stripeId = stripeCouponIdFor(def.code);
     try {
       const existing = await this.stripe.coupons.retrieve(stripeId);
       if (!existing.deleted) return existing.id;
@@ -208,6 +223,24 @@ class RealStripeProvider implements PaymentsProvider {
     if (!config.stripeWebhookSecret) throw new Error('STRIPE_WEBHOOK_SECRET not configured');
     const evt = this.stripe.webhooks.constructEvent(rawBody, signature, config.stripeWebhookSecret);
     return { type: evt.type, data: evt.data.object as any };
+  }
+
+  /**
+   * C1-H-1: cancels every active subscription for the Stripe customer,
+   * immediately. Called by the account-delete / GDPR-erase flows BEFORE
+   * any tenant rows are removed, so a deleted account can never keep
+   * billing. Returns the canceled subscription ids.
+   */
+  async cancelSubscription(customerId: string): Promise<{ canceled: string[] }> {
+    const canceled: string[] = [];
+    const subs = await this.stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 100 });
+    for (const s of subs.data) {
+      if (['active', 'trialing', 'past_due', 'incomplete'].includes(s.status)) {
+        const c = await this.stripe.subscriptions.cancel(s.id);
+        canceled.push(c.id);
+      }
+    }
+    return { canceled };
   }
 }
 
@@ -244,9 +277,28 @@ class MockStripeProvider implements PaymentsProvider {
     return { url: returnUrl };
   }
 
-  /** A2-L5: mock mode has no Stripe — the local code passes through. */
+  /**
+   * A2-L5: mock mode has no Stripe — the local code passes through
+   * verbatim (no sanitization, so unlike the real bseo_ namespace it
+   * never had the C5-M-6 collision; the format is pinned by
+   * w4-low.test.ts).
+   */
   async ensureCoupon(def: { code: string }): Promise<string> {
     return `mock_${def.code.toUpperCase()}`;
+  }
+
+  /**
+   * C1-H-1 (mock): the mock keeps subscriptions in the DB — cancel means
+   * flipping every billable local subscription row to 'canceled'.
+   */
+  async cancelSubscription(customerId: string): Promise<{ canceled: string[] }> {
+    const r = await query(
+      `UPDATE subscriptions SET status = 'canceled', cancel_at_period_end = false, grace_until = NULL
+       WHERE stripe_customer_id = $1 AND status IN ('active', 'trialing', 'past_due', 'incomplete')
+       RETURNING stripe_sub_id`,
+      [customerId],
+    );
+    return { canceled: r.rows.map((x: any) => (x.stripe_sub_id as string) ?? 'mock') };
   }
 
   async constructWebhookEvent(rawBody: Buffer | string, signature: string) {
@@ -411,7 +463,14 @@ export async function applyPaymentEvent(
     const trialDays = parseInt(data.metadata?.trialDays ?? data.metadata?.trial_days ?? '0', 10) || 0;
     const couponCode: string | undefined = data.metadata?.couponCode ?? data.metadata?.coupon;
     const interval = data.metadata?.interval === 'annual' ? 'annual' : 'monthly';
-    const status = trialDays > 0 ? 'trialing' : 'active';
+    // C5-L-2: payment not confirmed — the subscription exists but the first
+    // invoice failed. Record it as 'incomplete' WITHOUT granting paid
+    // limits; the later customer.subscription.updated(active) event performs
+    // the upgrade. Mock completions carry no subscription object (undefined
+    // → treated as paid, as before).
+    const subStatus: string | undefined = subObj?.status;
+    const incomplete = subStatus === 'incomplete' || subStatus === 'incomplete_expired';
+    const status = trialDays > 0 ? 'trialing' : incomplete ? subStatus : 'active';
     const trialEndsAt = trialDays > 0 ? new Date(Date.now() + trialDays * 86400_000) : null;
     await q(
       `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, stripe_customer_id, plan_id, status,
@@ -429,19 +488,30 @@ export async function applyPaymentEvent(
          coupon_code = EXCLUDED.coupon_code, grace_until = NULL`,
       [tenantId, subId ?? `sub_mock_${Date.now()}`, customerId ?? null, planId, status, periodStart, periodEnd, trialEndsAt, interval, couponCode ?? null],
     );
-    await q(`UPDATE tenants SET plan_id = $2, stripe_customer_id = $3, read_only = FALSE WHERE id = $1`, [tenantId, planId, customerId ?? null]);
+    // C5-L-2: an incomplete subscription must NOT activate the paid plan —
+    // the tenant keeps its current plan until Stripe confirms payment.
+    if (!incomplete) {
+      await q(`UPDATE tenants SET plan_id = $2, stripe_customer_id = $3, read_only = FALSE WHERE id = $1`, [tenantId, planId, customerId ?? null]);
+    } else {
+      await q(`UPDATE tenants SET stripe_customer_id = $2 WHERE id = $1`, [tenantId, customerId ?? null]);
+    }
     if (couponCode) {
-      // Atomic redemption (C-01 fix): the max-redemptions predicate rides
-      // in the UPDATE itself, so concurrent completions cannot overshoot
-      // the cap. 0 rows = exhausted (or unknown) at redemption time —
-      // the count is NOT incremented past the cap.
+      // C5-H-1 / C1-M-6: the checkout reserved a slot (reserved_count+1
+      // under a row lock, cap-checked) BEFORE the Stripe discount was
+      // attached; completion converts reserved → redeemed atomically. The
+      // AND active predicate (C5-L-3) stops coupons deactivated mid-flight
+      // from redeeming (the Stripe-side discount attached at session
+      // creation cannot be revoked locally — documented limitation).
       const red = await q(
-        `UPDATE billing_coupons SET redeemed_count = redeemed_count + 1
-         WHERE code = $1 AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`,
-        [couponCode],
+        `UPDATE billing_coupons
+         SET redeemed_count = redeemed_count + 1,
+             reserved_count = GREATEST(reserved_count - 1, 0)
+         WHERE code = $1 AND active
+           AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`,
+        [couponCode.toUpperCase()],
       );
       if ((red.rowCount ?? 0) === 0) {
-        console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted or unknown at completion`);
+        console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted, inactive, or unknown at completion`);
       }
     }
     const { emitBillingEvent } = await import('../services/billing.js');
@@ -450,6 +520,20 @@ export async function applyPaymentEvent(
       tenantId,
       detail: { planId, interval },
     });
+  } else if (type === 'checkout.session.expired') {
+    // C5-H-1: an abandoned checkout releases its reserved coupon slot so
+    // the cap isn't permanently burned by sessions that never paid.
+    const couponCode: string | undefined =
+      data.metadata?.couponCode ?? data.metadata?.coupon;
+    if (couponCode) {
+      await q(
+        `UPDATE billing_coupons SET reserved_count = GREATEST(reserved_count - 1, 0)
+         WHERE code = $1`,
+        [couponCode.toUpperCase()],
+      );
+    }
+    await markProcessed();
+    return { deduplicated: false };
   } else if (type === 'customer.subscription.created' || type === 'customer.subscription.updated') {
     const subId: string | undefined = data.id;
     if (!subId) {
@@ -471,6 +555,25 @@ export async function applyPaymentEvent(
     }
     tenantForLedger = tenantId;
 
+    // C5-M-2: a price id Stripe sent but we cannot map must NEVER silently
+    // land a payer on Starter (portal upgrades carry no metadata planId, so
+    // the old fallback chain ended at 'starter' while Stripe billed the
+    // higher price). Fail loudly — 502 → Stripe retries the event — so ops
+    // notices the missing STRIPE_PRICE_* mapping. Canceled/expired
+    // subscriptions downgrade legitimately and don't need the price.
+    if (priceId && !fromPrice && status !== 'canceled' && status !== 'incomplete_expired') {
+      console.error(
+        `[billing] UNRESOLVED_STRIPE_PRICE: price ${priceId} on subscription ${subId} ` +
+          `for tenant ${tenantId} maps to no plan — refusing to write plan state (C5-M-2)`,
+      );
+      throw new ApiError(
+        502,
+        'PRICE_NOT_CONFIGURED',
+        `Stripe price ${priceId} is not mapped to a plan (missing STRIPE_PRICE_* env). ` +
+          'No plan change was applied; configure the price mapping and the event will be retried.',
+      );
+    }
+
     const r = await q(`SELECT plan_id FROM subscriptions WHERE stripe_sub_id = $1`, [subId]);
     const storedPlan = r.rows[0]?.plan_id as string | null | undefined;
     const periodStart = fromStripeTs(data.current_period_start);
@@ -479,7 +582,9 @@ export async function applyPaymentEvent(
     const cancelAtPeriodEnd = data.cancel_at_period_end === true;
     const { emitBillingEvent, graceDeadline, downgradeTenant } = await import('../services/billing.js');
 
-    if (status === 'past_due' || status === 'unpaid') {
+    // C5-L-2: 'incomplete' (first payment failed/unconfirmed) is payment
+    // trouble like past_due — grace, not full activation.
+    if (status === 'past_due' || status === 'unpaid' || status === 'incomplete') {
       // C-01: payment trouble -> grace period, NOT an instant downgrade.
       // The tenant keeps paid limits until grace_until; processBillingGrace()
       // (daily scheduler job) downgrades afterwards.
@@ -487,17 +592,18 @@ export async function applyPaymentEvent(
       const existingGrace = cur.rows[0]?.grace_until as string | null | undefined;
       const graceUntil = existingGrace ? new Date(existingGrace) : graceDeadline();
       const pastDuePlan = planFromEvent ?? storedPlan ?? 'starter';
+      const recordedStatus = status === 'incomplete' ? 'incomplete' : 'past_due';
       await q(
         `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, plan_id, status,
                                    current_period_start, current_period_end, grace_until)
-         VALUES (gen_random_uuid(), $1, $2, $3, 'past_due', $4, $5, $6)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (tenant_id) DO UPDATE SET
-           stripe_sub_id = EXCLUDED.stripe_sub_id, status = 'past_due',
+           stripe_sub_id = EXCLUDED.stripe_sub_id, status = EXCLUDED.status,
            plan_id = EXCLUDED.plan_id,
            current_period_start = COALESCE(EXCLUDED.current_period_start, subscriptions.current_period_start),
            current_period_end = COALESCE(EXCLUDED.current_period_end, subscriptions.current_period_end),
            grace_until = COALESCE(subscriptions.grace_until, EXCLUDED.grace_until)`,
-        [tenantId, subId, pastDuePlan, periodStart, periodEnd, graceUntil],
+        [tenantId, subId, pastDuePlan, recordedStatus, periodStart, periodEnd, graceUntil],
       );
       await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil } });
     } else if (status === 'canceled' || status === 'incomplete_expired') {
@@ -552,7 +658,12 @@ export async function applyPaymentEvent(
     }
     tenantForLedger = tenantId;
     const paid = type === 'invoice.paid';
-    const amount = Number(data.amount_due ?? data.amount_paid ?? 0);
+    // C5-M-1: on invoice.paid Stripe reports amount_due = 0 (fully paid) —
+    // `??` doesn't fall through on 0, so every paid invoice was recorded at
+    // $0. Paid invoices use amount_paid; failed ones use amount_due.
+    const amount = paid
+      ? Number(data.amount_paid ?? data.total ?? data.amount_due ?? 0)
+      : Number(data.amount_due ?? data.total ?? 0);
     await q(
       `INSERT INTO invoices (id, tenant_id, stripe_invoice_id, stripe_customer_id,
                              amount_due_cents, currency, status,
@@ -643,6 +754,42 @@ export async function applyPaymentEvent(
   return { deduplicated: false };
 }
 
+/**
+ * C1-H-1/H-2: cancels a tenant's Stripe subscription(s) BEFORE any account
+ * rows are deleted, and reports outstanding tenant_credits (money owed to
+ * the customer). Callers must write the forfeit/refund record for the
+ * credits and ABORT the deletion (502) when cancellation fails — never
+ * silently delete a paying tenant's rows while Stripe keeps charging.
+ *
+ * Returns { canceled, creditsCents }: canceled subscription ids and the
+ * outstanding credit balance the caller must reconcile (refund or explicit
+ * forfeit record — never a silent hard-delete).
+ */
+export async function cancelTenantBilling(
+  tenantId: string,
+  q: (text: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }> = query,
+): Promise<{ canceled: string[]; creditsCents: number }> {
+  const t = await q(`SELECT stripe_customer_id FROM tenants WHERE id = $1`, [tenantId]);
+  const customerId = (t.rows[0]?.stripe_customer_id as string | null) ?? null;
+  let canceled: string[] = [];
+  if (customerId) {
+    try {
+      canceled = (await getPayments().cancelSubscription(customerId)).canceled;
+    } catch (err) {
+      throw new ApiError(
+        502,
+        'BILLING_CANCEL_FAILED',
+        'Could not cancel the Stripe subscription before deleting the account. ' +
+          'No data was deleted — please try again or contact support.',
+      );
+    }
+  }
+  const c = await q(`SELECT COALESCE(SUM(amount_cents), 0)::int AS c FROM tenant_credits WHERE tenant_id = $1`, [
+    tenantId,
+  ]);
+  return { canceled, creditsCents: Number(c.rows[0]?.c ?? 0) };
+}
+
 let cached: PaymentsProvider | null = null;
 
 /**
@@ -674,6 +821,14 @@ class DisabledPaymentsProvider implements PaymentsProvider {
   }
   async ensureCoupon(): Promise<string> {
     throw this.err();
+  }
+  /**
+   * C1-H-1: billing was never configured, so no subscription can exist —
+   * cancel is an honest no-op (blocking account deletion here would strand
+   * the user with no way to delete their data).
+   */
+  async cancelSubscription(): Promise<{ canceled: string[] }> {
+    return { canceled: [] };
   }
 }
 

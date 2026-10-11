@@ -4,7 +4,7 @@ import { encrypt } from '../crypto.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
-import { requireScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { getGoogle, isMockGoogleAllowed } from '../providers/google.js';
 import {
   OAUTH_STATE_COOKIE,
@@ -46,7 +46,10 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
     await authPlugin(authed);
 
-    authed.get('/sites/:id/gsc/auth-url', { schema: { params: idParamSchema } }, async (req, reply) => {
+    // C1-M-2: initiating the OAuth flow binds the site's Google integration
+    // to whoever completes consent — gate it like the read endpoint
+    // (owner/admin/editor sessions, gsc:read for API keys).
+    authed.get('/sites/:id/gsc/auth-url', { schema: { params: idParamSchema }, preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'gsc:read') }, async (req, reply) => {
       const { id } = req.params as { id: string };
       await requireSite(req.tenant.tenantId, id);
       // S-04: Redis state + signed-cookie browser binding + PKCE.
