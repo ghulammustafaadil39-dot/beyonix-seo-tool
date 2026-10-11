@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   const s = await query(
     `INSERT INTO sites (id, tenant_id, domain, verified)
      VALUES (gen_random_uuid(), $1, $2, TRUE)
-     ON CONFLICT (tenant_id, domain) DO UPDATE SET verified = TRUE
+     ON CONFLICT (tenant_id, domain) WHERE deleted_at IS NULL DO UPDATE SET verified = TRUE
      RETURNING id`,
     [tenantId, DEMO_DOMAIN],
   );

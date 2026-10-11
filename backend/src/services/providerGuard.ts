@@ -1,6 +1,6 @@
 import { ApiError } from '../errors.js';
 import type { QueryFn } from '../db.js';
-import { query as defaultQuery } from '../db.js';
+import { pool, query as defaultQuery } from '../db.js';
 
 // W-01: GLOBAL daily provider-spend circuit (extends the per-tenant budgets
 // in metering.ts + the Redis circuit breaker in circuitBreaker.ts).
@@ -88,13 +88,11 @@ export async function assertGlobalProviderBudget(q: QueryFn = defaultQuery): Pro
 }
 
 /**
- * D5-L-3: atomic check-AND-reserve for the global daily provider circuit.
- * assertGlobalProviderBudget was check-then-act: N concurrent tenants could
- * all pass the check and then all spend, overshooting the cap N×. This
- * does the check and the provisional spend insert in ONE statement, with
- * SELECT … FOR UPDATE on the day's guard row serializing concurrent
- * attempts (READ COMMITTED re-evaluates the totals after the lock, so each
- * attempt sees the reservations that committed before it).
+ * E2-M-1: atomic check-AND-reserve for the global daily provider circuit.
+ * Uses pg_advisory_xact_lock (like metering.ts:reserveUsage) to serialize
+ * concurrent reserves — the previous FOR UPDATE-on-guard-row approach was
+ * broken (the CTE evaluates once at statement-start; EPQ doesn't recompute
+ * it, so concurrent reserves overshot the cap).
  *
  * Returns the reservation row id. The caller MUST settle it: on provider
  * success call commitGlobalProviderSpend(id, actualUnits, actualCostCents);
@@ -110,48 +108,46 @@ export async function reserveGlobalProviderBudget(
   provider: string,
   feature: string,
   units: number,
-  q: QueryFn = defaultQuery,
+  _q: QueryFn = defaultQuery,
 ): Promise<{ reservationId: string }> {
   const { capCents, capUnits } = globalCapsFromEnv();
   const u = Math.max(0, Math.round(units));
   const cents = priceProviderUnits(provider, feature, u);
-  // Ensure today's guard row exists (idempotent). Kept as a separate
-  // statement: combining the INSERT with FOR UPDATE on the same row in one
-  // statement makes the lock a no-op in Postgres (the CTE form returns 0
-  // rows), silently disabling the serialization.
-  await q(
-    `INSERT INTO global_provider_guard (day) VALUES ((now() AT TIME ZONE 'UTC')::date) ON CONFLICT DO NOTHING`,
-  );
-  const r = await q(
-    `WITH today AS (
-       SELECT COALESCE(SUM(cost_cents), 0)::int AS cost,
-              COALESCE(SUM(units), 0)::int AS units
-       FROM provider_spend
-       WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-     )
-     INSERT INTO provider_spend (id, tenant_id, provider, feature, units, cost_cents)
-     SELECT gen_random_uuid(), $1, $2, $3, $4, $5
-     FROM today
-     WHERE NOT (($6 > 0 AND today.cost + $5 >= $6)
-             OR ($7 > 0 AND today.units + $4 >= $7))
-       -- Serialize concurrent reserves: the FOR UPDATE waits for any
-       -- in-flight reserve to commit, and READ COMMITTED then re-evaluates
-       -- the daily totals against the committed rows.
-       AND EXISTS (
-         SELECT 1 FROM global_provider_guard
-         WHERE day = (now() AT TIME ZONE 'UTC')::date
-         FOR UPDATE
-       )
-     RETURNING id`,
-    [tenantId, provider, feature, u, cents, capCents, capUnits],
-  );
-  if ((r.rowCount ?? 0) === 0) {
-    const spend = await getGlobalDailySpend(q);
-    throw new ApiError(503, 'PROVIDER_BUDGET_EXCEEDED',
-      'Global daily provider budget reached — paid data calls are paused until tomorrow (UTC). Cached data remains available.',
-      { ...spend, capCents, capUnits });
+  // E2-M-1: serialize with an xact-scoped advisory lock (same pattern as
+  // metering.ts). The lock is held for the check+insert transaction only.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['global_provider_guard']);
+      const today = await client.query(
+        `SELECT COALESCE(SUM(cost_cents), 0)::int AS cost, COALESCE(SUM(units), 0)::int AS units
+         FROM provider_spend
+         WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+      );
+      const cost = Number(today.rows[0]?.cost ?? 0);
+      const unitTotal = Number(today.rows[0]?.units ?? 0);
+      if ((capCents > 0 && cost + cents >= capCents) || (capUnits > 0 && unitTotal + u >= capUnits)) {
+        await client.query('ROLLBACK');
+        const spend = await getGlobalDailySpend();
+        throw new ApiError(503, 'PROVIDER_BUDGET_EXCEEDED',
+          'Global daily provider budget reached — paid data calls are paused until tomorrow (UTC). Cached data remains available.',
+          { ...spend, capCents, capUnits });
+      }
+      const r = await client.query(
+        `INSERT INTO provider_spend (id, tenant_id, provider, feature, units, cost_cents)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5) RETURNING id`,
+        [tenantId, provider, feature, u, cents],
+      );
+      await client.query('COMMIT');
+      return { reservationId: r.rows[0].id as string };
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    }
+  } finally {
+    client.release();
   }
-  return { reservationId: r.rows[0].id as string };
 }
 
 /**

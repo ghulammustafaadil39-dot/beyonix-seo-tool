@@ -303,9 +303,12 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
             try {
               const t = await client.query(`SELECT stripe_customer_id FROM tenants WHERE id = $1 FOR UPDATE`, [tenantId]);
               const existing: string | null = (t.rows[0]?.stripe_customer_id as string | null) ?? null;
-              const sub = await client.query(`SELECT status FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+              // E4-M-4: ignore admin-override rows (stripe_sub_id IS NULL) —
+              // a comped tenant must be able to start a real subscription.
+              const sub = await client.query(`SELECT status, stripe_sub_id FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
               const status: string | undefined = sub.rows[0]?.status;
-              if (status && ACTIVE_SUBSCRIPTION_STATUSES.includes(status)) {
+              const hasStripeSub = !!sub.rows[0]?.stripe_sub_id;
+              if (status && hasStripeSub && ACTIVE_SUBSCRIPTION_STATUSES.includes(status)) {
                 await client.query('ROLLBACK');
                 throw new ApiError(
                   409,

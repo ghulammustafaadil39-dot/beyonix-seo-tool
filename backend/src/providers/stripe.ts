@@ -461,8 +461,14 @@ export async function applyPaymentEvent(
       [eventId, type],
     );
     if ((ins.rowCount ?? 0) === 0) {
-      await markProcessed(); // redelivery of an already-handled event
-      return { deduplicated: true };
+      // E4-M-2: if the existing row was never marked processed (previous
+      // attempt crashed), reprocess instead of swallowing as duplicate.
+      const prev = await q(`SELECT processed_at FROM stripe_webhook_events WHERE event_id = $1`, [eventId]);
+      if (prev.rows[0]?.processed_at) {
+        await markProcessed(); // redelivery of an already-handled event
+        return { deduplicated: true };
+      }
+      // Fall through to reprocess the crashed event.
     }
   }
 
@@ -842,7 +848,9 @@ export async function applyPaymentEvent(
       const cur = await q(`SELECT status, grace_until FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
       const existingGrace = cur.rows[0]?.grace_until as string | null | undefined;
       const curStatus = cur.rows[0]?.status as string | undefined;
-      if (curStatus === 'past_due' && !existingGrace) {
+      if (curStatus === 'canceled') {
+        // E4-M-3: genuinely canceled — a late payment_failed must NOT resurrect.
+      } else if (curStatus === 'past_due' && !existingGrace) {
         // D1-H-1: grace already consumed (post-downgrade) and Stripe is
         // still retrying. Do NOT mint a fresh grace or re-dun — that would
         // restart the downgrade cycle on every failed retry. Just record

@@ -139,17 +139,21 @@ export async function registerAdminRoutes(fastify: FastifyInstance) {
       // D5-L-2: a suspended tenant is fully blocked, so pause Stripe billing
       // too — otherwise the suspended tenant keeps being charged. Best
       // effort: a Stripe outage must not block the suspend itself.
+      // E4-M-5: surface pause failures — billingPaused: [] is ambiguous
+      // (could mean "nothing to pause" or "pause failed").
       const customerId = (r.rows[0]?.stripe_customer_id as string | null) ?? null;
       let paused: string[] = [];
+      let billingPauseFailed = false;
       if (customerId) {
         try {
           paused = (await getPayments().pauseSubscription(customerId)).paused;
         } catch (e) {
+          billingPauseFailed = true;
           console.error('[admin] suspend: pauseSubscription failed', { tenantId: id, err: (e as Error).message });
         }
       }
-      await logAdminAction(req, 'tenant.suspend', id, { reason, billingPaused: paused });
-      return { ok: true, billingPaused: paused };
+      await logAdminAction(req, 'tenant.suspend', id, { reason, billingPaused: paused, billingPauseFailed });
+      return { ok: true, billingPaused: paused, billingPauseFailed };
     });
 
     admin.post('/admin/tenants/:id/unsuspend', async (req) => {

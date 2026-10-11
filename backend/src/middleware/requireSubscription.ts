@@ -25,8 +25,13 @@ import type { FastifyRequest } from 'fastify';
 import { ApiError } from '../errors.js';
 import { query } from '../db.js';
 
-/** Subscription states that keep paid features enabled (incl. 3-day grace). */
-export const BILLABLE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due', 'incomplete'];
+/** Subscription states that keep paid features enabled (incl. 3-day grace).
+ * E4-M-1: 'incomplete' is NOT billable here — an incomplete subscription
+ * means the first payment never succeeded (async payment pending). Counting
+ * it as billable enables rolling free access via never-funded checkouts.
+ * ('incomplete' stays in the dunning/grace logic and the checkout block
+ * list, where it belongs.) */
+export const BILLABLE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due'];
 
 /** Fastify preHandler: use on routes that spend provider budget or money. */
 export async function requireActiveSubscriptionOrTrial(req: FastifyRequest): Promise<void> {
