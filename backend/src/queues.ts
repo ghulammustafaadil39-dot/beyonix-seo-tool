@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
 import { ApiError } from './errors.js';
 import { query } from './db.js';
-import { incrWithTtl, redisKeyPrefix } from './redis.js';
+import { getRedis, incrWithTtl, redisKeyPrefix } from './redis.js';
 
 let _connection: Redis | null = null;
 
@@ -18,6 +18,44 @@ export function getConnection(): Redis {
     _connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
   }
   return _connection;
+}
+
+// ---- D2-M-1: bounded Redis client for the rate limiter (no forever-hang) ----
+
+/**
+ * Test hook: override the client the limiter below uses (e.g. point it at a
+ * dead port to simulate a Redis outage). Production always uses the shared
+ * bounded client from redis.ts.
+ */
+let _limiterRedisOverride: Redis | null = null;
+export function setLimiterRedisForTests(r: Redis | null): void {
+  if (_limiterRedisOverride && _limiterRedisOverride !== r) _limiterRedisOverride.disconnect();
+  _limiterRedisOverride = r;
+}
+
+function limiterRedis(): Redis {
+  // Same bounded client middleware/auth.ts uses (maxRetriesPerRequest: 3).
+  // The BullMQ connection MUST stay maxRetriesPerRequest: null (blocking
+  // commands), but commands on THAT connection retry FOREVER on a Redis
+  // outage — running the limiter on it hung every user-initiated
+  // enqueue() forever instead of failing fast.
+  return _limiterRedisOverride ?? getRedis();
+}
+
+/** Per-command ceiling so even a half-open connection fails fast. */
+const LIMITER_REDIS_TIMEOUT_MS = 2000;
+
+/** Rejects if p does not settle within ms (the loser is ignored). */
+function withCommandTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`[queues] ${what} timed out after ${ms}ms`)), ms);
+  });
+  const settle = (fn: () => T): T => {
+    if (timer) clearTimeout(timer);
+    return fn();
+  };
+  return Promise.race([p.then((v) => settle(() => v), (e) => settle(() => { throw e; })), timeout]);
 }
 
 export const QUEUES = {
@@ -132,7 +170,29 @@ export async function checkTenantRateLimit(tenantId: string, queue: string, max 
   // INCR and EXPIRE used to leave a TTL-less key that 429'd the tenant
   // forever.
   const key = `${redisKeyPrefix()}rl:${tenantId}:${queue}`;
-  const count = await incrWithTtl(getConnection(), key, RL_WINDOW);
+  let count: number;
+  try {
+    count = await withCommandTimeout(
+      incrWithTtl(limiterRedis(), key, RL_WINDOW),
+      LIMITER_REDIS_TIMEOUT_MS,
+      'rate-limit increment',
+    );
+  } catch {
+    // D2-M-1: FAIL-CLOSED on limiter outage. Justification: (1) the limiter
+    // guards paid work (crawls, rank checks, content → real provider spend);
+    // an unobservable window must not be treated as an empty one, or one
+    // outage lets tenants burst past their quota. (2) Availability is not
+    // actually improved by fail-open: without Redis the subsequent
+    // BullMQ Queue.add on the blocking connection fails anyway — fail-open
+    // would only move the hang, not remove it. (3) The 429 carries
+    // retryAfterSec so clients back off and retry.
+    throw new ApiError(
+      429,
+      'TENANT_QUEUE_RATE_LIMITED',
+      'Rate limiter temporarily unavailable — please retry shortly.',
+      { retryAfterSec: 60 },
+    );
+  }
   return count <= max;
 }
 
@@ -160,9 +220,15 @@ export async function enqueueDeduped(
   idempotencyKey: string,
   ttlSec = 86400,
 ): Promise<{ deduplicated: boolean }> {
-  const redis = getConnection();
   const mapKey = `${redisKeyPrefix()}dedup:${idempotencyKey}`;
-  const claimed = await redis.set(mapKey, '1', 'EX', ttlSec, 'NX');
+  // D2-M-1: the dedupe claim runs on the bounded limiter client — on the
+  // BullMQ connection (maxRetriesPerRequest: null) it would retry forever
+  // during a Redis outage. A failed claim fails fast instead of hanging.
+  const claimed = await withCommandTimeout(
+    limiterRedis().set(mapKey, '1', 'EX', ttlSec, 'NX'),
+    LIMITER_REDIS_TIMEOUT_MS,
+    'dedupe claim',
+  );
   if (!claimed) return { deduplicated: true };
   try {
     // BullMQ custom jobIds may contain ':' only in the legacy 3-part
@@ -171,7 +237,9 @@ export async function enqueueDeduped(
     const jobId = `${idempotencyKey.replaceAll(':', '-')}-${randomUUID()}`;
     await enqueue(queueName, jobName, data, { idempotencyKey: jobId });
   } catch (err) {
-    await redis.del(mapKey);
+    // Release the claim on the bounded client (best effort) so the next
+    // click can retry — a failed enqueue must not burn the window.
+    await limiterRedis().del(mapKey).catch(() => {});
     throw err;
   }
   return { deduplicated: false };

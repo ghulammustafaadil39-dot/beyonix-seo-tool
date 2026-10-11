@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { query } from '../db.js';
 import { badRequest, validationError } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -121,7 +122,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     app.post('/sites/:id/backlinks/refresh', {
       schema: { params: idParams },
       // A1-H2: refresh spends provider budget — editor+ / backlinks:write.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')], // S-01: provider-backed refresh
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')], // S-01: provider-backed refresh
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -238,7 +239,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     app.post('/sites/:id/backlinks/rescore', {
       schema: { params: idParams },
       // A1-H2: rescore is a bulk mutation — editor+ / backlinks:write.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -261,7 +262,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     app.post('/sites/:id/backlinks/opportunities/refresh', {
       schema: { params: idParams },
       // A1-H2: refresh computes and stores data — editor+ / backlinks:write.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);

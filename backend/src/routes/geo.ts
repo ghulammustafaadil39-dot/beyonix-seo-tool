@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { query } from '../db.js';
 import { ApiError, badRequest, validationError, notFound } from '../errors.js';
@@ -48,7 +49,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/geo/check', {
       // A1-H2: geo checks spend LLM budget — editor+ / geo:write.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'), expensiveTenantLimit()], // S-01: LLM spend; S-03: per-tenant budget
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'), expensiveTenantLimit()], // S-01: LLM spend; S-03: per-tenant budget
       schema: {
         params: idParams,
         body: {
@@ -160,7 +161,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
     // Run the whole prompt set across engines (capped for latency).
     app.post<{ Body: { engines?: string[]; maxPrompts?: number } }>('/sites/:id/geo/run-set', {
       // A1-H2: run-sets spend LLM budget — editor+ / geo:write.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'), expensiveTenantLimit()],
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'), expensiveTenantLimit()],
       schema: {
         params: idParams,
         body: {

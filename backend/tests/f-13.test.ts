@@ -14,6 +14,19 @@ import { auth, signupVerified, tenantCollector } from './helpers-ba.js';
  */
 const HAS_TEST_DB = /test/i.test(process.env.DATABASE_URL ?? '');
 
+/**
+ * D3-M-1: POST /account/invitations/accept delivers the fresh session ONLY
+ * via the httpOnly cookie — never in the JSON body (A3-H1 cookie-only
+ * policy). Tests that need the post-accept session extract it here.
+ */
+function acceptSessionToken(res: { headers: any }): string {
+  const raw = res.headers['set-cookie'];
+  const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const hit = list.find((c: string) => c.startsWith('bseo_token='));
+  if (!hit) throw new Error('expected bseo_token cookie in invite-accept response');
+  return hit.split(';')[0].slice('bseo_token='.length);
+}
+
 describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
   let app: FastifyInstance;
   const tc = tenantCollector();
@@ -288,7 +301,7 @@ describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
       payload: { token: (inv.json() as any).token },
     });
     expect(accept.statusCode).toBe(200);
-    const viewerToken = (accept.json() as any).token as string; // accept issues a fresh tenant-bound token
+    const viewerToken = acceptSessionToken(accept); // accept issues a fresh tenant-bound session via cookie
 
     const denied = await app.inject({
       method: 'POST',

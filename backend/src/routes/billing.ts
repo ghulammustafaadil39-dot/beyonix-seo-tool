@@ -11,6 +11,7 @@ import {
   getPayments,
   mockBillingRoutesEnabled,
   priceIdForPlan,
+  stripeCouponIdFor,
 } from '../providers/stripe.js';
 import { getPlan, isPlanId } from '../plans.js';
 
@@ -54,6 +55,10 @@ const invoicesQuerySchema = {
 } as const;
 
 const ACTIVE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due'];
+// D1-H-1: 'past_due' MUST stay in this list (and grace-expiry downgrades
+// must keep the local row 'past_due' — see downgradeTenant). A past_due
+// Stripe subscription is still alive and retrying; letting checkout through
+// would create a SECOND Stripe subscription = real double billing.
 
 async function validateCoupon(code: string): Promise<void> {
   const r = await query(
@@ -70,23 +75,69 @@ async function validateCoupon(code: string): Promise<void> {
 }
 
 /**
- * A2-L5: maps a local coupon code to the real Stripe coupon id. The row is
- * locked (FOR UPDATE) so concurrent checkouts can't create duplicate
- * Stripe coupons for the same code; the id is stored back on the row for
- * reuse. In mock mode the local code passes through (no Stripe involved).
+ * A2-L5: maps a local coupon code to the real Stripe coupon id.
  *
- * C5-H-1 / C1-M-6: the redemption slot is RESERVED here, atomically, in
- * the same locked transaction — BEFORE the Stripe discount is attached to
- * the session. The conditional UPDATE increments reserved_count only when
+ * C5-H-1 / C1-M-6: the redemption slot is RESERVED atomically in a short
+ * locked transaction BEFORE the Stripe discount is attached to the
+ * session. The conditional UPDATE increments reserved_count only when
  * redeemed+reserved is still under max_redemptions, so N concurrent
  * checkouts can never overshoot the cap (the old lock-free validateCoupon
  * let every checkout through and only capped the local counter later,
  * after Stripe had already granted the discounts). Slots are released on
  * checkout.session.expired and converted to redeemed_count on
  * checkout.session.completed.
+ *
+ * D5-L-5: the coupon row lock is NEVER held across the Stripe network call
+ * (B1-10 lesson). The definition is read unlocked, the Stripe coupon is
+ * ensured first (idempotent by deterministic id, so a concurrent duplicate
+ * create just retrieves), and only then is the atomic reserve run in a
+ * short transaction. The reserve re-checks active/cap under the lock, so
+ * the unlocked pre-reads are safe.
  */
 async function resolveStripeCoupon(code: string): Promise<string> {
   const upper = code.toUpperCase();
+  // Unlocked definition read (no lock held yet).
+  const def = await query(
+    `SELECT percent_off, amount_off_cents, duration, stripe_coupon_id, active
+     FROM billing_coupons WHERE code = $1`,
+    [upper],
+  );
+  const row0 = def.rows[0];
+  if (!row0 || !row0.active) {
+    throw new ApiError(400, 'INVALID_COUPON', `Unknown or inactive coupon code: ${code}`);
+  }
+  if (row0.stripe_coupon_id) {
+    return reserveCouponSlot(upper, row0.stripe_coupon_id as string, code);
+  }
+  // C1-L-3: collision guard — with the hash-suffixed namespace
+  // (C5-M-6) this is near-impossible, but a collision must fail loudly,
+  // never silently attach another code's discount.
+  const candidateId = stripeCouponIdFor(upper);
+  const clash = await query(`SELECT code FROM billing_coupons WHERE stripe_coupon_id = $1 AND code <> $2`, [
+    candidateId,
+    upper,
+  ]);
+  if (clash.rows.length > 0) {
+    throw new ApiError(
+      409,
+      'COUPON_ID_COLLISION',
+      `Coupon ${upper} collides with ${clash.rows[0].code} in the Stripe namespace — refusing to attach a discount`,
+    );
+  }
+  // No row lock held across this network call. If the reserve below then
+  // fails (cap hit / deactivated in the meantime), the Stripe coupon is
+  // orphaned — bounded, and idempotent on retry (retrieve returns it).
+  const stripeId = await getPayments().ensureCoupon({
+    code: upper,
+    percentOff: row0.percent_off as number | null,
+    amountOffCents: row0.amount_off_cents as number | null,
+    duration: row0.duration as string,
+  });
+  return reserveCouponSlot(upper, stripeId, code);
+}
+
+/** Atomic check-and-reserve under the coupon row lock (short transaction). */
+async function reserveCouponSlot(upper: string, stripeId: string, code: string): Promise<string> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -95,11 +146,11 @@ async function resolveStripeCoupon(code: string): Promise<string> {
       // coupon is unknown, inactive, or the cap is already fully reserved.
       const r = await client.query(
         `UPDATE billing_coupons
-         SET reserved_count = reserved_count + 1
+         SET reserved_count = reserved_count + 1, stripe_coupon_id = $2
          WHERE code = $1 AND active
            AND (max_redemptions IS NULL OR redeemed_count + reserved_count < max_redemptions)
-         RETURNING percent_off, amount_off_cents, duration, stripe_coupon_id`,
-        [upper],
+         RETURNING 1`,
+        [upper, stripeId],
       );
       if (r.rows.length === 0) {
         const why = await client.query(
@@ -114,34 +165,6 @@ async function resolveStripeCoupon(code: string): Promise<string> {
         }
         throw new ApiError(400, 'COUPON_EXHAUSTED', 'This coupon has reached its redemption limit');
       }
-      const row = r.rows[0];
-      if (row.stripe_coupon_id) {
-        await client.query('COMMIT');
-        return row.stripe_coupon_id as string;
-      }
-      // C1-L-3: collision guard — with the hash-suffixed namespace
-      // (C5-M-6) this is near-impossible, but a collision must fail loudly,
-      // never silently attach another code's discount.
-      const candidateId = (await import('../providers/stripe.js')).stripeCouponIdFor(upper);
-      const clash = await client.query(
-        `SELECT code FROM billing_coupons WHERE stripe_coupon_id = $1 AND code <> $2`,
-        [candidateId, upper],
-      );
-      if (clash.rows.length > 0) {
-        await client.query('ROLLBACK');
-        throw new ApiError(
-          409,
-          'COUPON_ID_COLLISION',
-          `Coupon ${upper} collides with ${clash.rows[0].code} in the Stripe namespace — refusing to attach a discount`,
-        );
-      }
-      const stripeId = await getPayments().ensureCoupon({
-        code: upper,
-        percentOff: row.percent_off as number | null,
-        amountOffCents: row.amount_off_cents as number | null,
-        duration: row.duration as string,
-      });
-      await client.query(`UPDATE billing_coupons SET stripe_coupon_id = $2 WHERE code = $1`, [upper, stripeId]);
       await client.query('COMMIT');
       return stripeId;
     } catch (err) {
@@ -235,7 +258,13 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
         if (couponCode) await validateCoupon(couponCode);
         // A2-L5: resolve the local code to the Stripe coupon id up-front —
         // the raw local code is never sent to Stripe as a coupon id.
+        // D5-M-3: resolveStripeCoupon rolls back its reservation when it
+        // fails, so the catch below must release ONLY when the reservation
+        // actually committed — tracked by couponReserved, never by
+        // assumption.
+        let couponReserved = false;
         const stripeCouponId = couponCode ? await resolveStripeCoupon(couponCode) : null;
+        if (couponCode && stripeCouponId) couponReserved = true;
 
         // Block double checkout when already subscribed (C-01): plan changes
         // go through the customer portal.
@@ -320,7 +349,9 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
           });
           return { url: s.url };
         } catch (err) {
-          await releaseReservation();
+          // D5-M-3: release exactly once — only when the reservation
+          // committed (couponReserved) and the session was never created.
+          if (couponReserved) await releaseReservation();
           throw err;
         }
       }),

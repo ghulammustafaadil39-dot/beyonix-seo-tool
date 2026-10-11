@@ -101,6 +101,21 @@ export function registerDefaultBillingHooks(): void {
 const GRACE_PERIOD_DAYS = 3;
 
 /**
+ * D5-H-1: server-side trial length for new signups (LA product decision,
+ * 2026-10-11). The length is server-controlled — never client-supplied
+ * (A1-M6 lesson). Overridable via SIGNUP_TRIAL_DAYS for ops/Mustafa.
+ */
+export function signupTrialDays(): number {
+  const v = parseInt(process.env.SIGNUP_TRIAL_DAYS ?? '', 10);
+  return Number.isFinite(v) && v > 0 ? v : 14;
+}
+
+/** Trial expiry timestamp for a tenant created right now. */
+export function newTenantTrialEndsAt(): Date {
+  return new Date(Date.now() + signupTrialDays() * 86400_000);
+}
+
+/**
  * A1-M5: recomputes tenants.read_only against a plan's site/keyword
  * limits (shared by the Stripe re-activation path and the admin plan
  * override — previously the override left read_only stale and the two
@@ -127,11 +142,23 @@ export async function recomputeReadOnly(
  * Downgrades a tenant to starter after the grace period (C-01). Data is
  * NEVER deleted; if usage exceeds the starter limits the tenant is put in
  * read-only mode instead (mutations blocked except billing/admin/account).
+ *
+ * D1-H-1 / D5-M-2: the local subscription status is reconciled with Stripe,
+ * not blindly written. 'canceled' is reserved for genuine Stripe-side
+ * termination (customer.subscription.deleted / canceled|incomplete_expired
+ * updates). A grace-expiry downgrade keeps 'past_due' (grace consumed) —
+ * the Stripe subscription is still alive and Smart Retrying — so that
+ * (a) the checkout ALREADY_SUBSCRIBED block keeps rejecting a second
+ *     subscription (no double-billing path), and
+ * (b) a later successful retry's invoice.paid recovery still matches the
+ *     row and revives the paid plan instead of stranding a payer on
+ *     Starter.
  */
 export async function downgradeTenant(
   tenantId: string,
   reason: string,
   q: QueryFn = defaultQuery,
+  opts: { subscriptionStatus?: 'canceled' | 'past_due' } = {},
 ): Promise<{ readOnly: boolean }> {
   const starter = getPlan('starter');
   const sites = Number(
@@ -142,10 +169,20 @@ export async function downgradeTenant(
   );
   const overLimit = sites > starter.max_sites || kws > starter.max_keywords_tracked;
   await q(`UPDATE tenants SET plan_id = 'starter', read_only = $2 WHERE id = $1`, [tenantId, overLimit]);
-  await q(
-    `UPDATE subscriptions SET status = 'canceled', grace_until = NULL WHERE tenant_id = $1`,
-    [tenantId],
-  );
+  const statusAfter = opts.subscriptionStatus ?? 'canceled';
+  if (statusAfter === 'past_due') {
+    // Grace consumed, but the Stripe subscription may still be retrying:
+    // keep past_due and clear the (expired) grace marker. invoice.payment_failed
+    // for a consumed-grace row does NOT mint a fresh grace (see stripe.ts),
+    // so failed retries can't restart the dunning cycle.
+    await q(`UPDATE subscriptions SET status = 'past_due', grace_until = NULL WHERE tenant_id = $1`, [
+      tenantId,
+    ]);
+  } else {
+    await q(`UPDATE subscriptions SET status = 'canceled', grace_until = NULL WHERE tenant_id = $1`, [
+      tenantId,
+    ]);
+  }
   await emitBillingEvent({ type: 'subscription.downgraded', tenantId, detail: { reason, readOnly: overLimit } });
   return { readOnly: overLimit };
 }
@@ -154,6 +191,13 @@ export async function downgradeTenant(
  * Daily billing job (C-01): downgrades past_due subscriptions whose grace
  * period has expired. Called from the scheduler; safe to run often (the
  * WHERE clause only matches expired grace rows).
+ *
+ * D5-L-4: per-tenant try/catch — one tenant's failure (DB hiccup, hook
+ * failure) must not abort the whole run and delay everyone behind it.
+ *
+ * D1-H-1: grace expiry downgrades the PRODUCT to starter but keeps the
+ * local subscription 'past_due' (Stripe is still retrying) — see
+ * downgradeTenant.
  */
 export async function processBillingGrace(q: QueryFn = defaultQuery): Promise<number> {
   const r = await q(
@@ -162,8 +206,12 @@ export async function processBillingGrace(q: QueryFn = defaultQuery): Promise<nu
   );
   let n = 0;
   for (const row of r.rows) {
-    await downgradeTenant(row.tenant_id as string, 'grace_expired', q);
-    n += 1;
+    try {
+      await downgradeTenant(row.tenant_id as string, 'grace_expired', q, { subscriptionStatus: 'past_due' });
+      n += 1;
+    } catch (err) {
+      console.error('[billing] processBillingGrace: downgrade failed for tenant', row.tenant_id, err);
+    }
   }
   return n;
 }

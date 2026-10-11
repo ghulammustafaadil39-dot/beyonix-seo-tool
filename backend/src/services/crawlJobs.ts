@@ -39,6 +39,17 @@ export interface CrawlJobData {
   auditId?: string;
 }
 
+/**
+ * D1-H-2: BullMQ attempt counters, threaded from the Job into runCrawlSite
+ * so the failure path is attempt-aware (see the catch block below).
+ */
+export interface CrawlAttempt {
+  /** attempts already failed (BullMQ job.attemptsMade) */
+  attemptsMade: number;
+  /** configured max attempts (BullMQ job.opts.attempts) */
+  maxAttempts: number;
+}
+
 export interface ExistingAudit {
   status: string;
   started_at: Date | string | null;
@@ -297,7 +308,13 @@ async function prevDoneAudit(
 }
 
 /** Full audit: crawl up to plan.crawl_pages, run rules, store issues + score. */
-async function runCrawlSite(data: CrawlJobData, q: QueryFn = query): Promise<unknown> {
+async function runCrawlSite(
+  data: CrawlJobData,
+  q: QueryFn = query,
+  // D1-H-2: attempt-aware failure needs the BullMQ counters; direct callers
+  // (no job) default to a single attempt, i.e. the old mark-failed behavior.
+  attempt: CrawlAttempt = { attemptsMade: 0, maxAttempts: 1 },
+): Promise<unknown> {
   const { siteId, tenantId } = data;
   const site = await requireSite(tenantId, siteId, q);
   const tenant = await loadTenant(q, tenantId);
@@ -521,7 +538,30 @@ async function runCrawlSite(data: CrawlJobData, q: QueryFn = query): Promise<unk
     // C1-M-5: a failed crawl must release its budget hold, not leave it
     // reserved until the 15-minute expiry.
     if (crawlReservation) await cancelUsage(crawlReservation, q).catch(() => {});
-    await markFailed(q, tenantId, auditId, err);
+    // D1-H-2: attempt-aware failure. The pass#3 C2-M-1 fix made the retry's
+    // row claim conditional (WHERE status='queued'), so unconditionally
+    // marking 'failed' here killed every retry: attempt 2 always found 0
+    // rows and died with UnrecoverableError, and the configured 3 attempts
+    // were dead code for route-created audits. On non-final attempts the row
+    // goes back to 'queued' (with the 'running' predicate so we never
+    // resurrect a row the reaper already failed) so the retry's conditional
+    // claim succeeds; crawl_state is kept, so the retry resumes where the
+    // failed attempt stopped. Only the final attempt marks 'failed'
+    // (+ DLQ via the worker's failed handler).
+    const isFinalAttempt = attempt.attemptsMade + 1 >= attempt.maxAttempts;
+    if (isFinalAttempt) {
+      await markFailed(q, tenantId, auditId, err);
+    } else {
+      try {
+        await q(
+          `UPDATE audits SET status = 'queued', finished_at = NULL, error = NULL
+           WHERE id = $1 AND tenant_id = $2 AND status = 'running'`,
+          [auditId, tenantId],
+        );
+      } catch (resetErr) {
+        console.error('[crawlJobs] failed to reset audit to queued for retry:', resetErr);
+      }
+    }
     throw err;
   }
 }
@@ -623,7 +663,15 @@ async function runLightCheck(data: CrawlJobData, q: QueryFn = query): Promise<un
 
 /** Entry point for the BullMQ crawl queue (also used by worker.ts). */
 export async function crawlProcessor(job: Job): Promise<unknown> {
-  if (job.name === Jobs.CRAWL_SITE) return runCrawlSite(job.data as CrawlJobData);
+  if (job.name === Jobs.CRAWL_SITE) {
+    // D1-H-2: thread the BullMQ attempt counters through so a transient
+    // failure resets the audit row to 'queued' (retry) instead of
+    // terminally marking it 'failed'.
+    return runCrawlSite(job.data as CrawlJobData, query, {
+      attemptsMade: job.attemptsMade ?? 0,
+      maxAttempts: job.opts?.attempts ?? 3,
+    });
+  }
   if (job.name === Jobs.LIGHT_CHECK) return runLightCheck(job.data as CrawlJobData);
   throw new Error(`crawlProcessor: unknown job name "${job.name}"`);
 }

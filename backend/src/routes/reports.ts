@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { query } from '../db.js';
 import { notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -67,7 +68,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/reports/generate', {
       schema: { params: idParams },
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')], // S-01: report generation spend
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')], // S-01: report generation spend
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -104,7 +105,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -143,7 +144,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
       },
       async (req) => {
         const { tenantId, plan } = req.tenant;
@@ -233,7 +234,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             properties: { expiresInDays: { type: 'integer', minimum: 1, maximum: 365, default: 30 } },
           },
         },
-        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
       },
       async (req, reply) => {
         const { tenantId } = req.tenant;
@@ -258,7 +259,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
       '/reports/:id/shares',
       // Keep reads open to viewer (sessions); API keys keep the pre-existing
       // reports:write scope requirement.
-      { schema: { params: idParams }, preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'reports:write')] },
+      { schema: { params: idParams }, preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'reports:write')] },
       async (req) => {
         const { tenantId } = req.tenant;
         const { id } = req.params as { id: string };
@@ -290,7 +291,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             required: ['id', 'tokenId'],
           },
         },
-        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
       },
       async (req, reply) => {
         const { tenantId } = req.tenant;
@@ -332,7 +333,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -355,7 +356,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
 
     app.delete('/sites/:id/reports/schedule', {
       schema: { params: idParams },
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
     }, async (req, reply) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);

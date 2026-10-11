@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { requireSite } from '../services/sites.js';
 import { enqueue, QUEUES, Jobs } from '../queues.js';
 import { pool, query } from '../db.js';
@@ -63,7 +64,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
       schema: { params: uuidParams('id'), body: { type: 'object', properties: {} } },
       // A1-H2: audit triggers are a mutation — editor+ roles for sessions,
       // 'audits:write' scope for API keys. S-01: crawls cost provider budget.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write')],
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write')],
     }, async (req, reply) => {
       const { tenantId, plan } = req.tenant;
       const siteId = (req.params as { id: string }).id;

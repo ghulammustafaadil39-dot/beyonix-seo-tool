@@ -10,6 +10,19 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/index.js';
 import { pool, query, runMigrations } from '../src/db.js';
 import { signupVerified, tenantCollector, auth, uniqueEmail } from './helpers-ba.js';
+
+/**
+ * D3-M-1: POST /account/invitations/accept delivers the fresh session ONLY
+ * via the httpOnly cookie — never in the JSON body (A3-H1 cookie-only
+ * policy). Tests that need the post-accept session extract it here.
+ */
+function acceptSessionToken(res: { headers: any }): string {
+  const raw = res.headers['set-cookie'];
+  const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const hit = list.find((c: string) => c.startsWith('bseo_token='));
+  if (!hit) throw new Error('expected bseo_token cookie in invite-accept response');
+  return hit.split(';')[0].slice('bseo_token='.length);
+}
 import { getUsage } from '../src/metering.js';
 import { runGeoCheck } from '../src/services/geoService.js';
 
@@ -34,7 +47,7 @@ async function memberWithRole(app: FastifyInstance, owner: { token: string; tena
     payload: { token: (inv.json() as any).token },
   });
   expect(accept.statusCode).toBe(200);
-  return { token: (accept.json() as any).token as string, tenantId: owner.tenantId };
+  return { token: acceptSessionToken(accept), tenantId: owner.tenantId };
 }
 
 async function makeSite(app: FastifyInstance, token: string, domain: string): Promise<string> {
