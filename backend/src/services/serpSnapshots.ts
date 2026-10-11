@@ -9,7 +9,7 @@
 // - 7-day TTL. "Not in top 100" = own domain absent from the 100 items.
 
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
-import { assertDataBudget, recordUsage } from '../metering.js';
+import { assertDataBudget, recordUsage, recordProviderSpend } from '../metering.js';
 import type { SerpItem, SerpSnapshotResult, KeywordSerpProvider } from '../providers/types.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -92,6 +92,7 @@ async function readFreshSnapshot(
 }
 
 async function fetchFreshSnapshot(
+  tenantId: string,
   keyword: string,
   domain: string,
   locationCode: number,
@@ -99,10 +100,13 @@ async function fetchFreshSnapshot(
   provider: KeywordSerpProvider,
 ): Promise<SerpSnapshotResult> {
   if (provider.serpFull) {
-    return provider.serpFull(keyword, domain, locationCode, device);
+    const full = await provider.serpFull(keyword, domain, locationCode, device);
+    if (!provider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'serp_snapshot', 1, 0);
+    return full;
   }
   // Fallback for providers without serpFull: synthesize a 1-item snapshot.
   const s = await provider.serp(keyword, domain, locationCode);
+  if (!provider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'serp_snapshot', 1, 0);
   const items: SerpItem[] = s.position
     ? [{ position: s.position, url: s.url ?? '', domain, title: null, itemType: 'organic' }]
     : [];
@@ -169,7 +173,7 @@ export async function getSerpSnapshot(
   try {
     await assertDataBudget(tenantId, 'serp_checks', 1, q);
     const provider = providerOverride ?? getKeywordSerpProvider();
-    const snap = await fetchFreshSnapshot(keyword, domain, locationCode, device, provider);
+    const snap = await fetchFreshSnapshot(tenantId, keyword, domain, locationCode, device, provider);
     const ins = await q(
       `INSERT INTO serp_snapshots (id, cache_key, keyword, location_code, device, language, fetched_at, items, features)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), $6, $7)

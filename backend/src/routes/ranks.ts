@@ -3,6 +3,7 @@
 // All routes are tenant-scoped via authPlugin + requireSite/tenant_id filters.
 
 import type { FastifyInstance } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query as defaultQuery } from '../db.js';
@@ -63,7 +64,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
     // Latest rank per tracked keyword + previous position + 30-point sparkline.
     app.get<{ Params: { id: string } }>(
       '/sites/:id/ranks',
-      {
+      { preHandler: requireScope('ranks:read'),
         schema: {
           params: siteParams,
           response: { 200: { type: 'object', properties: { data: { type: 'array', items: rankRowSchema('r') } } } },
@@ -149,7 +150,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
     // Visibility share for the site + per-competitor comparison (C-05/F-07).
     app.get<{ Params: { id: string } }>(
       '/sites/:id/ranks/visibility',
-      { schema: { params: siteParams } },
+      { preHandler: requireScope('ranks:read'), schema: { params: siteParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const siteId = req.params.id;
@@ -221,7 +222,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
     // Persisted position-change alerts for a site (newest first).
     app.get<{ Params: { id: string }; Querystring: { limit?: number } }>(
       '/sites/:id/ranks/alerts',
-      {
+      { preHandler: requireScope('ranks:read'),
         schema: {
           params: siteParams,
           querystring: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 } } },
@@ -247,7 +248,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
     // Rank history for one keyword, newest first (max 500 rows).
     app.get<{ Params: { kwId: string }; Querystring: { days?: string } }>(
       '/keywords/:kwId/history',
-      {
+      { preHandler: requireScope('ranks:read'),
         schema: {
           params: kwParams,
           querystring: {
@@ -283,7 +284,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
     // Latest full SERP snapshot for a keyword (top-100 items + features).
     app.get<{ Params: { kwId: string } }>(
       '/keywords/:kwId/snapshot',
-      { schema: { params: kwParams } },
+      { preHandler: requireScope('ranks:read'), schema: { params: kwParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const kwId = req.params.kwId;

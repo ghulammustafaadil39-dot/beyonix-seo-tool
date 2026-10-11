@@ -122,7 +122,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * NEW-1: every tenant-scoped table whose rows would be destroyed (or
  * orphaned) by `DELETE FROM tenants`. Curated from the migrations by
  * grepping for `REFERENCES tenants` / `tenant_id` columns
- * (001, 010–019) — keep this list in sync when a migration adds a
+ * (001, 010–019, 020–029) — keep this list in sync when a migration adds a
  * tenant-scoped table. A shell tenant may be dissolved on invite accept
  * ONLY when it has zero rows across ALL of these.
  *
@@ -133,6 +133,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *   with ON DELETE SET NULL by design (the audit trail must survive).
  * - `email_verification_tokens` / `user_sessions` — scoped to the user,
  *   not the tenant; the user (and their rows) move, nothing is lost.
+ * - Backend-B globals (migrations 020–029): `serp_snapshots`,
+ *   `pagespeed_cache`, `daily_quotas` — shared caches/quotas with no
+ *   tenant_id; nothing tenant-owned is lost when they survive a dissolve.
+ * - `rank_tracking_configs` (021) — no tenant_id column (PK is
+ *   keyword_id → keywords ON DELETE CASCADE); it cannot exist without a
+ *   keywords row, and `keywords` IS guarded below, so a dissolve can
+ *   never silently destroy it.
  */
 export const SHELL_TENANT_TABLES = [
   'sites',
@@ -164,6 +171,22 @@ export const SHELL_TENANT_TABLES = [
   'api_keys',
   'tenant_credits',
   'onboarding_state',
+  // Backend-B Wave 2 (migrations 020–029): every tenant_id-bearing table.
+  'audit_pages',
+  'audit_diffs',
+  'rank_alerts',
+  'alert_events',
+  'competitors',
+  'keyword_lists',
+  'keyword_list_members',
+  'keyword_gaps',
+  'content_versions',
+  'content_profiles',
+  'geo_prompts',
+  'link_opportunities',
+  'tenant_branding',
+  'report_schedules',
+  'share_tokens',
 ] as const;
 
 /**

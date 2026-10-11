@@ -4,6 +4,7 @@ import { query as defaultQuery, type QueryFn } from '../db.js';
 import { DEFAULT_LOCATION_CODE, getKeywordMetrics } from './keywordCache.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 import { expandSeed, parseKeywordBulkImport } from './keywordText.js';
+import { recordProviderSpend } from '../metering.js';
 import { getGoogle } from '../providers/google.js';
 import { requireSite, siteUrl } from './sites.js';
 
@@ -420,6 +421,9 @@ export async function keywordGap(
   const compKws = provider.competitorKeywords
     ? await provider.competitorKeywords(comp)
     : [];
+  if (!provider.isMock && provider.competitorKeywords) {
+    await recordProviderSpend(tenantId, 'dataforseo', 'keyword_gap', 1, 0);
+  }
   const ours = new Set(
     (
       await q(`SELECT keyword FROM keywords WHERE site_id = $1 AND tenant_id = $2`, [siteId, tenantId])

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
@@ -12,7 +13,7 @@ import {
 import { markdownToDocx } from '../services/docxExport.js';
 import { publishPiece } from '../services/publishConnector.js';
 import { checkLimit, assertLimit } from '../metering.js';
-import { ApiError, notFound, badRequest } from '../errors.js';
+import { ApiError, notFound, badRequest, validationError } from '../errors.js';
 import { query as defaultQuery } from '../db.js';
 
 // NOTE: queues.js is imported lazily inside handlers so that importing this
@@ -64,7 +65,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // List content pieces for a site (newest first), optional ?status= filter.
     app.get<{ Params: SiteParams; Querystring: { status?: string } }>(
       '/sites/:id/content',
-      {
+      { preHandler: requireScope('content:read'),
         schema: {
           params: uuidParamSchema,
           querystring: {
@@ -95,7 +96,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     }>(
       '/sites/:id/content',
       {
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit()], // S-01: creating a piece enqueues LLM generation; S-03: per-tenant budget
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')], // S-01: creating a piece enqueues LLM generation; S-03: per-tenant budget
         schema: {
           params: uuidParamSchema,
           body: {
@@ -116,10 +117,10 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
         const site = await requireSite(tenantId, req.params.id);
 
         const title = req.body.title?.trim();
-        if (!title) throw badRequest('title is required');
+        if (!title) throw validationError('title is required');
         const tone = req.body.tone?.trim() || 'friendly professional';
         const length = req.body.length ?? 'medium';
-        if (!LENGTH_ESTIMATES[length]) throw badRequest('length must be short|medium|long');
+        if (!LENGTH_ESTIMATES[length]) throw validationError('length must be short|medium|long');
         const estimate = LENGTH_ESTIMATES[length];
 
         const lim = await checkLimit(tenantId, plan, 'ai_words');
@@ -162,7 +163,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Get one piece (tenant-scoped).
     app.get<{ Params: SiteParams }>(
       '/content/:id',
-      { schema: { params: uuidParamSchema } },
+      { preHandler: requireScope('content:read'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         const r = await defaultQuery(`SELECT * FROM content_pieces WHERE id = $1 AND tenant_id = $2`, [
@@ -180,7 +181,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
       Body: { title?: string; outline?: string; draft?: string };
     }>(
       '/content/:id',
-      {
+      { preHandler: requireScope('content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -211,7 +212,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             sets.push(`${field} = $${params.length}`);
           }
         }
-        if (sets.length === 0) throw badRequest('nothing to update');
+        if (sets.length === 0) throw validationError('nothing to update');
         params.push(req.params.id, tenantId);
         const r = await defaultQuery(
           `UPDATE content_pieces SET ${sets.join(', ')}, updated_at = now()
@@ -227,7 +228,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Approve a piece (moves review -> approved).
     app.post<{ Params: SiteParams }>(
       '/content/:id/approve',
-      { schema: { params: uuidParamSchema } },
+      { preHandler: requireScope('content:write'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         const r = await defaultQuery(
@@ -243,7 +244,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // (Re)enqueue generation; only allowed from draft status.
     app.post<{ Params: SiteParams }>(
       '/content/:id/generate',
-      { schema: { params: uuidParamSchema }, preHandler: [requireVerifiedEmail, expensiveTenantLimit()] }, // S-01: LLM spend; S-03: per-tenant budget
+      { schema: { params: uuidParamSchema }, preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')] }, // S-01: LLM spend; S-03: per-tenant budget
       async (req) => {
         const { tenantId, plan } = req.tenant;
         const r = await defaultQuery(`SELECT * FROM content_pieces WHERE id = $1 AND tenant_id = $2`, [
@@ -273,7 +274,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Export a piece as markdown or GEO-ready HTML (downloaded as a file).
     app.get<{ Params: SiteParams; Querystring: { format?: string } }>(
       '/content/:id/export',
-      {
+      { preHandler: requireScope('content:read'),
         schema: {
           params: uuidParamSchema,
           querystring: {
@@ -325,7 +326,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Set/replace the brief (brief -> outline -> draft workflow).
     app.post<{ Params: SiteParams; Body: { brief: string } }>(
       '/content/:id/brief',
-      {
+      { preHandler: requireScope('content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -352,12 +353,12 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
       '/content/:id/outline',
       {
         schema: { params: uuidParamSchema },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit()],
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')],
       },
       async (req) => {
         const { tenantId, plan } = req.tenant;
         const piece = await requirePiece(tenantId, req.params.id);
-        if (!piece.brief) throw badRequest('Set a brief first (POST /content/:id/brief).');
+        if (!piece.brief) throw validationError('Set a brief first (POST /content/:id/brief).');
         const lim = await checkLimit(tenantId, plan, 'ai_words');
         if (lim.used + 600 > lim.limit) {
           throw new ApiError(402, 'LIMIT_EXCEEDED', `AI words limit reached: ${lim.used}/${lim.limit} used this month. Upgrade to continue.`,
@@ -386,7 +387,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // NLP term-coverage scoring against top SERP results.
     app.post<{ Params: SiteParams }>(
       '/content/:id/optimize',
-      { schema: { params: uuidParamSchema } },
+      { preHandler: requireScope('content:write'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         const piece = await requirePiece(tenantId, req.params.id);
@@ -397,7 +398,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Internal-link suggestions from the site's crawl graph.
     app.get<{ Params: SiteParams }>(
       '/content/:id/internal-links',
-      { schema: { params: uuidParamSchema } },
+      { preHandler: requireScope('content:read'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         const piece = await requirePiece(tenantId, req.params.id);
@@ -413,7 +414,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Duplication check vs existing content + crawled pages.
     app.post<{ Params: SiteParams; Body: { text?: string } }>(
       '/content/:id/duplication',
-      {
+      { preHandler: requireScope('content:write'),
         schema: {
           params: uuidParamSchema,
           body: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 200000 } } },
@@ -423,7 +424,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
         const { tenantId } = req.tenant;
         const piece = await requirePiece(tenantId, req.params.id);
         const text = req.body.text ?? piece.draft ?? '';
-        if (!text.trim()) throw badRequest('No text to check (piece has no draft and no text was given).');
+        if (!text.trim()) throw validationError('No text to check (piece has no draft and no text was given).');
         return { data: await duplicationCheck(tenantId, piece.site_id, piece.id, text, defaultQuery) };
       },
     );
@@ -442,7 +443,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit()],
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -464,7 +465,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Approval-flow status transitions (validated).
     app.patch<{ Params: SiteParams; Body: { status: string } }>(
       '/content/:id/status',
-      {
+      { preHandler: requireScope('content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -492,7 +493,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Version history.
     app.get<{ Params: SiteParams }>(
       '/content/:id/versions',
-      { schema: { params: uuidParamSchema } },
+      { preHandler: requireScope('content:read'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         await requirePiece(tenantId, req.params.id);
@@ -510,7 +511,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Brand-voice profile per site.
     app.get<{ Params: SiteParams }>(
       '/sites/:id/content-profile',
-      { schema: { params: uuidParamSchema } },
+      { preHandler: requireScope('content:read'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         const site = await requireSite(tenantId, req.params.id);
@@ -524,7 +525,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
 
     app.put<{ Params: SiteParams; Body: { tone?: string; vocabulary?: string; do_rules?: string; dont_rules?: string; sample?: string } }>(
       '/sites/:id/content-profile',
-      {
+      { preHandler: requireScope('content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -580,7 +581,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: requireVerifiedEmail,
+        preHandler: [requireVerifiedEmail, requireScope('content:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;

@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { query } from '../db.js';
-import { ApiError, badRequest } from '../errors.js';
+import { ApiError, badRequest, validationError, notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
 import {
   geoScore, runGeoCheck, shareOfVoice, geoHistory, geoRecommendations,
@@ -28,7 +29,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
   await fastify.register(async (app) => {
     await authPlugin(app);
 
-    app.get('/sites/:id/geo', {
+    app.get('/sites/:id/geo', { preHandler: requireScope('geo:read'),
       schema: { params: idParams },
     }, async (req) => {
       const { id } = req.params as { id: string };
@@ -69,11 +70,11 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
       const site = await requireSite(req.tenant.tenantId, id);
 
       const q = String(queryText ?? '').trim();
-      if (q.length < 3 || q.length > 200) throw badRequest('query must be between 3 and 200 characters');
+      if (q.length < 3 || q.length > 200) throw validationError('query must be between 3 and 200 characters');
       const plats = platforms && platforms.length > 0 ? platforms : DEFAULT_PLATFORMS;
       for (const p of plats) {
         if (!(GEO_PLATFORMS_ALLOWED as readonly string[]).includes(p)) {
-          throw badRequest(`Unknown platform: ${p}`);
+          throw validationError(`Unknown platform: ${p}`);
         }
       }
 
@@ -91,7 +92,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
     // ---- F-05: GEO v2 ----
 
     // Prompt sets per site: the same prompts are run on every engine.
-    app.get('/sites/:id/geo/prompts', { schema: { params: idParams } }, async (req) => {
+    app.get('/sites/:id/geo/prompts', { preHandler: requireScope('geo:read'), schema: { params: idParams } }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const r = await query(
@@ -118,7 +119,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
         `SELECT COUNT(*)::int AS n FROM geo_prompts WHERE site_id = $1 AND tenant_id = $2`,
         [site.id, site.tenant_id],
       );
-      if (Number(existing.rows[0]?.n ?? 0) >= 25) throw badRequest('Prompt set is limited to 25 prompts per site.');
+      if (Number(existing.rows[0]?.n ?? 0) >= 25) throw validationError('Prompt set is limited to 25 prompts per site.');
       try {
         const r = await query(
           `INSERT INTO geo_prompts (tenant_id, site_id, prompt)
@@ -128,7 +129,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
         return r.rows[0];
       } catch (err) {
         if (err instanceof Error && 'code' in err && (err as { code: string }).code === '23505') {
-          throw badRequest('This prompt is already in the set.');
+          throw validationError('This prompt is already in the set.');
         }
         throw err;
       }
@@ -145,7 +146,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
         `DELETE FROM geo_prompts WHERE id = $1 AND site_id = $2 AND tenant_id = $3`,
         [promptId, site.id, site.tenant_id],
       );
-      if (r.rowCount === 0) throw badRequest('Prompt not found.');
+      if (r.rowCount === 0) throw notFound('Prompt');
       return reply.code(204).send();
     });
 
@@ -171,7 +172,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
         `SELECT prompt FROM geo_prompts WHERE site_id = $1 AND tenant_id = $2 ORDER BY created_at LIMIT $3`,
         [site.id, site.tenant_id, maxPrompts],
       );
-      if (pr.rows.length === 0) throw badRequest('No prompts in the set. Add prompts first.');
+      if (pr.rows.length === 0) throw validationError('No prompts in the set. Add prompts first.');
       const check = await checkLimit(req.tenant.tenantId, req.tenant.plan, 'geo_checks');
       const total = pr.rows.length * engines.length;
       if (check.used + total > check.limit) {
@@ -188,7 +189,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
     });
 
     // History series (daily mention rate per engine).
-    app.get<{ Querystring: { days?: number } }>('/sites/:id/geo/history', {
+    app.get<{ Querystring: { days?: number } }>('/sites/:id/geo/history', { preHandler: requireScope('geo:read'),
       schema: {
         params: idParams,
         querystring: { type: 'object', properties: { days: { type: 'integer', minimum: 1, maximum: 365, default: 30 } } },
@@ -201,7 +202,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
     });
 
     // Share-of-voice vs tracked competitors (simulated).
-    app.get<{ Querystring: { days?: number } }>('/sites/:id/geo/share-of-voice', {
+    app.get<{ Querystring: { days?: number } }>('/sites/:id/geo/share-of-voice', { preHandler: requireScope('geo:read'),
       schema: {
         params: idParams,
         querystring: { type: 'object', properties: { days: { type: 'integer', minimum: 1, maximum: 365, default: 30 } } },
@@ -214,14 +215,14 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
     });
 
     // Recommendations incl. llms.txt guidance.
-    app.get('/sites/:id/geo/recommendations', { schema: { params: idParams } }, async (req) => {
+    app.get('/sites/:id/geo/recommendations', { preHandler: requireScope('geo:read'), schema: { params: idParams } }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       return geoRecommendations(site.tenant_id, site.id);
     });
 
     // llms.txt generator download.
-    app.get('/sites/:id/geo/llms-txt', { schema: { params: idParams } }, async (req, reply) => {
+    app.get('/sites/:id/geo/llms-txt', { preHandler: requireScope('geo:read'), schema: { params: idParams } }, async (req, reply) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const pages = await query(

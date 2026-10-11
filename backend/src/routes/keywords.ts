@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
@@ -42,7 +43,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['seeds'],
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit()], // S-01: DataForSEO spend; S-03: per-tenant budget
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('keywords:write')], // S-01: DataForSEO spend; S-03: per-tenant budget
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -63,7 +64,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // List keywords, highest priority first. ?tracked=true|false filters.
     app.get<{ Params: { id: string }; Querystring: { tracked?: string; page?: number; limit?: number } }>(
       '/sites/:id/keywords',
-      {
+      { preHandler: requireScope('keywords:read'),
         schema: {
           params: siteParams,
           querystring: {
@@ -100,7 +101,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Start tracking a keyword (plan limit enforced).
     app.post<{ Params: { kwId: string } }>(
       '/keywords/:kwId/track',
-      { schema: { params: kwParams } },
+      { preHandler: requireScope('keywords:write'), schema: { params: kwParams } },
       async (req) => {
         const { tenantId, plan } = req.tenant;
         const kwId = req.params.kwId;
@@ -121,7 +122,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Stop tracking a keyword.
     app.post<{ Params: { kwId: string } }>(
       '/keywords/:kwId/untrack',
-      { schema: { params: kwParams } },
+      { preHandler: requireScope('keywords:write'), schema: { params: kwParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const kwId = req.params.kwId;
@@ -150,7 +151,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['seeds'],
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit()], // S-01: DataForSEO spend
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('keywords:write')], // S-01: DataForSEO spend
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -162,7 +163,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Clustering by topic (group_key) + intent mix.
     app.get<{ Params: { id: string } }>(
       '/sites/:id/keywords/clusters',
-      { schema: { params: siteParams } },
+      { preHandler: requireScope('keywords:read'), schema: { params: siteParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const siteId = req.params.id;
@@ -179,7 +180,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Question keywords (what/how/why/...).
     app.get<{ Params: { id: string } }>(
       '/sites/:id/keywords/questions',
-      { schema: { params: siteParams } },
+      { preHandler: requireScope('keywords:read'), schema: { params: siteParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const siteId = req.params.id;
@@ -196,7 +197,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Cannibalization detection.
     app.get<{ Params: { id: string } }>(
       '/sites/:id/keywords/cannibalization',
-      { schema: { params: siteParams } },
+      { preHandler: requireScope('keywords:read'), schema: { params: siteParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const hits = await detectCannibalization(tenantId, req.params.id);
@@ -216,7 +217,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['competitor'],
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit()],
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('keywords:read')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -228,7 +229,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Keyword lists: create.
     app.post<{ Params: { id: string }; Body: { name: string; tags?: string[] } }>(
       '/sites/:id/keyword-lists',
-      {
+      { preHandler: requireScope('keywords:write'),
         schema: {
           params: siteParams,
           body: {
@@ -267,7 +268,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Keyword lists: list with member counts.
     app.get<{ Params: { id: string } }>(
       '/sites/:id/keyword-lists',
-      { schema: { params: siteParams } },
+      { preHandler: requireScope('keywords:read'), schema: { params: siteParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const site = await requireSite(tenantId, req.params.id);
@@ -295,7 +296,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Keyword lists: rename / retag.
     app.patch<{ Params: { listId: string }; Body: { name?: string; tags?: string[] } }>(
       '/keyword-lists/:listId',
-      {
+      { preHandler: requireScope('keywords:write'),
         schema: {
           params: listParams,
           body: {
@@ -330,7 +331,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Keyword lists: delete.
     app.delete<{ Params: { listId: string } }>(
       '/keyword-lists/:listId',
-      { schema: { params: listParams } },
+      { preHandler: requireScope('keywords:write'), schema: { params: listParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         await requireList(tenantId, req.params.listId);
@@ -342,7 +343,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Keyword lists: add members.
     app.post<{ Params: { listId: string }; Body: { keywordIds: string[] } }>(
       '/keyword-lists/:listId/keywords',
-      {
+      { preHandler: requireScope('keywords:write'),
         schema: {
           params: listParams,
           body: {
@@ -373,7 +374,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Keyword lists: remove a member.
     app.delete<{ Params: { listId: string; kwId: string } }>(
       '/keyword-lists/:listId/keywords/:kwId',
-      {
+      { preHandler: requireScope('keywords:write'),
         schema: {
           params: {
             type: 'object',
@@ -396,7 +397,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Keyword lists: members.
     app.get<{ Params: { listId: string } }>(
       '/keyword-lists/:listId/keywords',
-      { schema: { params: listParams } },
+      { preHandler: requireScope('keywords:read'), schema: { params: listParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const list = await requireList(tenantId, req.params.listId);
@@ -421,7 +422,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             properties: { csv: { type: 'string', minLength: 1, maxLength: 500_000 } },
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit()],
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('keywords:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -433,7 +434,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Export keywords as CSV (download).
     app.get<{ Params: { id: string } }>(
       '/sites/:id/keywords/export',
-      { schema: { params: siteParams } },
+      { preHandler: requireScope('keywords:read'), schema: { params: siteParams } },
       async (req, reply) => {
         const { tenantId } = req.tenant;
         const site = await requireSite(tenantId, req.params.id);
@@ -452,7 +453,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
     // Delete a keyword (and its rank history).
     app.delete<{ Params: { kwId: string } }>(
       '/keywords/:kwId',
-      { schema: { params: kwParams } },
+      { preHandler: requireScope('keywords:write'), schema: { params: kwParams } },
       async (req) => {
         const { tenantId } = req.tenant;
         const kwId = req.params.kwId;

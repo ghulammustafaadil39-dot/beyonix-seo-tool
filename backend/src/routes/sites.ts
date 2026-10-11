@@ -6,6 +6,7 @@ import { ApiError, conflict, notFound } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
 import { assertLimit, checkLimit } from '../metering.js';
 import { requireSite, toPublicSite } from '../services/sites.js';
+import { softDeleteSite, restoreSite } from '../services/retention.js';
 import {
   checkVerifyToken,
   verifySiteDomain,
@@ -129,7 +130,7 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
     });
 
     authed.get('/sites', async (req) => {
-      const r = await query('SELECT * FROM sites WHERE tenant_id = $1 ORDER BY created_at ASC', [
+      const r = await query('SELECT * FROM sites WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC', [
         req.tenant.tenantId,
       ]);
       return { data: r.rows.map(toPublicSite) };
@@ -170,10 +171,19 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       }
     });
 
+    // Soft-delete instead of hard DELETE (canonical Backend-A C-06
+    // implementation in services/retention.ts; arg order tenantId, siteId).
     authed.delete('/sites/:id', { schema: { params: idParamSchema } }, async (req) => {
       const { id } = req.params as { id: string };
-      const r = await query('DELETE FROM sites WHERE id = $1 AND tenant_id = $2', [id, req.tenant.tenantId]);
-      if (r.rowCount === 0) throw notFound('Site');
+      const deleted = await softDeleteSite(req.tenant.tenantId, id, query);
+      if (!deleted) throw notFound('Site');
+      return { ok: true, soft_deleted: true };
+    });
+
+    authed.post('/sites/:id/restore', { schema: { params: idParamSchema } }, async (req) => {
+      const { id } = req.params as { id: string };
+      const restored = await restoreSite(req.tenant.tenantId, id, query);
+      if (!restored) throw notFound('Site');
       return { ok: true };
     });
 

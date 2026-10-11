@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
@@ -14,7 +15,7 @@ import {
   REPORT_SECTIONS,
 } from '../services/reportBranding.js';
 import {
-  createShareToken, hashShareToken, verifyShareTokenFormat, DEFAULT_SHARE_TTL_MS,
+  createShareToken, hashShareToken, verifyShareTokenFormat, deriveShareTokenKey, DEFAULT_SHARE_TTL_MS,
 } from '../services/shareTokens.js';
 
 const idParams = {
@@ -31,7 +32,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
   await fastify.register(async (app) => {
     await authPlugin(app);
 
-    app.get('/sites/:id/reports', {
+    app.get('/sites/:id/reports', { preHandler: requireScope('reports:read'),
       schema: { params: idParams },
     }, async (req) => {
       const { id } = req.params as { id: string };
@@ -50,7 +51,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
       return { data: r.rows, page: 1, limit: 20, total: Number(totalR.rows[0].c) };
     });
 
-    app.get('/reports/:id', {
+    app.get('/reports/:id', { preHandler: requireScope('reports:read'),
       schema: { params: idParams },
     }, async (req) => {
       const { id } = req.params as { id: string };
@@ -66,7 +67,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/reports/generate', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail, // S-01: report generation spend
+      preHandler: [requireVerifiedEmail, requireScope('reports:write')], // S-01: report generation spend
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -82,7 +83,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
     // ---- F-08: white-label reports ----
 
     // Tenant branding (white-label logo + colors).
-    app.get('/branding', { schema: {} }, async (req) => {
+    app.get('/branding', { preHandler: requireScope('reports:read'), schema: {} }, async (req) => {
       return getBranding(req.tenant.tenantId, query);
     });
 
@@ -100,7 +101,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: requireVerifiedEmail,
+        preHandler: [requireVerifiedEmail, requireScope('reports:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -139,7 +140,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: requireVerifiedEmail,
+        preHandler: [requireVerifiedEmail, requireScope('reports:write')],
       },
       async (req) => {
         const { tenantId, plan } = req.tenant;
@@ -186,7 +187,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
     }
 
     // Branded PDF download.
-    app.get('/reports/:id/pdf', { schema: { params: idParams } }, async (req, reply) => {
+    app.get('/reports/:id/pdf', { preHandler: requireScope('reports:read'), schema: { params: idParams } }, async (req, reply) => {
       const { id } = req.params as { id: string };
       const rep = await loadReportForExport(req.tenant.tenantId, id);
       const buf = await renderReportPdf({
@@ -200,7 +201,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
     });
 
     // Branded HTML view.
-    app.get('/reports/:id/html', { schema: { params: idParams } }, async (req, reply) => {
+    app.get('/reports/:id/html', { preHandler: requireScope('reports:read'), schema: { params: idParams } }, async (req, reply) => {
       const { id } = req.params as { id: string };
       const rep = await loadReportForExport(req.tenant.tenantId, id);
       const html = renderReportHtml({
@@ -211,7 +212,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
     });
 
     // Previous-period comparison.
-    app.get('/reports/:id/compare', { schema: { params: idParams } }, async (req) => {
+    app.get('/reports/:id/compare', { preHandler: requireScope('reports:read'), schema: { params: idParams } }, async (req) => {
       const { id } = req.params as { id: string };
       const cmp = await compareWithPrevious(req.tenant.tenantId, id, query);
       if (!cmp) throw notFound('Report');
@@ -229,7 +230,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             properties: { expiresInDays: { type: 'integer', minimum: 1, maximum: 365, default: 30 } },
           },
         },
-        preHandler: requireVerifiedEmail,
+        preHandler: [requireVerifiedEmail, requireScope('reports:write')],
       },
       async (req, reply) => {
         const { tenantId } = req.tenant;
@@ -237,7 +238,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
         await loadReportForExport(tenantId, id);
         const days = req.body.expiresInDays ?? 30;
         const expiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
-        const { token, tokenHash } = createShareToken(config.jwtSecret);
+        const { token, tokenHash } = createShareToken(deriveShareTokenKey(config.jwtSecret));
         await query(
           `INSERT INTO share_tokens (id, tenant_id, resource_type, resource_id, token_hash, expires_at)
            VALUES (gen_random_uuid(), $1, 'report', $2, $3, to_timestamp($4))`,
@@ -249,7 +250,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
     );
 
     // Scheduled email delivery (rows consumed by the scheduler; Backend-A owns delivery).
-    app.get('/sites/:id/reports/schedule', { schema: { params: idParams } }, async (req) => {
+    app.get('/sites/:id/reports/schedule', { preHandler: requireScope('reports:read'), schema: { params: idParams } }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const r = await query(`SELECT * FROM report_schedules WHERE site_id = $1 AND tenant_id = $2`, [
@@ -273,7 +274,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: requireVerifiedEmail,
+        preHandler: [requireVerifiedEmail, requireScope('reports:write')],
       },
       async (req) => {
         const { id } = req.params as { id: string };
@@ -296,7 +297,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
 
     app.delete('/sites/:id/reports/schedule', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail,
+      preHandler: [requireVerifiedEmail, requireScope('reports:write')],
     }, async (req, reply) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -314,7 +315,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
       },
     }, async (req, reply) => {
       const token = (req.params as { token: string }).token;
-      const tokenId = verifyShareTokenFormat(config.jwtSecret, token);
+      const tokenId = verifyShareTokenFormat(deriveShareTokenKey(config.jwtSecret), token);
       if (!tokenId) throw notFound('Share link');
       const sr = await query(
         `SELECT tenant_id, resource_id FROM share_tokens

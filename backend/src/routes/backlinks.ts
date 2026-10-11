@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
-import { badRequest } from '../errors.js';
+import { badRequest, validationError } from '../errors.js';
 import { requireSite } from '../services/sites.js';
 import { enqueue, QUEUES, Jobs } from '../queues.js';
 import { rescoreToxicLinks, TOXIC_THRESHOLD } from '../services/toxicLinks.js';
@@ -82,7 +83,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
   await fastify.register(async (app) => {
     await authPlugin(app);
 
-    app.get('/sites/:id/backlinks', {
+    app.get('/sites/:id/backlinks', { preHandler: requireScope('backlinks:read'),
       schema: {
         params: idParams,
         querystring: {
@@ -150,7 +151,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
       const { csv } = req.body as { csv: string };
       const links = parseBacklinkCsv(csv, site.domain);
       if (links.length === 0) {
-        throw badRequest(
+        throw validationError(
           'No valid links found in the CSV. Expected rows like: https://blog.example/post, https://yoursite.com/page (or a single column of linking page URLs).',
         );
       }
@@ -173,7 +174,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     // ---- F-06: backlinks v2 ----
 
     // Anchor-text distribution.
-    app.get('/sites/:id/backlinks/anchors', { schema: { params: idParams } }, async (req) => {
+    app.get('/sites/:id/backlinks/anchors', { preHandler: requireScope('backlinks:read'), schema: { params: idParams } }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const r = await query(
@@ -187,7 +188,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     });
 
     // Heuristic toxic-link list (labeled — never a penalty verdict).
-    app.get('/sites/:id/backlinks/toxic', {
+    app.get('/sites/:id/backlinks/toxic', { preHandler: requireScope('backlinks:read'),
       schema: {
         params: idParams,
         querystring: {
@@ -230,7 +231,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     });
 
     // Link-opportunity finder.
-    app.get('/sites/:id/backlinks/opportunities', { schema: { params: idParams } }, async (req) => {
+    app.get('/sites/:id/backlinks/opportunities', { preHandler: requireScope('backlinks:read'), schema: { params: idParams } }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const r = await query(
@@ -252,7 +253,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     });
 
     // Disavow file download (.txt) for heuristic-toxic links.
-    app.get('/sites/:id/backlinks/disavow', {
+    app.get('/sites/:id/backlinks/disavow', { preHandler: requireScope('backlinks:read'),
       schema: {
         params: idParams,
         querystring: {

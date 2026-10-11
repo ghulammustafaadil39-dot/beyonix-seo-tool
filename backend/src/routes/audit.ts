@@ -2,6 +2,7 @@
 // All routes are tenant-scoped via authPlugin + requireSite/tenant_id filters.
 
 import type { FastifyInstance } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { requireSite } from '../services/sites.js';
@@ -12,7 +13,7 @@ import { ApiError } from '../errors.js';
 import { checkLimit } from '../metering.js';
 import { getPlan } from '../plans.js';
 import { config } from '../config.js';
-import { createShareToken, hashShareToken, verifyShareTokenFormat } from '../services/shareTokens.js';
+import { createShareToken, hashShareToken, verifyShareTokenFormat, deriveShareTokenKey } from '../services/shareTokens.js';
 import { createPdf, drawCover, drawSectionTitle, drawKeyValues, drawIssues } from '../services/pdf.js';
 import { getBranding } from '../services/branding.js';
 
@@ -66,7 +67,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     // Trigger a new full-site audit (enqueues a crawl job). 409 if one is active.
     app.post('/sites/:id/audits', {
       schema: { params: uuidParams('id'), body: { type: 'object', properties: {} } },
-      preHandler: requireVerifiedEmail, // S-01: crawls cost provider budget
+      preHandler: [requireVerifiedEmail, requireScope('audits:write')], // S-01: crawls cost provider budget
     }, async (req, reply) => {
       const { tenantId, plan } = req.tenant;
       const siteId = (req.params as { id: string }).id;
@@ -113,7 +114,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // List audits for a site, newest first.
-    app.get('/sites/:id/audits', {
+    app.get('/sites/:id/audits', { preHandler: requireScope('audits:read'),
       schema: { params: uuidParams('id') },
     }, async (req) => {
       const { tenantId } = req.tenant;
@@ -138,7 +139,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
 
     // Get one audit (tenant-scoped). The raw worker error is truncated to
     // avoid leaking provider internals; full text stays in server logs.
-    app.get('/audits/:auditId', {
+    app.get('/audits/:auditId', { preHandler: requireScope('audits:read'),
       schema: { params: uuidParams('auditId') },
     }, async (req) => {
       const { tenantId } = req.tenant;
@@ -156,7 +157,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
 
     // Paginated issues for an audit, with severity/status filters.
     // F-02: sort=impact (default, impact-based prioritization) or severity.
-    app.get('/audits/:auditId/issues', {
+    app.get('/audits/:auditId/issues', { preHandler: requireScope('audits:read'),
       schema: {
         params: uuidParams('auditId'),
         querystring: {
@@ -213,7 +214,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Triage an issue: open | fixed | ignored.
-    app.patch('/issues/:issueId', {
+    app.patch('/issues/:issueId', { preHandler: requireScope('audits:write'),
       schema: {
         params: uuidParams('issueId'),
         body: {
@@ -238,7 +239,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     // ---- F-02: audit v2 engine ----
 
     // Grouped fixes: issues rolled up by type, highest impact first.
-    app.get('/audits/:auditId/groups', {
+    app.get('/audits/:auditId/groups', { preHandler: requireScope('audits:read'),
       schema: {
         params: uuidParams('auditId'),
         querystring: {
@@ -295,7 +296,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Change history between this crawl and the previous one.
-    app.get('/audits/:auditId/diff', {
+    app.get('/audits/:auditId/diff', { preHandler: requireScope('audits:read'),
       schema: {
         params: uuidParams('auditId'),
         response: {
@@ -331,7 +332,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Per-page detail: the crawled page record + its issues.
-    app.get('/audits/:auditId/pages', {
+    app.get('/audits/:auditId/pages', { preHandler: requireScope('audits:read'),
       schema: {
         params: uuidParams('auditId'),
         querystring: {
@@ -377,7 +378,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Create a signed share link for an audit (SECURITY-SENSITIVE: HMAC token).
-    app.post('/audits/:auditId/share', {
+    app.post('/audits/:auditId/share', { preHandler: requireScope('audits:write'),
       schema: {
         params: uuidParams('auditId'),
         body: {
@@ -402,7 +403,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
       if (own.rows.length === 0) throw notFound('Audit');
       const days = (req.body as { expiresInDays?: number }).expiresInDays ?? 30;
       const expiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
-      const { token, tokenHash } = createShareToken(config.jwtSecret);
+      const { token, tokenHash } = createShareToken(deriveShareTokenKey(config.jwtSecret));
       await query(
         `INSERT INTO share_tokens (id, tenant_id, resource_type, resource_id, token_hash, expires_at)
          VALUES (gen_random_uuid(), $1, 'audit', $2, $3, to_timestamp($4))`,
@@ -413,7 +414,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Export an audit as PDF (pdfkit) or CSV (download).
-    app.get('/audits/:auditId/export', {
+    app.get('/audits/:auditId/export', { preHandler: requireScope('audits:read'),
       schema: {
         params: uuidParams('auditId'),
         querystring: {
@@ -478,7 +479,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Scheduled crawls per plan (scheduler hook reads sites.crawl_schedule).
-    app.patch('/sites/:id/crawl-schedule', {
+    app.patch('/sites/:id/crawl-schedule', { preHandler: requireScope('audits:write'),
       schema: {
         params: uuidParams('id'),
         body: {
@@ -509,7 +510,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
       },
     }, async (req) => {
       const token = (req.params as { token: string }).token;
-      const tokenId = verifyShareTokenFormat(config.jwtSecret, token);
+      const tokenId = verifyShareTokenFormat(deriveShareTokenKey(config.jwtSecret), token);
       if (!tokenId) throw notFound('Share link');
       // Look up the share row: unguessable hash, expiry + type enforced here.
       const sr = await query(

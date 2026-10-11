@@ -116,19 +116,25 @@ export class MockDataForSEO implements KeywordSerpProvider {
   }
 }
 
+import { providerCircuit } from '../services/circuitBreaker.js';
+
 export class DataForSEOProvider implements KeywordSerpProvider {
   name = 'dataforseo';
   isMock = false;
   private auth = 'Basic ' + Buffer.from(`${config.dataforseoLogin}:${config.dataforseoPassword}`).toString('base64');
 
   private async post(path: string, body: unknown): Promise<any> {
-    const res = await fetch(`https://api.dataforseo.com/v3${path}`, {
-      method: 'POST',
-      headers: { Authorization: this.auth, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+    // Outbound provider calls are circuit-broken via the canonical
+    // Redis-backed breaker (Backend-A C-03): providerCircuit(name).exec(fn).
+    return providerCircuit('dataforseo').exec(async () => {
+      const res = await fetch(`https://api.dataforseo.com/v3${path}`, {
+        method: 'POST',
+        headers: { Authorization: this.auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`DataForSEO ${path}: ${res.status} ${await res.text()}`);
+      return res.json();
     });
-    if (!res.ok) throw new Error(`DataForSEO ${path}: ${res.status} ${await res.text()}`);
-    return res.json();
   }
 
   async keywordMetrics(keywords: string[], locationCode = 2840): Promise<KeywordMetric[]> {

@@ -7,11 +7,24 @@
 // (resource_type, resource_id, tenant_id, expires_at) lives in the
 // share_tokens table keyed by token_hash — this keeps the URL short (Fastify
 // caps route params at 100 chars by default) and makes revocation a row
-// delete. Uses the JWT secret as the HMAC key — flagged for Security Lead
-// review (see report to LA).
-// Pure w.r.t. the secret passed in — no config import, fully testable.
+// delete.
+// KEY SEPARATION (Security fix, Wave-2 rebase): call sites must NEVER pass
+// the raw JWT secret. They pass deriveShareTokenKey(config.jwtSecret) —
+// an HMAC-derived, domain-separated key — so a share-token signature can
+// never be confused with / forged from JWT material and vice versa.
+// Pure w.r.t. the key passed in — no config import, fully testable.
 
 import crypto from 'node:crypto';
+
+/**
+ * Domain-separated share-token HMAC key derived from the JWT secret:
+ * HMAC-SHA256(jwtSecret, 'bseo:share-tokens:v1') as raw bytes.
+ * Tokens minted before this derivation (raw jwtSecret as key) no longer
+ * verify — acceptable pre-launch (share links are re-mintable).
+ */
+export function deriveShareTokenKey(jwtSecret: string): Buffer {
+  return crypto.createHmac('sha256', jwtSecret).update('bseo:share-tokens:v1').digest();
+}
 
 const VERSION = 'bseo1';
 const ID_BYTES = 16; // 128-bit random id
@@ -25,7 +38,7 @@ function b64urlDecode(s: string): Buffer {
 }
 
 /** Create a new signed share token. Returns { token, tokenHash }. */
-export function createShareToken(secret: string): { token: string; tokenHash: string } {
+export function createShareToken(secret: string | Buffer): { token: string; tokenHash: string } {
   const id = b64urlEncode(crypto.randomBytes(ID_BYTES));
   const sig = b64urlEncode(crypto.createHmac('sha256', secret).update(`${VERSION}.${id}`).digest());
   const token = `${VERSION}.${id}.${sig}`;
@@ -42,7 +55,7 @@ export function hashShareToken(token: string): string {
  * null otherwise (bad format, bad signature). Expiry/resource checks are
  * done against the share_tokens row by the caller.
  */
-export function verifyShareTokenFormat(secret: string, token: string): string | null {
+export function verifyShareTokenFormat(secret: string | Buffer, token: string): string | null {
   try {
     const parts = token.split('.');
     if (parts.length !== 3 || parts[0] !== VERSION) return null;

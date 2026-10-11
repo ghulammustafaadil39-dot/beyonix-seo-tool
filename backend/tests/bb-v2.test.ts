@@ -2,7 +2,7 @@
 // No network, no DB, no Redis.
 import { describe, it, expect } from 'vitest';
 import { analyzeToxicity, TOXIC_THRESHOLD } from '../src/services/toxicLinks.js';
-import { createShareToken, verifyShareTokenFormat, hashShareToken } from '../src/services/shareTokens.js';
+import { createShareToken, verifyShareTokenFormat, hashShareToken, deriveShareTokenKey } from '../src/services/shareTokens.js';
 import { topTerms, termCoverage, pageTextForTerms } from '../src/services/nlpTerms.js';
 import { isQuestionKeyword } from '../src/services/keywordText.js';
 
@@ -48,6 +48,17 @@ describe('shareTokens', () => {
     const a = createShareToken(secret);
     const b = createShareToken(secret);
     expect(a.token).not.toBe(b.token);
+  });
+  it('domain-separated key: tokens do NOT verify under the raw JWT secret', () => {
+    // Call sites pass deriveShareTokenKey(jwtSecret), never the raw secret.
+    const key = deriveShareTokenKey(secret);
+    const { token } = createShareToken(key);
+    expect(verifyShareTokenFormat(key, token)).not.toBeNull();
+    expect(verifyShareTokenFormat(secret, token)).toBeNull();
+    expect(verifyShareTokenFormat(deriveShareTokenKey('other-secret-0000000000000000000'), token)).toBeNull();
+    // Legacy tokens minted with the raw secret are invalidated by the fix.
+    const legacy = createShareToken(secret);
+    expect(verifyShareTokenFormat(key, legacy.token)).toBeNull();
   });
 });
 
