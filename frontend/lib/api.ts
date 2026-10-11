@@ -34,7 +34,7 @@ export class ApiError extends Error {
 }
 
 interface ApiOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
 }
 
@@ -116,7 +116,8 @@ export interface User {
   id: string;
   email: string;
   name: string | null;
-  role: string;
+  /** Present on signup/login/me responses (S-01 email verification). */
+  emailVerified?: boolean;
 }
 export interface Tenant {
   id: string;
@@ -299,40 +300,53 @@ export interface Report {
   highlights: Record<string, unknown> | null;
   created_at: string;
 }
+/**
+ * F-11 (wired, Wave 2): real GET /api/v1/billing/subscription shape
+ * (backend/src/routes/billing.ts). When the tenant has no subscription
+ * row the API returns only { plan_id, status: 'none', read_only }.
+ */
 export interface Subscription {
   plan_id: string;
-  status: string;
-  current_period_end: string | null;
+  status: string; // active|trialing|past_due|canceled|mock|none
+  stripe_sub_id?: string | null;
+  current_period_start?: string | null;
+  current_period_end?: string | null;
+  trial_ends_at?: string | null;
+  cancel_at_period_end?: boolean;
+  billing_interval?: 'monthly' | 'annual' | null;
+  coupon_code?: string | null;
+  grace_until?: string | null;
+  read_only?: boolean;
 }
-/** F-11: invoice row. Real shape pending — GET /api/v1/billing/invoices (Backend Lead). */
+/**
+ * F-11 (wired, Wave 2): real invoice ledger row from
+ * GET /api/v1/billing/invoices (backend migration 010 + routes/billing.ts).
+ * Amounts are minor units (cents) in `amount_due_cents`; the human-facing
+ * invoice link is `hosted_invoice_url` (Stripe-hosted page, may be null
+ * for mock-provider invoices).
+ */
 export interface Invoice {
   id: string;
-  number: string;
-  amount: number; // minor units (cents)
+  stripe_invoice_id: string | null;
+  amount_due_cents: number;
   currency: string;
-  status: 'paid' | 'open' | 'void' | 'uncollectible';
-  period_start: string;
-  period_end: string;
-  pdf_url: string | null;
+  status: 'paid' | 'open' | 'failed' | 'refunded' | 'void';
+  period_start: string | null;
+  period_end: string | null;
+  hosted_invoice_url: string | null;
   created_at: string;
-}
-/** F-11: billing email state. Real shape pending (Backend Lead). */
-export interface BillingEmailState {
-  billing_email: string | null;
-}
-/** F-11: cancellation record. Real shape pending — DELETE /api/v1/billing/subscription (Backend Lead). */
-export interface CancellationResult {
-  scheduled: boolean;
-  cancel_at: string;
-  reason: string;
 }
 export interface UsageInfo {
   limits: Record<string, { used: number; limit: number }>;
 }
+/** Real GET /api/v1/settings shape (backend/src/routes/settings.ts). */
 export interface Settings {
+  name: string;
+  plan_id: string;
   notify_email: string | null;
   telegram_chat_id: string | null;
   llm_provider: string | null;
+  llm_key_set: boolean;
 }
 
 // ---------- Domain helpers ----------
@@ -350,7 +364,14 @@ export const authApi = {
   verifyTotp: (input: { totpToken: string; code: string }) =>
     api<TotpVerifyResponse>('/api/v1/auth/totp/verify', { method: 'POST', body: input }),
   logout: () => api<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' }),
-  me: () => api<{ user: User; tenant: Tenant }>('/api/v1/auth/me'),
+  /**
+   * Real GET /api/v1/auth/me shape: { user, tenant, plan }. NOTE: the API
+   * does NOT expose the caller's team role or platform-admin flag here —
+   * admin UI must probe the /admin endpoints themselves (404 for
+   * non-admins) instead of trusting a client-side role field.
+   */
+  me: () =>
+    api<{ user: User; tenant: Tenant; plan: Record<string, unknown> }>('/api/v1/auth/me'),
 };
 
 export const sitesApi = {
@@ -496,44 +517,56 @@ export const reportsApi = {
     api<{ ok: boolean }>(`/api/v1/sites/${siteId}/reports/generate`, { method: 'POST' }),
 };
 
+export interface CheckoutOptions {
+  /** Billing cadence; backend defaults to 'monthly' when omitted. */
+  interval?: 'monthly' | 'annual';
+  /** Coupon code from the billing_coupons catalog (validated server-side). */
+  couponCode?: string;
+  /** Optional trial length in days (1–90). */
+  trialDays?: number;
+}
+
 export const billingApi = {
   subscription: () => api<Subscription>('/api/v1/billing/subscription'),
   /**
-   * NOTE: the current backend checkout schema accepts ONLY {planId}
-   * (additionalProperties: false). Coupon/interval support is a recorded
-   * sub-task for Backend Lead — this client will start sending them once
-   * the contract is extended. Coupons can meanwhile be entered on the
-   * Stripe checkout page itself.
+   * F-11 (wired, Wave 2): real checkout schema is
+   * { planId, interval?, couponCode?, trialDays? }
+   * (backend/src/routes/billing.ts, additionalProperties: false — field
+   * names must match exactly; the coupon field is `couponCode`, not
+   * `coupon`). Returns the Stripe (or mock) checkout URL to redirect to.
    */
-  checkout: (planId: string) =>
+  checkout: (planId: string, opts: CheckoutOptions = {}) =>
     api<{ url: string }>('/api/v1/billing/checkout', {
       method: 'POST',
-      body: { planId },
+      body: {
+        planId,
+        ...(opts.interval ? { interval: opts.interval } : {}),
+        ...(opts.couponCode ? { couponCode: opts.couponCode } : {}),
+        ...(opts.trialDays ? { trialDays: opts.trialDays } : {}),
+      },
     }),
   portal: () => api<{ url: string }>('/api/v1/billing/portal', { method: 'POST' }),
-  /** F-11: real endpoint pending (Backend Lead). Use withMockFallback. */
-  invoices: () => api<{ data: Invoice[] }>('/api/v1/billing/invoices'),
-  /** F-11: real endpoint pending (Backend Lead). Use withMockFallback. */
-  billingEmail: () => api<BillingEmailState>('/api/v1/billing/email'),
-  updateBillingEmail: (billing_email: string | null) =>
-    api<BillingEmailState>('/api/v1/billing/email', {
-      method: 'PATCH',
-      body: { billing_email },
-    }),
-  /** F-11: real endpoint pending (Backend Lead). Use withMockFallback. */
-  cancelSubscription: (reason: string) =>
-    api<CancellationResult>('/api/v1/billing/subscription', {
-      method: 'DELETE',
-      body: { reason },
-    }),
+  /** F-11 (wired): paged invoice ledger. */
+  invoices: (page = 1, limit = 20) =>
+    api<Paged<Invoice>>(`/api/v1/billing/invoices?page=${page}&limit=${limit}`),
+  // NOTE (shape discrepancy flagged for LA): the backend has NO dedicated
+  // billing-email endpoint (PATCH /api/v1/billing/email does not exist) and
+  // NO DELETE /api/v1/billing/subscription cancellation endpoint.
+  // Receipts/dunning are sent to the tenant's notify_email (see
+  // backend/src/services/billing.ts), so the billing page edits that field
+  // via settingsApi. Cancellation happens in the Stripe customer portal
+  // (portal() above), which sets cancel_at_period_end via webhook.
 };
 
 export const settingsApi = {
   get: () => api<Settings>('/api/v1/settings'),
+  /** Backend schema accepts explicit null to clear notify_email /
+   *  telegram_chat_id / llm_provider. */
   update: (body: {
-    notify_email?: string;
-    telegram_chat_id?: string;
-    llm_provider?: string;
+    name?: string;
+    notify_email?: string | null;
+    telegram_chat_id?: string | null;
+    llm_provider?: string | null;
     llm_api_key?: string;
   }) => api<Settings>('/api/v1/settings', { method: 'PATCH', body }),
   usage: () => api<UsageInfo>('/api/v1/usage'),
@@ -543,4 +576,446 @@ export const PLAN_NAMES: Record<string, string> = {
   starter: 'Starter',
   growth: 'Growth',
   pro: 'Pro',
+};
+
+// ===========================================================================
+// Wave 2 wiring (Frontend Lead): F-09 team, F-10 notifications/webhooks,
+// F-13 API keys, F-14 admin. All shapes below are read from the merged
+// backend route files on main (routes/account.ts, routes/webhooks.ts,
+// routes/apikeys.ts, routes/admin.ts) — not from the earlier mock adapters.
+// ===========================================================================
+
+// ---------- F-09: team, invitations, workspaces, activity ----------
+
+export type TeamRole = 'owner' | 'admin' | 'editor' | 'viewer';
+
+/** GET /api/v1/account/members row (users table projection). */
+export interface TeamMember {
+  id: string;
+  email: string;
+  name: string | null;
+  role: TeamRole;
+  created_at: string;
+}
+
+/** GET /api/v1/account/invitations row (token_hash is never returned). */
+export interface Invitation {
+  id: string;
+  email: string;
+  role: Exclude<TeamRole, 'owner'>;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+/**
+ * POST /api/v1/account/invitations — ALWAYS 202 with this generic body
+ * (anti-enumeration). The debug fields (id/email/role/expires_at/token)
+ * are present ONLY when mail runs in mock mode / non-production; with
+ * real SMTP the token travels by email only and these are absent.
+ */
+export interface InviteCreated {
+  ok: true;
+  message: string;
+  id?: string;
+  email?: string;
+  role?: string;
+  expires_at?: string;
+  token?: string;
+}
+
+/** POST /api/v1/account/invitations/accept response (fresh session token
+ *  is also set via cookie by the follow-up login state — the body token
+ *  is the new tenant-bound session JWT per the frozen contract addendum). */
+export interface InviteAccepted {
+  ok: true;
+  tenantId: string;
+  role: string;
+  token: string;
+}
+
+/** GET /api/v1/account/workspaces row (sites = live site count). */
+export interface Workspace {
+  id: string;
+  name: string;
+  limits: Record<string, number> | null;
+  created_at: string;
+  sites?: number;
+}
+
+/** GET /api/v1/account/activity row. */
+export interface ActivityEntry {
+  id: string;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  meta: Record<string, unknown> | null;
+  created_at: string;
+  user_email: string | null;
+  workspace_name: string | null;
+}
+
+export const teamApi = {
+  members: () => api<{ data: TeamMember[] }>('/api/v1/account/members'),
+  updateRole: (memberId: string, role: Exclude<TeamRole, 'owner'>) =>
+    api<{ ok: boolean }>(`/api/v1/account/members/${memberId}`, {
+      method: 'PATCH',
+      body: { role },
+    }),
+  removeMember: (memberId: string) =>
+    api<{ ok: boolean }>(`/api/v1/account/members/${memberId}`, { method: 'DELETE' }),
+  invitations: () => api<{ data: Invitation[] }>('/api/v1/account/invitations'),
+  invite: (email: string, role: Exclude<TeamRole, 'owner'>) =>
+    api<InviteCreated>('/api/v1/account/invitations', {
+      method: 'POST',
+      body: { email, role },
+    }),
+  revokeInvitation: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/account/invitations/${id}`, { method: 'DELETE' }),
+  acceptInvitation: (token: string) =>
+    api<InviteAccepted>('/api/v1/account/invitations/accept', {
+      method: 'POST',
+      body: { token },
+    }),
+  activity: (page = 1, limit = 20) =>
+    api<Paged<ActivityEntry>>(`/api/v1/account/activity?page=${page}&limit=${limit}`),
+};
+
+export const workspacesApi = {
+  list: (page = 1, limit = 50) =>
+    api<Paged<Workspace>>(`/api/v1/account/workspaces?page=${page}&limit=${limit}`),
+  create: (name: string, limits?: Record<string, number>) =>
+    api<Workspace>('/api/v1/account/workspaces', {
+      method: 'POST',
+      body: { name, ...(limits ? { limits } : {}) },
+    }),
+  /** Backend PATCH reuses the create schema: `name` is always required. */
+  update: (id: string, name: string, limits?: Record<string, number> | null) =>
+    api<Workspace>(`/api/v1/account/workspaces/${id}`, {
+      method: 'PATCH',
+      body: { name, ...(limits ? { limits } : {}) },
+    }),
+  remove: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/account/workspaces/${id}`, { method: 'DELETE' }),
+  assignSite: (id: string, siteId: string) =>
+    api<{ ok: boolean }>(`/api/v1/account/workspaces/${id}/sites`, {
+      method: 'POST',
+      body: { siteId },
+    }),
+  unassignSite: (id: string, siteId: string) =>
+    api<{ ok: boolean }>(`/api/v1/account/workspaces/${id}/sites/${siteId}`, {
+      method: 'DELETE',
+    }),
+};
+
+// ---------- F-01: onboarding state (backend is the source of truth) ----------
+
+/** Backend step keys (routes/account.ts ONBOARDING_STEPS). */
+export type OnboardingStepKey =
+  | 'verify_site'
+  | 'connect_gsc'
+  | 'first_crawl'
+  | 'add_keywords'
+  | 'first_report';
+
+/** GET /api/v1/account/sites/:siteId/onboarding response. */
+export interface OnboardingState {
+  siteId: string;
+  steps: Array<{
+    step: OnboardingStepKey;
+    completed: boolean;
+    completed_at: string | null;
+  }>;
+}
+
+export const onboardingApi = {
+  get: (siteId: string) =>
+    api<OnboardingState>(`/api/v1/account/sites/${siteId}/onboarding`),
+  setStep: (siteId: string, step: OnboardingStepKey, completed: boolean) =>
+    api<{ step: OnboardingStepKey; completed: boolean; completed_at: string | null }>(
+      `/api/v1/account/sites/${siteId}/onboarding`,
+      { method: 'PUT', body: { step, completed } },
+    ),
+};
+
+// ---------- F-10: alert rules, digests, notification log, webhooks ----------
+
+export type AlertRuleType = 'rank_drop' | 'critical_issue' | 'site_down' | 'limit_near';
+export type NotifyChannel = 'email' | 'telegram' | 'slack' | 'webhook' | 'inapp';
+
+/** GET /api/v1/account/alert-rules row (notification_rules projection). */
+export interface AlertRule {
+  id: string;
+  rule_type: AlertRuleType;
+  channels: NotifyChannel[];
+  config: Record<string, unknown>;
+  enabled: boolean;
+  created_at: string;
+}
+
+/** GET/PUT /api/v1/account/digest shape. frequency 'off' disables digests. */
+export interface DigestSettings {
+  frequency: 'daily' | 'weekly' | 'off';
+  channels: string[];
+  last_sent_at: string | null;
+}
+
+/** GET /api/v1/account/notifications row (notification_log projection).
+ *  There is no read/unread flag in the backend — this is a delivery log. */
+export interface NotificationLogEntry {
+  id: string;
+  notification_type: string;
+  channel: string;
+  status: string; // sent|failed|skipped
+  detail: string | null;
+  created_at: string;
+}
+
+export const notificationsApi = {
+  rules: () => api<{ data: AlertRule[] }>('/api/v1/account/alert-rules'),
+  /** POST upserts on (tenant, user, rule_type) — one rule per type. */
+  upsertRule: (input: {
+    ruleType: AlertRuleType;
+    channels: NotifyChannel[];
+    config?: Record<string, unknown>;
+    enabled?: boolean;
+  }) => api<AlertRule>('/api/v1/account/alert-rules', { method: 'POST', body: input }),
+  deleteRule: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/account/alert-rules/${id}`, { method: 'DELETE' }),
+  digest: () => api<DigestSettings>('/api/v1/account/digest'),
+  updateDigest: (input: { frequency: DigestSettings['frequency']; channels?: string[] }) =>
+    api<DigestSettings>('/api/v1/account/digest', { method: 'PUT', body: input }),
+  log: (page = 1, limit = 20) =>
+    api<Paged<NotificationLogEntry>>(
+      `/api/v1/account/notifications?page=${page}&limit=${limit}`,
+    ),
+};
+
+/** GET /api/v1/webhooks row (the signing secret is never listed). */
+export interface WebhookEndpoint {
+  id: string;
+  url: string;
+  events: string[];
+  enabled: boolean;
+  created_at: string;
+}
+
+/** POST /api/v1/webhooks response — `secret` is shown exactly once. */
+export interface WebhookCreated {
+  id: string;
+  url: string;
+  events: string[];
+  secret: string;
+}
+
+/** GET /api/v1/webhooks/deliveries row. */
+export interface WebhookDelivery {
+  id: string;
+  event: string;
+  status: string; // pending|delivered|failed
+  attempts: number;
+  last_error: string | null;
+  last_status_code: number | null;
+  created_at: string;
+  delivered_at: string | null;
+  endpoint_url: string;
+}
+
+export const webhooksApi = {
+  eventCatalog: () => api<{ events: string[] }>('/api/v1/webhooks/events'),
+  list: () => api<{ data: WebhookEndpoint[] }>('/api/v1/webhooks'),
+  create: (url: string, events: string[]) =>
+    api<WebhookCreated>('/api/v1/webhooks', { method: 'POST', body: { url, events } }),
+  remove: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/webhooks/${id}`, { method: 'DELETE' }),
+  test: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/webhooks/${id}/test`, { method: 'POST' }),
+  deliveries: (page = 1, limit = 20) =>
+    api<Paged<WebhookDelivery>>(`/api/v1/webhooks/deliveries?page=${page}&limit=${limit}`),
+  replay: (deliveryId: string) =>
+    api<{ ok: boolean }>(`/api/v1/webhooks/deliveries/${deliveryId}/replay`, {
+      method: 'POST',
+    }),
+};
+
+// ---------- F-13: public API keys ----------
+
+/** GET /api/v1/apikeys row (only the hash is stored; prefix is display-only). */
+export interface ApiKeyRecord {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: string[];
+  rate_limit_per_min: number;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+/** POST /api/v1/apikeys response — `key` is the raw secret, shown once. */
+export interface ApiKeyCreated {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: string[];
+  rate_limit_per_min: number;
+  created_at: string;
+  key: string;
+}
+
+export const apiKeysApi = {
+  /** Full server scope catalog (includes 'admin', which the UI must
+   *  filter out — the backend rejects it with 400 SCOPE_NOT_ALLOWED). */
+  scopes: () => api<{ scopes: string[] }>('/api/v1/apikeys/scopes'),
+  list: (page = 1, limit = 50) =>
+    api<Paged<ApiKeyRecord>>(`/api/v1/apikeys?page=${page}&limit=${limit}`),
+  create: (input: { name: string; scopes: string[]; rateLimitPerMin?: number }) =>
+    api<ApiKeyCreated>('/api/v1/apikeys', { method: 'POST', body: input }),
+  /** Soft-revoke: the key stops working immediately; the row is kept. */
+  revoke: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/apikeys/${id}`, { method: 'DELETE' }),
+};
+
+// ---------- F-14: admin back-office ----------
+
+/** GET /api/v1/admin/tenants row. Status is derived: suspended_at set ⇒
+ *  suspended; otherwise the subscription status (sub_status) applies. */
+export interface AdminTenant {
+  id: string;
+  name: string;
+  plan_id: string;
+  read_only: boolean;
+  suspended_at: string | null;
+  created_at: string;
+  sub_status: string | null;
+  current_period_end: string | null;
+  users: number;
+  sites: number;
+}
+
+/** GET /api/v1/admin/tenants/:id — tenant row plus users/spend/credits. */
+export interface AdminTenantDetail {
+  id: string;
+  name: string;
+  plan_id: string;
+  read_only: boolean;
+  suspended_at: string | null;
+  suspended_reason: string | null;
+  stripe_customer_id: string | null;
+  created_at: string;
+  sub_status: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  trial_ends_at: string | null;
+  grace_until: string | null;
+  billing_interval: string | null;
+  coupon_code: string | null;
+  users: Array<{
+    id: string;
+    email: string;
+    name: string | null;
+    role: string;
+    created_at: string;
+  }>;
+  spend: Array<{ provider: string; units: number; cost_cents: number }>;
+  credits_cents: number;
+  [key: string]: unknown;
+}
+
+/** GET /api/v1/admin/jobs/failed row (dead_letter_jobs + tenant name). */
+export interface AdminFailedJob {
+  id: string;
+  queue: string;
+  job_name: string;
+  tenant_id: string | null;
+  payload: Record<string, unknown> | null;
+  attempts: number;
+  error: string | null;
+  status: string; // pending|replayed|discarded
+  failed_at: string;
+  tenant_name: string | null;
+}
+
+/** GET /api/v1/admin/spend row + per-provider totals. */
+export interface AdminSpendRow {
+  tenant_id: string;
+  tenant_name: string;
+  provider: string;
+  units: number;
+  cost_cents: number;
+  last_spend_at: string;
+}
+export interface AdminSpendTotal {
+  provider: string;
+  units: number;
+  cost_cents: number;
+}
+
+/** GET /api/v1/admin/feature-flags row (no rollout % in the backend). */
+export interface FeatureFlag {
+  key: string;
+  enabled: boolean;
+  description: string | null;
+  updated_at: string;
+}
+
+/** GET /api/v1/admin/audit-log row. */
+export interface AdminAuditEntry {
+  id: string;
+  action: string;
+  target_tenant_id: string | null;
+  meta: Record<string, unknown> | null;
+  created_at: string;
+  actor_email: string | null;
+}
+
+export const adminApi = {
+  tenants: (page = 1, limit = 20, search = '') =>
+    api<Paged<AdminTenant>>(
+      `/api/v1/admin/tenants?page=${page}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ''}`,
+    ),
+  tenant: (id: string) => api<AdminTenantDetail>(`/api/v1/admin/tenants/${id}`),
+  suspend: (id: string, reason: string) =>
+    api<{ ok: boolean }>(`/api/v1/admin/tenants/${id}/suspend`, {
+      method: 'POST',
+      body: { reason },
+    }),
+  unsuspend: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/admin/tenants/${id}/unsuspend`, { method: 'POST' }),
+  planOverride: (id: string, planId: string, reason: string) =>
+    api<{ ok: boolean; planId: string }>(`/api/v1/admin/tenants/${id}/plan`, {
+      method: 'POST',
+      body: { planId, reason },
+    }),
+  credit: (id: string, amountCents: number, reason: string) =>
+    api<{ id: string; amount_cents: number; reason: string; created_at: string }>(
+      `/api/v1/admin/tenants/${id}/credit`,
+      { method: 'POST', body: { amountCents, reason } },
+    ),
+  impersonate: (tenantId: string) =>
+    api<{ token: string; tenantId: string; expiresInSec: number }>('/api/v1/admin/impersonate', {
+      method: 'POST',
+      body: { tenantId },
+    }),
+  failedJobs: (page = 1, limit = 20, status?: string) =>
+    api<Paged<AdminFailedJob>>(
+      `/api/v1/admin/jobs/failed?page=${page}&limit=${limit}${status ? `&status=${status}` : ''}`,
+    ),
+  replayJob: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/admin/jobs/failed/${id}/replay`, { method: 'POST' }),
+  discardJob: (id: string) =>
+    api<{ ok: boolean }>(`/api/v1/admin/jobs/failed/${id}/discard`, { method: 'POST' }),
+  spend: (page = 1, limit = 20) =>
+    api<Paged<AdminSpendRow> & { totals: AdminSpendTotal[] }>(
+      `/api/v1/admin/spend?page=${page}&limit=${limit}`,
+    ),
+  featureFlags: () => api<{ data: FeatureFlag[] }>('/api/v1/admin/feature-flags'),
+  setFlag: (key: string, enabled: boolean, description?: string) =>
+    api<FeatureFlag>(`/api/v1/admin/feature-flags/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: { enabled, ...(description !== undefined ? { description } : {}) },
+    }),
+  auditLog: (page = 1, limit = 20) =>
+    api<Paged<AdminAuditEntry>>(`/api/v1/admin/audit-log?page=${page}&limit=${limit}`),
 };

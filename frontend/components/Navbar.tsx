@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { authApi } from '@/lib/api';
+import { adminApi, authApi, ApiError } from '@/lib/api';
 
 const LINKS = [
   { href: '/dashboard', label: 'Sites' },
@@ -21,11 +21,15 @@ export default function Navbar() {
   const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    // Show the Admin link only to admins (page itself also guards).
-    authApi
-      .me()
-      .then((me) => setIsAdmin(me.user.role === 'admin'))
-      .catch(() => {});
+    // Show the Admin link only to platform admins. /auth/me does not
+    // expose any admin flag (by design), so probe the admin API itself:
+    // it answers 404 for everyone else. The page re-checks on load.
+    adminApi
+      .tenants(1, 1)
+      .then(() => setIsAdmin(true))
+      .catch((e) => {
+        if (!(e instanceof ApiError) || e.status !== 404) setIsAdmin(false);
+      });
   }, []);
 
   const logout = async () => {

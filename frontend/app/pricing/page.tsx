@@ -23,8 +23,8 @@ const LIMIT_ROWS: Array<[string, string, string, string]> = [
 
 /**
  * F-11 — public pricing page. Signup is the CTA for each plan; the
- * dashboard billing page handles upgrades for existing customers.
- * Coupon entry happens at Stripe checkout.
+ * dashboard billing page handles upgrades for existing customers and
+ * accepts coupon codes before checkout (validated server-side).
  */
 export default function PricingPage() {
   const [annual, setAnnual] = useState(false);
@@ -136,9 +136,9 @@ export default function PricingPage() {
       {couponInfo && (
         <Modal title="Coupon codes" onClose={() => setCouponInfo(false)}>
           <p className="text-sm text-white/70">
-            Coupons are applied at checkout — enter your code on the Stripe
-            checkout page after choosing a plan, and the discount is applied
-            before you pay.
+            Enter your code on the billing page when you subscribe — it is
+            validated and applied before you pay, so the discounted price is
+            what you are charged.
           </p>
           <div className="mt-4 text-right">
             <button onClick={() => setCouponInfo(false)} className="bx-btn-primary">
