@@ -86,7 +86,7 @@ export default function AuditTab({ siteId }: { siteId: string }) {
     }
   };
 
-  const setIssueStatus = async (issueId: string, status: 'open' | 'fixed' | 'ignored') => {
+  const setIssueStatus = async (issueId: string, status: 'open' | 'ignored' | 'resolved' | 'wont-fix') => {
     try {
       const updated = await auditsApi.setIssueStatus(issueId, status);
       setIssues((prev) => prev.map((i) => (i.id === issueId ? updated : i)));
@@ -160,8 +160,9 @@ export default function AuditTab({ siteId }: { siteId: string }) {
         >
           <option value="">All statuses</option>
           <option value="open">Open</option>
-          <option value="fixed">Fixed</option>
+          <option value="resolved">Resolved</option>
           <option value="ignored">Ignored</option>
+          <option value="wont-fix">Won't fix</option>
         </select>
       </div>
 
@@ -195,13 +196,14 @@ export default function AuditTab({ siteId }: { siteId: string }) {
                   <select
                     value={i.status}
                     onChange={(e) =>
-                      setIssueStatus(i.id, e.target.value as 'open' | 'fixed' | 'ignored')
+                      setIssueStatus(i.id, e.target.value as 'open' | 'ignored' | 'resolved' | 'wont-fix')
                     }
                     className="bx-input !w-auto !px-2 !py-1 !text-xs"
                   >
                     <option value="open">Open</option>
-                    <option value="fixed">Fixed</option>
+                    <option value="resolved">Resolved</option>
                     <option value="ignored">Ignored</option>
+                    <option value="wont-fix">Won't fix</option>
                   </select>
                 </td>
               </tr>

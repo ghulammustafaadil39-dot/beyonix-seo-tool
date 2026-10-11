@@ -145,7 +145,7 @@ export default function ContentDetailPage({
         </button>
       </form>
 
-      <ContentV2Panel contentId={contentId} />
+      <ContentV2Panel contentId={contentId} siteId={params.id} />
     </div>
   );
 }
