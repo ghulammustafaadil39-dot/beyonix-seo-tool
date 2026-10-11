@@ -3,6 +3,7 @@ import { load } from 'cheerio';
 import { authPlugin } from '../middleware/auth.js';
 import { requireSite } from '../services/sites.js';
 import { renderPrompt } from '../services/prompt.js';
+import { delimitUntrusted, sanitizeJsonLdForScript } from '../services/promptSafety.js';
 import { generateMetered } from '../services/llmMetered.js';
 import { checkLimit, assertLimit } from '../metering.js';
 import { type PlanId } from '../plans.js';
@@ -212,7 +213,9 @@ export function toSuggestionItems(basics: PageBasics, parsed: unknown): Suggesti
   if (typeof s.faqSchema === 'string' && s.faqSchema.length > 50) {
     items.push({
       area: 'FAQ schema (copy-paste)',
-      suggested: s.faqSchema.slice(0, 2000),
+      // S-09: the model emits this JSON-LD and the user pastes it into their
+      // page <head> — neutralize </script> breakouts first.
+      suggested: sanitizeJsonLdForScript(s.faqSchema).slice(0, 2000),
       note: 'Paste this JSON-LD into the page <head> for AI answers + rich results.',
     });
   }
@@ -240,12 +243,14 @@ async function analyzeUrl(tenantId: string, plan: PlanId, siteId: string, rawUrl
 
   const basics = await fetchPageBasics(rawUrl);
 
+  // S-09: crawler text is untrusted — delimit + length-cap before it reaches
+  // the LLM so injected "instructions" in the page stay inert data.
   const prompt = await renderPrompt('onpage-suggest', {
     url: rawUrl,
-    title: basics.title,
-    metaDescription: basics.metaDescription,
-    h1: basics.h1,
-    textExcerpt: basics.textExcerpt.slice(0, 1500),
+    title: delimitUntrusted(basics.title, { maxChars: 300, label: 'untrusted-title' }),
+    metaDescription: delimitUntrusted(basics.metaDescription, { maxChars: 500, label: 'untrusted-meta-description' }),
+    h1: delimitUntrusted(basics.h1, { maxChars: 300, label: 'untrusted-h1' }),
+    textExcerpt: delimitUntrusted(basics.textExcerpt.slice(0, 1500), { maxChars: 1600, label: 'untrusted-page-content' }),
     issues: '',
   });
   const res = await generateMetered(tenantId, { prompt, maxWords: 600, siteId: site.id });
