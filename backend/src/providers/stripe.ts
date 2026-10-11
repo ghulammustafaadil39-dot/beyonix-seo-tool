@@ -545,14 +545,34 @@ export async function applyPaymentEvent(
     const trialDays = parseInt(data.metadata?.trialDays ?? data.metadata?.trial_days ?? '0', 10) || 0;
     const couponCode: string | undefined = data.metadata?.couponCode ?? data.metadata?.coupon;
     const interval = data.metadata?.interval === 'annual' ? 'annual' : 'monthly';
-    // C5-L-2: payment not confirmed — the subscription exists but the first
-    // invoice failed. Record it as 'incomplete' WITHOUT granting paid
-    // limits; the later customer.subscription.updated(active) event performs
-    // the upgrade. Mock completions carry no subscription object (undefined
-    // → treated as paid, as before).
+    // G5-M#1: three cases.
+    // (a) Mock path — data.subscription is ABSENT entirely (no sub id):
+    //     keep the old behavior (treated as paid).
+    // (b) Expanded subscription object: use its real status (C5-L-2).
+    // (c) Real Stripe path — data.subscription is a plain STRING id
+    //     (Stripe never expands it in checkout.session.completed): the
+    //     true status is UNKNOWN, so FAIL CLOSED to 'incomplete' — no paid
+    //     limits, no tenant plan activation (the if (!incomplete) guard
+    //     below handles it). The customer.subscription.created/updated
+    //     events carry the full object and flip the row to
+    //     active/trialing within seconds. (The old code read
+    //     subObj?.status — always undefined on the real path — recorded
+    //     'active', and the ON CONFLICT upsert below CLOBBERED a correct
+    //     'incomplete' row written by the earlier
+    //     customer.subscription.created event, wiping grace_until: up to
+    //     ~23h of free Pro-limit spend for a never-payer.)
     const subStatus: string | undefined = subObj?.status;
-    const incomplete = subStatus === 'incomplete' || subStatus === 'incomplete_expired';
-    const status = trialDays > 0 ? 'trialing' : incomplete ? subStatus : 'active';
+    let status: string;
+    if (!subId) {
+      status = trialDays > 0 ? 'trialing' : 'active'; // (a) mock path
+    } else if (subObj) {
+      // (b) expanded object — use its status
+      const inc = subStatus === 'incomplete' || subStatus === 'incomplete_expired';
+      status = trialDays > 0 ? 'trialing' : inc ? (subStatus ?? 'incomplete') : 'active';
+    } else {
+      status = 'incomplete'; // (c) unexpanded string id → fail closed
+    }
+    const incomplete = status === 'incomplete' || status === 'incomplete_expired';
     const trialEndsAt = trialDays > 0 ? new Date(Date.now() + trialDays * 86400_000) : null;
     await q(
       `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, stripe_customer_id, plan_id, status,
@@ -567,7 +587,17 @@ export async function applyPaymentEvent(
          current_period_end = EXCLUDED.current_period_end,
          trial_ends_at = EXCLUDED.trial_ends_at,
          billing_interval = EXCLUDED.billing_interval,
-         coupon_code = EXCLUDED.coupon_code, grace_until = NULL`,
+         coupon_code = EXCLUDED.coupon_code,
+         -- G5-M#1: a fail-closed 'incomplete' write must not wipe a grace
+         -- minted by the earlier customer.subscription.created(incomplete)
+         -- event — otherwise the next invoice.payment_failed sees
+         -- grace_until IS NULL and mints a fresh grace while flipping the
+         -- row to billable 'past_due', re-opening the free-spend hole.
+         grace_until = CASE
+           WHEN EXCLUDED.status IN ('incomplete', 'incomplete_expired')
+           THEN subscriptions.grace_until
+           ELSE NULL
+         END`,
       [tenantId, subId ?? `sub_mock_${Date.now()}`, customerId ?? null, planId, status, periodStart, periodEnd, trialEndsAt, interval, couponCode ?? null],
     );
     // C5-L-2: an incomplete subscription must NOT activate the paid plan —
@@ -636,6 +666,7 @@ export async function applyPaymentEvent(
       type: trialDays > 0 ? 'trial.started' : 'checkout.completed',
       tenantId,
       detail: { planId, interval },
+      eventId,
     });
   } else if (type === 'checkout.session.expired') {
     // C5-H-1: an abandoned checkout releases its reserved coupon slot so
@@ -778,12 +809,12 @@ export async function applyPaymentEvent(
            grace_until = COALESCE(subscriptions.grace_until, EXCLUDED.grace_until)`,
         [tenantId, subId, pastDuePlan, recordedStatus, periodStart, periodEnd, graceUntil],
       );
-      await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil } });
+      await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil }, eventId });
     } else if (status === 'canceled' || status === 'incomplete_expired') {
       // Ended subscription -> downgrade now (data kept; read-only if over
       // the starter limits — never deleted).
-      await downgradeTenant(tenantId, `subscription_${status}`);
-      await emitBillingEvent({ type: 'subscription.deleted', tenantId, detail: { status } });
+      await downgradeTenant(tenantId, `subscription_${status}`, q, { eventId });
+      await emitBillingEvent({ type: 'subscription.deleted', tenantId, detail: { status }, eventId });
     } else {
       const effectivePlan = planFromEvent ?? (storedPlan && isPlanId(storedPlan) ? storedPlan : 'starter');
       await q(
@@ -831,8 +862,8 @@ export async function applyPaymentEvent(
       return { deduplicated: false };
     }
     const { downgradeTenant, emitBillingEvent } = await import('../services/billing.js');
-    await downgradeTenant(tenantId, 'subscription_deleted');
-    await emitBillingEvent({ type: 'subscription.deleted', tenantId });
+    await downgradeTenant(tenantId, 'subscription_deleted', q, { eventId });
+    await emitBillingEvent({ type: 'subscription.deleted', tenantId, eventId });
   } else if (type === 'invoice.paid' || type === 'invoice.payment_failed') {
     const invoiceId: string | undefined = data.id;
     const tenantId = await resolveTenantForSubscription(q, data);
@@ -880,9 +911,37 @@ export async function applyPaymentEvent(
       ]);
       const curStatus = curSub.rows[0]?.status as string | undefined;
       if (curStatus === 'past_due' || curStatus === 'incomplete') {
-        await q(`UPDATE subscriptions SET status = 'active', grace_until = NULL WHERE tenant_id = $1`, [
-          tenantId,
-        ]);
+        // G5-M#2: revive the PAID plan, not just the status. After grace
+        // expiry, downgradeTenant() set tenants.plan_id='starter' (and
+        // possibly read_only=TRUE) while the row stayed 'past_due' — and
+        // for 'incomplete' the tenant plan was never upgraded at checkout
+        // (G5-M#1). Flipping status to 'active' alone would leave the
+        // payer billed Growth/Pro while the product serves Starter,
+        // possibly fully read-only. Mirror the 'canceled'-revival branch:
+        // resolve the plan from the invoice's price, write it to both
+        // rows, and recompute read_only.
+        const recPriceId: string | undefined = data.lines?.data?.[0]?.price?.id;
+        const recPlanFromEvent =
+          planIdFromStripePrice(recPriceId) ?? (isPlanId(data.metadata?.planId) ? data.metadata.planId : null);
+        if (recPlanFromEvent) {
+          await q(
+            `UPDATE subscriptions SET status = 'active', plan_id = $2, grace_until = NULL WHERE tenant_id = $1`,
+            [tenantId, recPlanFromEvent],
+          );
+          await q(`UPDATE tenants SET plan_id = $2 WHERE id = $1`, [tenantId, recPlanFromEvent]);
+          const { recomputeReadOnly } = await import('../services/billing.js');
+          await recomputeReadOnly(tenantId, recPlanFromEvent, q);
+        } else {
+          // No resolvable plan on the invoice — revive the status, keep
+          // the stored plan, and log loudly for ops instead of guessing.
+          console.error(
+            `[billing] invoice.paid for ${curStatus} subscription ` +
+              `(tenant ${tenantId}): no resolvable plan on the invoice — status revived, plan kept`,
+          );
+          await q(`UPDATE subscriptions SET status = 'active', grace_until = NULL WHERE tenant_id = $1`, [
+            tenantId,
+          ]);
+        }
       } else if (
         curStatus === 'canceled' &&
         invSubId &&
@@ -912,7 +971,7 @@ export async function applyPaymentEvent(
           ]);
         }
       }
-      await emitBillingEvent({ type: 'invoice.paid', tenantId, detail: { invoiceId, amount } });
+      await emitBillingEvent({ type: 'invoice.paid', tenantId, detail: { invoiceId, amount }, eventId });
     } else {
       const cur = await q(`SELECT status, grace_until FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
       const existingGrace = cur.rows[0]?.grace_until as string | null | undefined;
@@ -929,10 +988,10 @@ export async function applyPaymentEvent(
           tenantId,
           graceDeadline(),
         ]);
-        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount } });
+        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });
       } else {
         await q(`UPDATE subscriptions SET status = 'past_due' WHERE tenant_id = $1`, [tenantId]);
-        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount } });
+        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });
       }
     }
   } else if (type === 'charge.refunded') {
@@ -945,7 +1004,25 @@ export async function applyPaymentEvent(
       return { deduplicated: false };
     }
     tenantForLedger = tenantId;
-    const amount = Math.round(Number(data.amount_refunded ?? data.amount ?? 0));
+    const chargeId: string = (data.id as string | undefined) ?? '';
+    // G5-L#1: data.amount_refunded is the CUMULATIVE refunded total on the
+    // charge, and every partial refund generates its own charge.refunded
+    // event (distinct event id → passes the F2-L-1 guard). Crediting the
+    // cumulative amount per event over-credits: two $5 partials on a $10
+    // charge used to credit 500 + 1000 = 1500¢. Credit only the DELTA over
+    // what was already credited for this charge (matched by the charge id
+    // embedded in the credit reason); skip the insert when delta <= 0.
+    // (Without a charge id — the mock path — keep the old behavior.)
+    const cumulativeRefunded = Math.round(Number(data.amount_refunded ?? data.amount ?? 0));
+    let amount = cumulativeRefunded;
+    if (chargeId) {
+      const prev = await q(
+        `SELECT COALESCE(SUM(amount_cents), 0)::int AS c FROM tenant_credits
+         WHERE tenant_id = $1 AND starts_with(reason, $2)`,
+        [tenantId, `Refund ${chargeId}`],
+      );
+      amount = Math.max(0, cumulativeRefunded - Number(prev.rows[0]?.c ?? 0));
+    }
     if (invoiceId) {
       await q(`UPDATE invoices SET status = 'refunded' WHERE stripe_invoice_id = $1 AND tenant_id = $2`, [
         invoiceId,
@@ -958,19 +1035,21 @@ export async function applyPaymentEvent(
     // (crash-retry, E4-M-2) or concurrently-duplicate-delivered refund must
     // not credit the tenant twice. NULL event ids (mock path without one)
     // never conflict, preserving the old behavior there.
-    await q(
-      `INSERT INTO tenant_credits (id, tenant_id, amount_cents, reason, webhook_event_id)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4)
-       ON CONFLICT (webhook_event_id) DO NOTHING`,
-      [
-        tenantId,
-        amount,
-        `Refund ${data.id ?? ''}${invoiceId ? ` for invoice ${invoiceId}` : ''}`.trim(),
-        eventId ?? null,
-      ],
-    );
+    if (amount > 0) {
+      await q(
+        `INSERT INTO tenant_credits (id, tenant_id, amount_cents, reason, webhook_event_id)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4)
+         ON CONFLICT (webhook_event_id) DO NOTHING`,
+        [
+          tenantId,
+          amount,
+          `Refund ${chargeId}${invoiceId ? ` for invoice ${invoiceId}` : ''}`.trim(),
+          eventId ?? null,
+        ],
+      );
+    }
     const { emitBillingEvent } = await import('../services/billing.js');
-    await emitBillingEvent({ type: 'charge.refunded', tenantId, detail: { amount, invoiceId } });
+    await emitBillingEvent({ type: 'charge.refunded', tenantId, detail: { amount, invoiceId }, eventId });
   } else {
     console.warn(`[billing] unhandled webhook event type: ${type}`);
   }
