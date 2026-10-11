@@ -98,10 +98,16 @@ export default function ReportsTab({ siteId }: { siteId: string }) {
 
   // W-05: live progress for report generation — SSE stream first,
   // polling fallback watches for a new report to land.
+  // watchKind 'report': the per-site stream cannot observe report
+  // completion, so snapshots/polling compare the report count against the
+  // baseline; a stream-level `done` degrades to polling instead of
+  // completing the watch.
   const { event: jobEvent, mode: jobMode, reset: resetJob } = useJobStream({
     siteId,
     enabled: watchReports,
     poll: reportPoll(siteId, reportBaseline),
+    watchKind: 'report',
+    reportBaseline,
     onTerminal: () => {
       reportSettled.current = true;
       setWatchReports(false);
