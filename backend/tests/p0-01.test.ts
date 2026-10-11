@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/index.js';
 import { pool, runMigrations } from '../src/db.js';
+import { sessionTokenFromResponse } from './helpers.js';
 
 /**
  * P0-01 regression: password login broke permanently after the first logout.
@@ -39,7 +40,7 @@ describe.runIf(HAS_TEST_DB)('P0-01 token_version regression', () => {
       payload: { email, password },
     });
     expect(signup.statusCode).toBe(201);
-    const token1: string = signup.json().token;
+    const token1: string = sessionTokenFromResponse(signup);
     expect(token1).toBeTruthy();
 
     const me1 = await app.inject({
@@ -63,7 +64,7 @@ describe.runIf(HAS_TEST_DB)('P0-01 token_version regression', () => {
       payload: { email, password },
     });
     expect(login.statusCode).toBe(200);
-    const token2: string = login.json().token;
+    const token2: string = sessionTokenFromResponse(login);
     expect(token2).toBeTruthy();
 
     const me2 = await app.inject({

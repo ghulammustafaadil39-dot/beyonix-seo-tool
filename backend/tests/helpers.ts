@@ -65,7 +65,20 @@ export async function loginAs(
     payload: { email, password },
   });
   if (res.statusCode !== 200) throw new Error(`login failed: ${res.statusCode} ${res.body}`);
-  return (res.json() as any).token as string;
+  return sessionTokenFromResponse(res);
+}
+
+/**
+ * JWT-in-body fix: the session JWT is delivered ONLY via the httpOnly
+ * `bseo_token` cookie, never in the JSON body. Tests that need the token
+ * (for Bearer auth) extract it from the response's set-cookie header.
+ */
+export function sessionTokenFromResponse(res: { headers: any }): string {
+  const raw = res.headers?.['set-cookie'];
+  const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const pair = list.find((c: string) => c.startsWith('bseo_token='));
+  if (!pair) throw new Error('expected bseo_token cookie in response');
+  return pair.split(';')[0].slice('bseo_token='.length);
 }
 
 export function authHeaders(token: string): Record<string, string> {

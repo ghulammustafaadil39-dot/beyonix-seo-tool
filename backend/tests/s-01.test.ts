@@ -11,6 +11,7 @@ import {
   ensureTestDb,
   flushTestQueues,
   loginAs,
+  sessionTokenFromResponse,
   truncateAll,
 } from './helpers.js';
 
@@ -50,7 +51,7 @@ describe('auth scoping regression (fp encapsulation)', () => {
       payload: { email: 'scoping@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(signup.statusCode).toBe(201);
-    const token = (signup.json() as any).token as string;
+    const token = sessionTokenFromResponse(signup);
 
     const login = await app.inject({
       method: 'POST',

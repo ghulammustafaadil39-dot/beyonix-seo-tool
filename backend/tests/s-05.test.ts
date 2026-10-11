@@ -10,7 +10,7 @@ import {
   checkPasswordBreach,
   validatePasswordPolicy,
 } from '../src/services/passwordPolicy.js';
-import { authHeaders, createTestSite, createTestUser, ensureTestDb, truncateAll } from './helpers.js';
+import { authHeaders, createTestSite, createTestUser, ensureTestDb, sessionTokenFromResponse, truncateAll } from './helpers.js';
 
 let app: Awaited<ReturnType<typeof buildApp>>;
 
@@ -39,7 +39,7 @@ async function signupAndLogin(email: string, password = 'J7#kP9!mV2@qX5$zR8&'): 
   expect(s.statusCode).toBe(201);
   const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email, password } });
   expect(login.statusCode).toBe(200);
-  return (login.json() as any).token as string;
+  return sessionTokenFromResponse(login);
 }
 
 describe('S-05 password policy', () => {
@@ -351,7 +351,7 @@ describe('S-05 TOTP 2FA', () => {
       payload: { totpToken, code: await generateTotp({ secret }) },
     });
     expect(verify.statusCode).toBe(200);
-    const fullToken = (verify.json() as any).token as string;
+    const fullToken = sessionTokenFromResponse(verify);
     const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: authHeaders(fullToken) });
     expect(me.statusCode).toBe(200);
 
@@ -412,7 +412,7 @@ describe('S-05 TOTP 2FA', () => {
       payload: { email, password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect((login.json() as any).totpRequired).toBeUndefined();
-    expect((login.json() as any).token).toBeTruthy();
+    expect(sessionTokenFromResponse(login)).toBeTruthy();
   });
 });
 
@@ -426,7 +426,7 @@ describe('S-05 sessions', () => {
       payload: { email, password: 'J7#kP9!mV2@qX5$zR8&' },
       headers: { 'user-agent': 'TestAgent/2.0' },
     });
-    const tokenB = (loginB.json() as any).token as string;
+    const tokenB = sessionTokenFromResponse(loginB);
 
     const list = await app.inject({ method: 'GET', url: '/api/v1/auth/sessions', headers: authHeaders(tokenA) });
     expect(list.statusCode).toBe(200);

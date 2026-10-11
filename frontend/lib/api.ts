@@ -123,8 +123,11 @@ export interface Tenant {
   name: string;
   plan_id: string;
 }
+// JWT-in-body fix (backend): the session JWT is delivered ONLY via the
+// httpOnly `bseo_token` cookie set by the API — never in a JSON response
+// body. The frontend never reads the body token (cookie auth via
+// credentials:'include'), so it is not part of this type.
 export interface AuthResponse {
-  token: string;
   user: User;
   tenant: Tenant;
 }

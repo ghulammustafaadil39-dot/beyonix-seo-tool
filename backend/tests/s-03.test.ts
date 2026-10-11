@@ -16,7 +16,7 @@ import {
 } from '../src/services/loginLockout.js';
 import { isDisposableEmail } from '../src/services/disposableEmail.js';
 import { getCaptcha } from '../src/providers/captcha.js';
-import { authHeaders, createTestUser, ensureTestDb, truncateAll } from './helpers.js';
+import { authHeaders, createTestUser, ensureTestDb, sessionTokenFromResponse, truncateAll } from './helpers.js';
 
 // Namespaced Redis keys so parallel unit-test files never collide.
 const NS = `bseo:test:s03:${randomBytes(4).toString('hex')}:`;
@@ -318,11 +318,12 @@ describe('S-03 HTTP: per-account rate limits', () => {
 describe('S-03 HTTP: expensive routes carry per-tenant limits', () => {
   it('keywords/research is tenant rate-limited (429 after burst)', async () => {
     await createTestUser('rlexp@example.com', { password: 'Correct1!', verified: true });
-    const token = (await app.inject({
+    const loginRes = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
       payload: { email: 'rlexp@example.com', password: 'Correct1!' },
-    }).then((r) => r.json() as any)).token as string;
+    });
+    const token = sessionTokenFromResponse(loginRes);
     const site = await app.inject({
       method: 'POST',
       url: '/api/v1/sites',
