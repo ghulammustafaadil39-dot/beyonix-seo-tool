@@ -5,6 +5,9 @@ import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import type { PaymentsProvider } from './types.js';
 import { isPlanId, type PlanId } from '../plans.js';
+// F2-L-4: static import is cycle-safe (services/billing.ts only depends on
+// db/notify/plans — it never imports this provider module).
+import { LIVE_SUBSCRIPTION_STATUSES, TERMINAL_SUBSCRIPTION_STATUSES } from '../services/billing.js';
 
 /**
  * Single source of truth mapping a Stripe price id -> plan, derived from the
@@ -576,23 +579,51 @@ export async function applyPaymentEvent(
       // AND active predicate (C5-L-3) stops coupons deactivated mid-flight
       // from redeeming (the Stripe-side discount attached at session
       // creation cannot be revoked locally — documented limitation).
-      const red = await q(
-        `UPDATE billing_coupons
-         SET redeemed_count = redeemed_count + 1,
-             reserved_count = GREATEST(reserved_count - 1, 0)
-         WHERE code = $1 AND active
-           AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`,
-        [couponCode.toUpperCase()],
-      );
-      if ((red.rowCount ?? 0) === 0) {
-        console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted, inactive, or unknown at completion`);
-        // D5-L-1: the reserved hold must be released even when the redeem
-        // predicate fails (e.g. admin deactivated the coupon mid-flight) —
-        // otherwise the slot leaks against max_redemptions forever.
-        await q(
-          `UPDATE billing_coupons SET reserved_count = GREATEST(reserved_count - 1, 0) WHERE code = $1`,
-          [couponCode.toUpperCase()],
+      // F1-L-2: make the redeem idempotent on the webhook event id. The
+      // E4-M-2 fix reprocesses crashed events (ledger row exists but
+      // processed_at IS NULL); the coupon increment is the one
+      // non-idempotent handler path (the subscription upsert above is
+      // ON CONFLICT-idempotent), so a crash between the increment and
+      // markProcessed used to double-count redeemed_count and
+      // double-release the reserved slot. The guard insert is atomic
+      // (ON CONFLICT DO NOTHING on coupon_redemptions.event_id): the first
+      // attempt records the event id and redeems; a crash-retry (or a
+      // concurrent duplicate delivery) sees the conflict and skips.
+      // Accepted residual trade-off: a crash BETWEEN the guard insert and
+      // the UPDATE below leaks one reserved slot instead of
+      // double-counting — a far narrower window than the reprocess one,
+      // and the same class of leak the D5-L-1 release path already
+      // handles. Without an eventId (direct callers) there is no guard —
+      // behavior unchanged.
+      const upperCoupon = couponCode.toUpperCase();
+      let redeemSkipped = false;
+      if (eventId) {
+        const guard = await q(
+          `INSERT INTO coupon_redemptions (event_id, tenant_id, coupon_code)
+           VALUES ($1, $2, $3) ON CONFLICT (event_id) DO NOTHING`,
+          [eventId, tenantId, upperCoupon],
         );
+        redeemSkipped = (guard.rowCount ?? 0) === 0;
+      }
+      if (!redeemSkipped) {
+        const red = await q(
+          `UPDATE billing_coupons
+           SET redeemed_count = redeemed_count + 1,
+               reserved_count = GREATEST(reserved_count - 1, 0)
+           WHERE code = $1 AND active
+             AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`,
+          [upperCoupon],
+        );
+        if ((red.rowCount ?? 0) === 0) {
+          console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted, inactive, or unknown at completion`);
+          // D5-L-1: the reserved hold must be released even when the redeem
+          // predicate fails (e.g. admin deactivated the coupon mid-flight) —
+          // otherwise the slot leaks against max_redemptions forever.
+          await q(
+            `UPDATE billing_coupons SET reserved_count = GREATEST(reserved_count - 1, 0) WHERE code = $1`,
+            [upperCoupon],
+          );
+        }
       }
     }
     const { emitBillingEvent } = await import('../services/billing.js');
@@ -641,14 +672,44 @@ export async function applyPaymentEvent(
     // subscription id, this event belongs to a superseded subscription —
     // log and skip (the D1-H-1 incomplete/past_due double-subscription
     // scenario).
-    const cur = await q(`SELECT stripe_sub_id FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+    // F2-L-4: ...unless it is a REPLACEMENT subscription created
+    // out-of-band. A live-subscription event (created / updated with a
+    // live status) for a NEW sub id while the tracked row is TERMINAL
+    // (canceled / incomplete_expired) means support created the
+    // replacement in the Stripe dashboard / API — no
+    // checkout.session.completed will ever adopt it. Adopt the new sub id
+    // by falling through to the upsert below instead of warn-and-ignore;
+    // otherwise the payer stays canceled locally and 402s forever with
+    // only a console.warn as the trace. The supersede guard still
+    // protects the reverse case: a tracked LIVE row means any event for
+    // a different sub id is stale (e.g. a late incomplete_expired for a
+    // superseded sub) and is ignored. The C-01 ordering guard above adds
+    // a second layer: an event older than the newest applied event is
+    // dropped before this check.
+    const cur = await q(`SELECT stripe_sub_id, status FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
     const storedSubId = cur.rows[0]?.stripe_sub_id as string | null | undefined;
+    const storedStatus = cur.rows[0]?.status as string | null | undefined;
     if (storedSubId && storedSubId !== subId) {
-      console.warn(
-        `[billing] ignoring ${evt} for superseded subscription ${subId} (tenant ${tenantId} tracks ${storedSubId})`,
+      // Adopt only when the incoming subscription is NEWER: tracked row
+      // TERMINAL (canceled / incomplete_expired) and the incoming event
+      // carries a LIVE subscription. Every other mismatch stays on the
+      // E4-H-2 warn-and-ignore path — notably a tracked LIVE row (a late
+      // event for a superseded sub must never clobber it) and a tracked
+      // terminal row with an incoming non-live event (nothing to adopt).
+      const storedTerminal = !!storedStatus && TERMINAL_SUBSCRIPTION_STATUSES.includes(storedStatus);
+      const incomingLive = LIVE_SUBSCRIPTION_STATUSES.includes(status);
+      if (!storedTerminal || !incomingLive) {
+        console.warn(
+          `[billing] ignoring ${type} for superseded subscription ${subId} (tenant ${tenantId} tracks ${storedSubId})`,
+        );
+        await markProcessed();
+        return { deduplicated: false };
+      }
+      console.log(
+        `[billing] adopting out-of-band subscription ${subId} for tenant ${tenantId} ` +
+          `(tracked ${storedSubId} was ${storedStatus}) — fall through to upsert`,
       );
-      await markProcessed();
-      return { deduplicated: false };
+      // Fall through: the upsert below replaces stripe_sub_id + status.
     }
 
     // C5-M-2: a price id Stripe sent but we cannot map must NEVER silently
@@ -678,7 +739,10 @@ export async function applyPaymentEvent(
       );
     }
 
-    const r = await q(`SELECT plan_id FROM subscriptions WHERE stripe_sub_id = $1`, [subId]);
+    // F2-L-4: look up the tracked plan by tenant, not by the incoming sub
+    // id — after an out-of-band adoption the new sub id has no row yet,
+    // and the tenant's last known plan is the right fallback.
+    const r = await q(`SELECT plan_id FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
     const storedPlan = r.rows[0]?.plan_id as string | null | undefined;
     const periodStart = fromStripeTs(data.current_period_start);
     const periodEnd = fromStripeTs(data.current_period_end);
