@@ -24,17 +24,17 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | P0-02 | Backend Lead | 1 | in_review | LA review PASSED; merges with branch after Security sign-off. Advisory lock + per-migration tx (real deadlock caught+fixed in test); one-shot migrate.ts; /healthz vs /readyz; compose migrate service + healthchecks (file-verified only, no Docker daemon) |
 | P0-03 | Frontend Lead | 1 | in_review | LA review PASSED + merged to main (b45411d) 2026-10-11. Approved deviation: next.config rewrites bake at build time (verified in standalone server.js) → implemented as catch-all proxy route reading API_INTERNAL_URL per request. tsc 0, next build 0 errors, live standalone smoke vs stub API passed. Docker build not run (no daemon — CI in Wave 3). Gate re-verification pending |
 | P0-04 | Backend Lead | 1 | in_review | LA review PASSED; Security Lead review REQUESTED (queued). subscription_data.metadata + price→plan map; 9 signed-fixture tests (real Stripe SDK offline HMAC) |
-| P0-05 | Security Lead | 1 | pending | Prod-safe defaults; Backend Lead supports compose/prod env |
-| S-01 | Security Lead | 1 | pending | Email verification flow; Google merge rules |
-| S-02 | Security Lead | 1 | pending | SSRF DNS-pinning (safeFetch exists — verify/extend + rebinding tests) |
-| S-03 | Security Lead | 1 | pending | trustProxy, Redis rate limits, login lockout |
-| S-04 | Security Lead | 1 | pending | OAuth state in Redis + signed cookie + PKCE |
-| S-05 | Security Lead | 1 | pending | Password reset/change, email change, delete+purge, TOTP, sessions list |
-| S-06 | Security Lead | 1 | pending | Cookies/CSRF/helmet/CSP/CORS allow-list (Frontend Lead: Next.js headers) |
-| S-07 | Security Lead | 1 | pending | No base64 fallback in prod; key versioning + rotation script |
-| S-08 | Security Lead | 1 | pending | Exact meta-tag parse; TXT exact-match; weekly re-verify |
-| S-09 | Security Lead | 1 | pending | Prompt-injection delimiting; LLM HTML sanitization |
-| S-10 | Security Lead | 1 | pending | Non-root, read-only FS, pinned digests, no exposed DB/Redis, Trivy in CI |
+| P0-05 | Security Lead | 1 | in_review | LA review PASSED + merged (521c239). Fail-closed NODE_ENV default; validateSecrets() pure+tested (≥32 chars, placeholder rejection, all non-dev/test envs); signed mock webhooks (MOCK_WEBHOOK_SECRET); mock-confirm disabled in prod. 15 tests pass. Gate re-verification pending |
+| S-01 | Security Lead | 1 | in_review | LA review PASSED + merged. Email verification flow (token/expiry/resend/rate-limit); Google merge requires Google email_verified AND local verified; requireVerifiedEmail preHandlers on paid/spend routes. 21 tests pass |
+| S-02 | Security Lead | 1 | in_review | LA review PASSED + merged. safeFetch rewrite: single-resolve DNS pinning, redirect re-validation, IPv6-transition blocks, size/type caps, test-only loopback bypass (NODE_ENV=test, proven unreachable otherwise). 22 tests pass |
+| S-03 | Security Lead (sess.2) | 1 | pending | trustProxy, Redis rate limits, login lockout — reassigned 2026-10-11 |
+| S-04 | Security Lead (sess.2) | 1 | pending | Redis OAuth state + signed cookie + PKCE (oauthState.ts interface exists) — reassigned |
+| S-05 | Security Lead (sess.2) | 1 | pending | Password reset/change, email change, delete+purge, TOTP, sessions list — reassigned |
+| S-06 | Security Lead (sess.2) | 1 | pending | Cookies/CSRF/helmet/CSP/CORS + Next.js headers (Frontend Lead done — Security owns both sides now) — reassigned |
+| S-07 | Security Lead (sess.2) | 1 | pending | Key versioning (kid) + rotation script — reassigned |
+| S-08 | Security Lead (sess.2) | 1 | pending | Domain verification hardening + weekly re-verify — reassigned |
+| S-09 | Security Lead (sess.2) | 1 | pending | Prompt-injection delimiting + LLM HTML sanitization — reassigned |
+| S-10 | Security Lead (sess.2) | 1 | pending | Container hardening (file review; Trivy in CI Wave 3) — reassigned |
 
 ### Wave 1 additions (from baseline hostile audit 2026-10-11)
 
@@ -121,3 +121,7 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 - Wave 0 gate: PASSED 2026-10-11 (see parent handoff)
 - LA decisions (2026-10-11): (a) No relocation of p0-01/n-qa-1 tests to tests/integration/ — runIf self-skip gates suffice, zero churn. (b) QA setup.ts must read DATABASE_URL from env (fallback bseo_test) — task for next QA session. (c) Fastify FSTDEP024 (requestIdLogLabel) deprecation → low priority, Wave 3 cleanup. (d) ARCHITECTURE_PLAN migration-dir drift fixed (backend/migrations/). (e) Backend branch rebased onto main cleanly by LA; merge held for Security Lead review of P0-01/P0-04/N-QA-1.
+- Security review of Backend branch (2026-10-11): CHANGES REQUESTED (2): (1) checkout.session.completed plan path lacked isPlanId guard — FIXED by LA (one line + regression test; also fixed guard-ordering bug the first attempt introduced, caught by p1.test.ts). (2) 003 commit message false claim ("both DBs empty") — CORRECTED via reword; LA documents contract exception (edited statement was a syntax error, never executed; name-based ledger skip). Rest APPROVED (encapsulation, token_version, over/under-gating, P0-04 price map).
+- Security↔Backend auth-pattern conflict (2026-10-11): resolved in favor of Backend's `await authPlugin(app)` (no fp); Security's S-01 branch had DROPPED token_version signing in its signup/login rewrite — caught and fixed during LA rebase (combined both). requireVerifiedEmail preHandlers preserved.
+- Integration fallout fixed by LA (2026-10-11): S-01 used removed `badRequest` → switched to `validationError`; QA fixture test updated for S-02 test-only loopback bypass; n-qa-1 webhook test updated for P0-05 signed mock webhooks.
+- Security Lead session 1 completed P0-05/S-01/S-02 + Backend review (final report contained review only; own items verified by LA: 58/58 tests + tsc). Session 2 spawned for S-03..S-10.
