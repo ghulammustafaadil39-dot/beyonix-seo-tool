@@ -6,6 +6,8 @@ import { closeRedis } from './redis.js';
 import { installGracefulShutdown } from './shutdown.js';
 import { registerDefaultBillingHooks } from './services/billing.js';
 import { wireDefaultUsageAlerts } from './services/notifications.js';
+import { acquireHeavySlot, releaseHeavySlot, QUEUE_CLASS } from './services/fairness.js';
+import { registerDefaultPlugins } from './services/plugins.js';
 import { crawlProcessor } from './services/crawlJobs.js';
 import { backlinkProcessor } from './services/backlinkJobs.js';
 import { rankCheckProcessor } from './services/rankJobs.js';
@@ -61,10 +63,29 @@ export function withJobTimeout<T>(job: Job, queueName: string, fn: (job: Job) =>
   });
 }
 
+// W-01: fairness wrapper — heavy-queue jobs (crawl/audit) hold a
+// per-tenant semaphore slot; when the tenant is at its slot limit the job
+// is moved to delayed (60s) instead of blocking a worker slot forever.
+async function withFairness(queueName: string, job: Job, fn: (job: Job) => Promise<unknown>): Promise<unknown> {
+  const data = (job.data ?? {}) as Record<string, unknown>;
+  const tenantId = typeof data.tenantId === 'string' ? data.tenantId : null;
+  if (QUEUE_CLASS[queueName] !== 'heavy' || !tenantId) return fn(job);
+  const slot = await acquireHeavySlot(tenantId);
+  if (!slot) {
+    await job.moveToDelayed(Date.now() + 60_000);
+    return { deferredForFairness: true, tenantId };
+  }
+  try {
+    return await fn(job);
+  } finally {
+    await releaseHeavySlot(tenantId, slot);
+  }
+}
+
 function workerFor(queueName: string, processor: (job: Job) => Promise<unknown>, concurrency: number): Worker {
   return new Worker(
     queueName,
-    (job) => withJobTimeout(job, queueName, processor),
+    (job) => withFairness(queueName, job, (j) => withJobTimeout(j, queueName, processor)),
     {
       connection: getConnection().duplicate(),
       concurrency,
@@ -77,19 +98,30 @@ function workerFor(queueName: string, processor: (job: Job) => Promise<unknown>,
   );
 }
 
+/** W-01: concurrency per queue CLASS (env-tunable): heavy (crawl/audit)
+ * gets a large pool, light jobs a smaller one — heavy work cannot starve
+ * light checks, and light bursts cannot steal all crawl slots. */
+export function queueConcurrency(queueName: string, env: NodeJS.ProcessEnv = process.env): number {
+  const heavy = Number(env.WORKER_HEAVY_CONCURRENCY ?? 6);
+  const light = Number(env.WORKER_LIGHT_CONCURRENCY ?? 3);
+  return QUEUE_CLASS[queueName] === 'heavy' ? heavy : light;
+}
+
 async function main() {
   await runMigrations();
   // The scheduler runs billing-grace + usage alerts here: the hooks must be
   // registered in the worker process too (not just the API).
   registerDefaultBillingHooks();
   wireDefaultUsageAlerts();
+  // W-06: plugin hooks fire from the worker process (audit/report completion).
+  registerDefaultPlugins();
   const workers: Worker[] = [
-    workerFor(QUEUES.crawl, crawlQueueProcessor, 2),
-    workerFor(QUEUES.rankCheck, rankCheckProcessor, 4),
-    workerFor(QUEUES.keywordRefresh, keywordRefreshProcessor, 2),
-    workerFor(QUEUES.geoCheck, geoCheckProcessor, 2),
-    workerFor(QUEUES.report, reportProcessor, 2),
-    workerFor(QUEUES.content, contentProcessor, 2),
+    workerFor(QUEUES.crawl, crawlQueueProcessor, queueConcurrency(QUEUES.crawl)),
+    workerFor(QUEUES.rankCheck, rankCheckProcessor, queueConcurrency(QUEUES.rankCheck)),
+    workerFor(QUEUES.keywordRefresh, keywordRefreshProcessor, queueConcurrency(QUEUES.keywordRefresh)),
+    workerFor(QUEUES.geoCheck, geoCheckProcessor, queueConcurrency(QUEUES.geoCheck)),
+    workerFor(QUEUES.report, reportProcessor, queueConcurrency(QUEUES.report)),
+    workerFor(QUEUES.content, contentProcessor, queueConcurrency(QUEUES.content)),
   ];
 
   for (const w of workers) {
