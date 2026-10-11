@@ -3,6 +3,7 @@ import { getGoogle } from '../providers/google.js';
 import { getNotify } from '../providers/notify.js';
 import { decrypt } from '../crypto.js';
 import { requireSite, siteUrl } from './sites.js';
+import { rescoreToxicLinks } from './toxicLinks.js';
 import { query as defaultQuery, type QueryFn } from '../db.js';
 
 interface BacklinkJobData {
@@ -101,6 +102,9 @@ export async function backlinkProcessor(job: Job): Promise<unknown> {
   const lost = lostR.rows.map((r: any) => ({ sourceUrl: r.source_url as string, targetUrl: r.target_url as string }));
 
   await notifyBacklinkChanges(q, tenantId, site.domain, gained, lost);
+
+  // F-06: heuristic toxic scoring on every refresh.
+  await rescoreToxicLinks(tenantId, siteId, site.domain, q);
 
   return { total: links.length, gained: gained.length, lost: lost.length };
 }

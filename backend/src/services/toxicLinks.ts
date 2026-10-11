@@ -1,3 +1,4 @@
+import type { QueryFn } from '../db.js';
 // Heuristic toxic-link scoring (F-06).
 // IMPORTANT: these are HEURISTICS, not a definitive toxicity verdict. The API
 // labels every result as heuristic ("toxic_flags_heuristic"). Never present
@@ -96,3 +97,37 @@ export function analyzeToxicity(
 
 /** A link counts as toxic when the heuristic score reaches this threshold. */
 export const TOXIC_THRESHOLD = 50;
+
+/**
+ * Re-scores every active backlink of a site with the heuristic and stores
+ * toxic_flags / toxic_score / referring_domain. Run after CSV upload and
+ * after provider refresh. Pure CPU — no provider cost, no metering.
+ */
+export async function rescoreToxicLinks(
+  tenantId: string,
+  siteId: string,
+  siteDomain: string,
+  q: QueryFn,
+): Promise<{ rescored: number; toxic: number }> {
+  const r = await q(
+    `SELECT id, source_url, anchor_text FROM backlinks WHERE tenant_id = $1 AND site_id = $2 AND status = 'active'`,
+    [tenantId, siteId],
+  );
+  let toxic = 0;
+  for (const row of r.rows) {
+    const res = analyzeToxicity(row.source_url, row.anchor_text, siteDomain);
+    let domain: string | null = null;
+    try {
+      domain = new URL(row.source_url).hostname.toLowerCase();
+    } catch {
+      domain = null;
+    }
+    await q(
+      `UPDATE backlinks SET toxic_flags = $2::text[], toxic_score = $3, referring_domain = $4
+       WHERE id = $1`,
+      [row.id, res.flags, res.score, domain],
+    );
+    if (res.score >= TOXIC_THRESHOLD) toxic++;
+  }
+  return { rescored: r.rows.length, toxic };
+}
