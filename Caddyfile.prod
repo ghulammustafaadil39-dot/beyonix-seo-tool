@@ -17,6 +17,13 @@
 
 {$APP_HOST:localhost} {
 	tls {$APP_TLS_EMAIL:}
+	# CVE-2026-23869 defense-in-depth: zero Server Actions in this app, so no
+	# legitimate request carries a Next-Action header. Abort such requests at
+	# the proxy before they reach the Next.js server.
+	@serverAction header Next-Action
+	handle @serverAction {
+		abort
+	}
 	reverse_proxy web:3000
 }
 
