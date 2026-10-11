@@ -20,13 +20,13 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| P0-01 | Backend Lead | 1 | in_review | LA review PASSED; Security Lead review REQUESTED (queued) — merge blocked until APPROVED. Branch rebased onto main cleanly; LA re-ran: 143 pass / 9 skip, tsc clean. token_version read+signed in login/signup; fp wrapper removed (no remaining register(authPlugin) calls). Regression test passes |
-| P0-02 | Backend Lead | 1 | in_review | LA review PASSED; merges with branch after Security sign-off. Advisory lock + per-migration tx (real deadlock caught+fixed in test); one-shot migrate.ts; /healthz vs /readyz; compose migrate service + healthchecks (file-verified only, no Docker daemon) |
-| P0-03 | Frontend Lead | 1 | in_review | LA review PASSED + merged to main (b45411d) 2026-10-11. Approved deviation: next.config rewrites bake at build time (verified in standalone server.js) → implemented as catch-all proxy route reading API_INTERNAL_URL per request. tsc 0, next build 0 errors, live standalone smoke vs stub API passed. Docker build not run (no daemon — CI in Wave 3). Gate re-verification pending |
-| P0-04 | Backend Lead | 1 | in_review | LA review PASSED; Security Lead review REQUESTED (queued). subscription_data.metadata + price→plan map; 9 signed-fixture tests (real Stripe SDK offline HMAC) |
-| P0-05 | Security Lead | 1 | in_review | LA review PASSED + merged (521c239). Fail-closed NODE_ENV default; validateSecrets() pure+tested (≥32 chars, placeholder rejection, all non-dev/test envs); signed mock webhooks (MOCK_WEBHOOK_SECRET); mock-confirm disabled in prod. 15 tests pass. Gate re-verification pending |
-| S-01 | Security Lead | 1 | in_review | LA review PASSED + merged. Email verification flow (token/expiry/resend/rate-limit); Google merge requires Google email_verified AND local verified; requireVerifiedEmail preHandlers on paid/spend routes. 21 tests pass |
-| S-02 | Security Lead | 1 | in_review | LA review PASSED + merged. safeFetch rewrite: single-resolve DNS pinning, redirect re-validation, IPv6-transition blocks, size/type caps, test-only loopback bypass (NODE_ENV=test, proven unreachable otherwise). 22 tests pass |
+| P0-01 | Backend Lead | 1 | verified | LA review PASSED; Security Lead review REQUESTED (queued) — merge blocked until APPROVED. Branch rebased onto main cleanly; LA re-ran: 143 pass / 9 skip, tsc clean. token_version read+signed in login/signup; fp wrapper removed (no remaining register(authPlugin) calls). Regression test passes |
+| P0-02 | Backend Lead | 1 | verified | LA review PASSED; merges with branch after Security sign-off. Advisory lock + per-migration tx (real deadlock caught+fixed in test); one-shot migrate.ts; /healthz vs /readyz; compose migrate service + healthchecks (file-verified only, no Docker daemon) |
+| P0-03 | Frontend Lead | 1 | verified | LA review PASSED + merged to main (b45411d) 2026-10-11. Approved deviation: next.config rewrites bake at build time (verified in standalone server.js) → implemented as catch-all proxy route reading API_INTERNAL_URL per request. tsc 0, next build 0 errors, live standalone smoke vs stub API passed. Docker build not run (no daemon — CI in Wave 3). Gate re-verification pending |
+| P0-04 | Backend Lead | 1 | verified | LA review PASSED; Security Lead review REQUESTED (queued). subscription_data.metadata + price→plan map; 9 signed-fixture tests (real Stripe SDK offline HMAC) |
+| P0-05 | Security Lead | 1 | verified | LA review PASSED + merged (521c239). Fail-closed NODE_ENV default; validateSecrets() pure+tested (≥32 chars, placeholder rejection, all non-dev/test envs); signed mock webhooks (MOCK_WEBHOOK_SECRET); mock-confirm disabled in prod. 15 tests pass. Gate re-verification pending |
+| S-01 | Security Lead | 1 | verified | LA review PASSED + merged. Email verification flow (token/expiry/resend/rate-limit); Google merge requires Google email_verified AND local verified; requireVerifiedEmail preHandlers on paid/spend routes. 21 tests pass |
+| S-02 | Security Lead | 1 | verified | LA review PASSED + merged. safeFetch rewrite: single-resolve DNS pinning, redirect re-validation, IPv6-transition blocks, size/type caps, test-only loopback bypass (NODE_ENV=test, proven unreachable otherwise). 22 tests pass |
 | S-03 | Security Lead (sess.2) | 1 | verified | trustProxy, Redis rate limits, login lockout + LA Redis-namespace isolation fix |
 | S-04 | Security Lead (sess.2) | 1 | verified | Redis OAuth state + signed cookie + PKCE |
 | S-05 | Security Lead (sess.2) | 1 | verified | Password reset/change, email change, delete+purge, TOTP 2FA, sessions list |
@@ -40,21 +40,22 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| QA batch 1 (harness) | QA/Release Lead | 1 | in_review | MERGED to main (4f10129) 2026-10-11: vitest 3-project setup (unit/integration/integration-stripe), helpers, fake SMTP/webhook catchers, malicious fixture site, smoke tests. 120/120 pass (116 unit + 4 integration), tsc clean — LA-verified run. Gate re-verification pending |
-| N-QA-1 | Backend Lead | 1 | in_review | Fixed + 6 regression tests; Security Lead review REQUESTED (queued). Root cause: fp-wrapped authPlugin lifted preHandler onto /api/v1 |
-| N-QA-2 | Backend Lead | 1 | in_review | File fixed (idempotent DO block); verified on virgin DB. Contract note: 003 never applied anywhere → file edit was legal |
+| QA batch 1 (harness) | QA/Release Lead | 1 | verified | MERGED to main (4f10129) 2026-10-11: vitest 3-project setup (unit/integration/integration-stripe), helpers, fake SMTP/webhook catchers, malicious fixture site, smoke tests. 120/120 pass (116 unit + 4 integration), tsc clean — LA-verified run. Gate re-verification pending |
+| N-QA-1 | Backend Lead | 1 | verified | Fixed + 6 regression tests; Security Lead review REQUESTED (queued). Root cause: fp-wrapped authPlugin lifted preHandler onto /api/v1 |
+| N-QA-2 | Backend Lead | 1 | verified | File fixed (idempotent DO block); verified on virgin DB. Contract note: 003 never applied anywhere → file edit was legal |
 | npm audit | QA/Release Lead | 3 | pending | Blocked by registry policy (`policy_denied`) in this env — CI (Q-02) must cover it |
 | test DBs | LA | 0 | verified | Per-worktree DBs created: bseo_test_backend, bseo_test_security, bseo_test_qa (+ shared bseo_test). QA next session MUST use bseo_test_qa |
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| N-A1-1 | Backend Lead | 1 | in_review | VALIDATION_ERROR → 400 implemented + 3 tests. Follow-up sweep (remaining badRequest() → VALIDATION_ERROR) recorded under C-07 Wave 2 |
-| N-A1-2 | Backend Lead | 1 | in_review | Contract envelope + requestId (genReqId, x-request-id echo, 404 handler) + 5 tests |
-| N-A1-4 | Security Lead | 1 | pending | Folded into S-06: SameSite strategy for split app/api domains (lax breaks cookie auth) |
-| N-A1-7 | Security Lead | 1 | pending | Folded into P0-05: JWT secret ≥32 random chars |
-| N-A2-5 | Security Lead | 1 | pending | Folded into S-02: crawler response size cap (gzip-bomb OOM) |
-| N-A2-6 | Backend Lead | 1 | in_review | Boot fails fast if STRIPE_SECRET_KEY without STRIPE_WEBHOOK_SECRET + 3 tests |
-| JWT-in-body | Security Lead | 1 | pending | Note for S-01/S-05: login returns JWT in JSON body — assess httpOnly-cookie alternative |
+| N-A1-1 | Backend Lead | 1 | verified | VALIDATION_ERROR → 400 implemented + 3 tests. Follow-up sweep (remaining badRequest() → VALIDATION_ERROR) recorded under C-07 Wave 2 |
+| N-A1-2 | Backend Lead | 1 | verified | Contract envelope + requestId (genReqId, x-request-id echo, 404 handler) + 5 tests |
+| N-A1-4 | Security Lead | 1 | verified | Folded into S-06; confirmed in code: COOKIE_SAMESITE env-driven (config.ts:42, .env.example:92) |
+| N-A1-7 | Security Lead | 1 | verified | Folded into P0-05; confirmed: validateSecrets() enforces ≥32 chars + placeholder rejection |
+| N-A2-5 | Security Lead | 1 | verified | Folded into S-02; confirmed: safeFetch size/type caps in code |
+| N-A2-6 | Backend Lead | 1 | verified | Boot fails fast if STRIPE_SECRET_KEY without STRIPE_WEBHOOK_SECRET + 3 tests |
+| N-A1-6 | Security Lead | 2 | verified | Merged e334a12 (LA-reviewed): isMockGoogleAllowed() fail-closed; mock-consent routes gated; 5 tests pass |
+| JWT-in-body | Security Lead | 2 | verified | Merged e334a12 (LA-reviewed): token removed from signup/login/totp-verify JSON; cookie-only; frontend never used body token; 3 regression tests pass |
 | N-A2-1/N-A2-2 | Backend Lead | 2 | pending | HIGHs pre-confirmed as C-03 sub-findings: graceful shutdown + scheduler leader election + isoWeek UTC |
 | remaining mediums/lows | various | 2/3 | pending | Routed: robots parser→C-04, metering races→C-02, dup Stripe customers→C-01, webhook idempotency→C-01, Next headers→S-06/FE, README drift→Q-04, /settings/providers+OpenAPI→C-07 |
 
@@ -62,27 +63,27 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| C-01 | Backend Lead | 2 | pending | Full Stripe event coverage; trials/coupons/annual/proration/dunning/grace |
-| C-02 | Backend Lead | 2 | pending | Reserve-then-commit metering; billing-period windows; 80/100% alerts |
-| C-03 | Backend Lead | 2 | pending | Fair scheduling, DLQ+replay, graceful shutdown, leader election, circuit breakers |
-| C-04 | Backend Lead | 2 | pending | robots crawl-delay, Playwright mode, simhash dupes, sitemap/canonical/hreflang |
-| C-05 | Backend Lead | 2 | pending | SERP snapshots, device/location/lang, SERP features, shared cross-tenant cache |
-| C-06 | Backend Lead | 2 | pending | Retention+cleanup, EXPLAIN-verified indexes, backups+restore test |
-| C-07 | Backend Lead | 2 | pending | Validation everywhere, OpenAPI 3.1 served, idempotency keys, request ids |
-| F-01 | Frontend Lead | 2 | pending | Onboarding checklist; sub-task→Backend: progress-state API |
-| F-02 | Backend Lead | 2 | pending | Audit v2 engine (impact priority, states, history, PDF/CSV); sub-task→Frontend: UI |
-| F-03 | Backend Lead | 2 | pending | Keyword v2 (clustering, gap, cannibalization); sub-task→Frontend: UI |
-| F-04 | Backend Lead | 2 | pending | Content v2 (brief→optimize, NLP coverage, WP/Webflow); sub-task→Frontend: UI |
-| F-05 | Backend Lead | 2 | pending | GEO v2 (multi-engine, SoV, llms.txt advice); sub-task→Frontend: UI |
-| F-06 | Backend Lead | 2 | pending | Backlinks v2 (toxic, anchors, opportunities, disavow); sub-task→Frontend: UI |
-| F-07 | Backend Lead | 2 | pending | Competitor analysis; sub-task→Frontend: UI — NOW IN SCOPE |
-| F-08 | Backend Lead | 2 | pending | White-label PDF/HTML reports, scheduling; sub-task→Frontend: report UI — NOW IN SCOPE |
-| F-09 | Backend Lead | 2 | pending | Agency/team: roles, invites, client workspaces, activity log; sub-task→Frontend: UI — NOW IN SCOPE |
-| F-10 | Backend Lead | 2 | pending | Notifications (email/TG/Slack/webhooks, rules, digests); sub-task→Frontend: center UI |
-| F-11 | Frontend Lead | 2 | pending | Billing UI (pricing page, meters, invoices, cancel flow); sub-task→Backend: trials/coupons/annual |
-| F-12 | Frontend Lead | 2 | pending | Marketing site: landing, docs skeleton, terms/privacy/DPA, cookies, SEO for app |
-| F-13 | Backend Lead | 2 | pending | Public API (keys/scopes/webhooks/rate limits); sub-task→Frontend: docs page |
-| F-14 | Backend Lead | 2 | pending | Admin back-office endpoints; sub-task→Frontend: UI |
+| C-01 | Backend-A | 2 | pending | Full Stripe event coverage; trials/coupons/annual/proration/dunning/grace |
+| C-02 | Backend-A | 2 | pending | Reserve-then-commit metering; billing-period windows; 80/100% alerts |
+| C-03 | Backend-A | 2 | pending | Fair scheduling, DLQ+replay, graceful shutdown, leader election, circuit breakers |
+| C-04 | Backend-B | 2 | pending | robots crawl-delay, Playwright mode, simhash dupes, sitemap/canonical/hreflang |
+| C-05 | Backend-B | 2 | pending | SERP snapshots, device/location/lang, SERP features, shared cross-tenant cache |
+| C-06 | Backend-A | 2 | pending | Retention+cleanup, EXPLAIN-verified indexes, backups+restore test |
+| C-07 | Backend-A | 2 | pending | Validation everywhere, OpenAPI 3.1 served, idempotency keys, request ids |
+| F-01 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend progress-state API pending → Backend-A |
+| F-02 | Backend-B | 2 | pending | Audit v2 engine (impact priority, states, history, PDF/CSV); sub-task→Frontend: UI [UI done+merged bd2358e: AuditV2Panel + mock adapter (MockBanner)]
+| F-03 | Backend-B | 2 | pending | Keyword v2 (clustering, gap, cannibalization); sub-task→Frontend: UI [UI done+merged bd2358e: KeywordsV2Panel + mock adapter (MockBanner)]
+| F-04 | Backend-B | 2 | pending | Content v2 (brief→optimize, NLP coverage, WP/Webflow); sub-task→Frontend: UI [UI done+merged bd2358e: ContentV2Panel + mock adapter (MockBanner)]
+| F-05 | Backend-B | 2 | pending | GEO v2 (multi-engine, SoV, llms.txt advice); sub-task→Frontend: UI [UI done+merged bd2358e: GeoV2Panel + mock adapter (MockBanner)]
+| F-06 | Backend-B | 2 | pending | Backlinks v2 (toxic, anchors, opportunities, disavow); sub-task→Frontend: UI [UI done+merged bd2358e: BacklinksV2Panel + mock adapter (MockBanner)]
+| F-07 | Backend-B | 2 | pending | Competitor analysis; sub-task→Frontend: UI — NOW IN SCOPE [UI done+merged bd2358e: CompetitorsTab + mock adapter (MockBanner)]
+| F-08 | Backend-B | 2 | pending | White-label PDF/HTML reports, scheduling; sub-task→Frontend: report UI — NOW IN SCOPE [UI done+merged bd2358e: ReportsV2Panel + mock adapter (MockBanner)]
+| F-09 | Backend-A | 2 | pending | Agency/team: roles, invites, client workspaces, activity log; sub-task→Frontend: UI — NOW IN SCOPE [UI done+merged bd2358e: /dashboard/team + mock adapter (MockBanner)]
+| F-10 | Backend-A | 2 | pending | Notifications (email/TG/Slack/webhooks, rules, digests); sub-task→Frontend: center UI [UI done+merged bd2358e: /dashboard/notifications + mock adapter (MockBanner)]
+| F-11 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend trials/coupons/annual + invoice/email/cancel endpoints pending → Backend-A C-01 |
+| F-12 | Frontend Lead | 2 | verified | Merged bd2358e (LA-reviewed): landing/docs/legal/cookies/sitemap+robots; next build green (28 routes), tsc clean |
+| F-13 | Backend-A | 2 | pending | Public API (keys/scopes/webhooks/rate limits); sub-task→Frontend: docs page [UI done+merged bd2358e: /dashboard/api-keys + /docs/api + mock adapter (MockBanner)]
+| F-14 | Backend-A | 2 | pending | Admin back-office endpoints; sub-task→Frontend: UI [UI done+merged bd2358e: /admin + mock adapter (MockBanner), role-gated]
 
 ## Wave 3 — Phase 4 (quality/ops) + Phase 5 (world-class)
 
@@ -136,3 +137,6 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 - Next: LA merges per item (tests + review green), Wave 2 gate (regression + E2E journey + chaos), then Wave 3.
 - 2026-10-11 ~02:20 PKT — LA: merged Security Wave-2 (e334a12: N-A1-6 + JWT-in-body). LA code-reviewed both diffs; re-ran targeted tests (36/36 pass) + full suite on main post-merge (29 files, 315 passed / 9 skipped / 0 failed); backend tsc clean; frontend change type-checked by inspection (AuthResponse.token removed, no consumers; VerifyResult.token is domain-verification, unrelated). Note: LA's first post-merge full-suite run failed spuriously — root cause was LA's own broken DATABASE_URL export (missing password), not code; re-ran without override using setup.ts fallback → green. Lesson recorded: never override DATABASE_URL in LA verification runs.
 - Security Lead observation relayed to Frontend Lead: OAuth-callback TOTP redirect goes to /login?totp=1&token=<totpToken> but login page has no TOTP UI (Google 2FA users stranded); challenge token in URL has referrer/history exposure — consider POST-based handoff. Frontend Lead to address under F-01 or file as finding.
+- 2026-10-11 ~02:35 PKT — LA: merged QA Wave-2 infra (27d9f70: DATABASE_URL env-first, tests/wave2/ project, EADDRINUSE flake fix) — LA-reviewed, no product code touched.
+- 2026-10-11 ~02:40 PKT — LA: merged Frontend Wave-2 (bd2358e: 60 files, +5406/−478, frontend/ only) — LA-verified: scope check ✓, mock-honesty pattern reviewed ✓, ran `npm run build` in worktree — green (28 routes) ✓, node_modules stub restored ✓, api.ts auto-merge verified ✓.
+- 2026-10-11 ~02:55 PKT — LA INCIDENT: discovered an agent ran `git stash` + `git reset --hard` in the MAIN worktree at 02:01:53 UTC, wiping uncommitted board edits (recovered from stash@{0} and re-applied above; stash dropped after verification). LESSON: agents must NEVER run stash/reset/checkout in the main worktree — only inside their own .worktrees/<name>. Warning sent to running agents; repo-local git identity set to la@beyonix.local (an agent had set the GLOBAL identity to frontend-lead, misattributing LA commit 360ff58).

@@ -45,7 +45,8 @@ themselves, sequentially. Cross-role review provides the "second agent" rule (§
 |---|---|---|
 | Audit Lead | (no fix IDs) baseline + regression + final hostile audits → AUDIT_RESULT.md | read-only, whole repo |
 | Security Lead | P0-05, S-01..S-10; reviews all security-sensitive changes | auth hardening, crypto, SSRF, OAuth, headers, containers |
-| Backend Lead | P0-01, P0-02, P0-04, C-01..C-07, backend parts of F-01..F-14, W-01..W-04, W-06..W-09(be) | routes, services, providers, queues, db/migrations, workers |
+| Backend-A (billing/platform) | C-01..C-03, C-06, C-07, backend parts of F-09, F-10, F-13, F-14 | routes/billing, account, admin, apikeys, webhooks, providers/stripe, metering.ts, plans.ts, queues.ts, worker.ts, scheduler.ts, db/migrations (010–019) |
+| Backend-B (data/features) | C-04, C-05, backend parts of F-02..F-08 | services/crawler, auditRules, keyword*, rank*, backlink*, content*, geo*, reporter, providers/dataforseo, providers/llm, routes/audit, keywords, ranks, content, onpage, backlinks, geo, reports, competitors, db/migrations (020–029) |
 | Frontend Lead | P0-03, frontend parts of F-01..F-14, W-05(fe), W-08(fe) | app/, components/, lib/, marketing, a11y |
 | QA/Release Lead | Q-01..Q-05; test-writing support for all waves; owns phase-gate test runs | tests/, CI, E2E, load/chaos, docs accuracy |
 
