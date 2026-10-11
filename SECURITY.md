@@ -63,6 +63,17 @@ reproduction steps, and impact. We aim to acknowledge within 48h.
 - Trivy image scan (`trivy.yml`) — config-only here (no Docker daemon in
   this environment); runs in CI where Docker exists.
 
+## Remediated advisories
+
+- **CVE-2026-23869 / GHSA-q4gf-8mx6-v5v3** (High, CVSS 7.5 — unauthenticated
+  remote DoS via crafted requests to App Router Server Function endpoints):
+  remediated by upgrading `next` 14.2.35 → **15.5.27** (≥ patched 15.5.15;
+  React 18 → 19). The app defines zero Server Actions (reduced surface), and
+  as defense-in-depth `Caddyfile.prod` aborts any request carrying a
+  `Next-Action` header before it reaches the Next.js server.
+- **CVE-2026-23870** (RSC DoS, patched in Next 15.5.18): not affected —
+  15.5.27 ships the fix, and the app has zero Server Actions.
+
 ## Known limitations
 
 - Trivy has never executed in the dev VM (no daemon); deferred to CI.
