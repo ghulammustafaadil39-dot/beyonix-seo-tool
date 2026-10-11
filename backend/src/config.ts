@@ -84,6 +84,9 @@ export const config = {
   smtpFrom: opt('SMTP_FROM', 'Beyonix SEO <noreply@beyonixseo.com>'),
 
   telegramBotToken: opt('TELEGRAM_BOT_TOKEN'),
+  // F-04: CMS publish connector (WordPress/Webflow). Off by default;
+  // when off, publish endpoints run in honest mock mode (publishConnector).
+  cmsPublishEnabled: opt('CMS_PUBLISH_ENABLED', 'false') === 'true',
 };
 
 export const hasStripe = () => !!config.stripeSecretKey;

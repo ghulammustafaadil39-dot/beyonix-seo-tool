@@ -7,6 +7,7 @@
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.12.0",
     "cheerio": "^1.0.0",
+    "docx": "^9.10.0",
     "fastify": "^5.2.0",
     "fastify-plugin": "^5.0.1",
     "googleapis": "^144.0.0",
