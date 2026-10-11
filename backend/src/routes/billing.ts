@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { pool, query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { withIdempotency } from '../middleware/idempotency.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import {
@@ -188,22 +189,28 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
         const stripeCouponId = couponCode ? await resolveStripeCoupon(couponCode) : null;
 
         // Block double checkout when already subscribed (C-01): plan changes
-        // go through the customer portal. The tenant row is locked
-        // (SELECT ... FOR UPDATE) around customer creation so concurrent
-        // checkouts cannot create duplicate Stripe customers (N-A1-5).
+        // go through the customer portal.
+        //
+        // B1-10: NEVER hold the tenant row lock across the Stripe network
+        // call. The customer is created BEFORE the transaction; inside, the
+        // row is re-read under FOR UPDATE and the winner's id is adopted on
+        // a race (a loser-created Stripe customer stays orphaned — bounded
+        // and logged; the old code additionally serialized ALL concurrent
+        // billing mutations for the tenant on Stripe latency).
+        const tenantId = (req as any).tenant.tenantId as string;
+        const preRead = await query(`SELECT stripe_customer_id FROM tenants WHERE id = $1`, [tenantId]);
+        let customerId: string | null = (preRead.rows[0]?.stripe_customer_id as string | null) ?? null;
+        if (!customerId) {
+          const created = await getPayments().createCustomer((req as any).tenant.email, tenantId);
+          customerId = created.customerId;
+        }
         const client = await pool.connect();
-        let customerId: string | null;
         try {
           await client.query('BEGIN');
           try {
-            const t = await client.query(
-              `SELECT stripe_customer_id FROM tenants WHERE id = $1 FOR UPDATE`,
-              [(req as any).tenant.tenantId],
-            );
-            customerId = t.rows[0]?.stripe_customer_id ?? null;
-            const sub = await client.query(`SELECT status FROM subscriptions WHERE tenant_id = $1`, [
-              (req as any).tenant.tenantId,
-            ]);
+            const t = await client.query(`SELECT stripe_customer_id FROM tenants WHERE id = $1 FOR UPDATE`, [tenantId]);
+            const existing: string | null = (t.rows[0]?.stripe_customer_id as string | null) ?? null;
+            const sub = await client.query(`SELECT status FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
             const status: string | undefined = sub.rows[0]?.status;
             if (status && ACTIVE_SUBSCRIPTION_STATUSES.includes(status)) {
               await client.query('ROLLBACK');
@@ -214,16 +221,16 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
                 { portal: true },
               );
             }
-            if (!customerId) {
-              const created = await getPayments().createCustomer(
-                (req as any).tenant.email,
-                (req as any).tenant.tenantId,
-              );
-              customerId = created.customerId;
-              await client.query(`UPDATE tenants SET stripe_customer_id = $1 WHERE id = $2`, [
-                customerId,
-                (req as any).tenant.tenantId,
-              ]);
+            if (existing) {
+              // A concurrent checkout won the race — adopt their customer id.
+              // Ours (created above) is orphaned in Stripe; bounded to one
+              // per race and surfaced in logs for manual cleanup.
+              if (existing !== customerId) {
+                console.warn(`[billing] checkout race: adopting existing customer for tenant ${tenantId}`);
+                customerId = existing;
+              }
+            } else {
+              await client.query(`UPDATE tenants SET stripe_customer_id = $1 WHERE id = $2`, [customerId, tenantId]);
             }
             await client.query('COMMIT');
           } catch (err) {
@@ -255,7 +262,8 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
       }),
     );
 
-    authed.get('/billing/subscription', async (req) => {
+    // B1-M1: billing reads need billing:read for API keys (sessions pass).
+    authed.get('/billing/subscription', { preHandler: requireScope('billing:read') }, async (req) => {
       const r = await query(
         `SELECT plan_id, status, stripe_sub_id, current_period_start, current_period_end,
                 trial_ends_at, cancel_at_period_end, billing_interval, coupon_code, grace_until
@@ -275,7 +283,7 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
       };
     });
 
-    authed.get('/billing/invoices', { schema: invoicesQuerySchema }, async (req) => {
+    authed.get('/billing/invoices', { schema: invoicesQuerySchema, preHandler: requireScope('billing:read') }, async (req) => {
       const { page = 1, limit = 20 } = req.query as { page?: number; limit?: number };
       const offset = (page - 1) * limit;
       const tenantId = (req as any).tenant.tenantId as string;
@@ -292,7 +300,11 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
       return { data: rows.rows, page, limit, total: Number(count.rows[0].c) };
     });
 
-    authed.post('/billing/portal', async (req) => {
+    // B1-M2: the portal URL grants full billing management (cancel, plan
+    // changes, payment method). Dual gate: human sessions need owner/admin;
+    // API keys need the billing:write scope. Previously ANY valid API key
+    // (even sites:read-only) could mint a portal session.
+    authed.post('/billing/portal', { preHandler: requireRoleOrScope(['owner', 'admin'], 'billing:write') }, async (req) => {
       const t = await query('SELECT stripe_customer_id FROM tenants WHERE id = $1', [
         (req as any).tenant.tenantId,
       ]);

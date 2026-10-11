@@ -41,6 +41,30 @@ describe('S-10 Dockerfiles', () => {
       expect(di).toContain(entry);
     }
   });
+
+  // B2-H1: typescript is a devDependency — `npm ci --omit=dev` before the
+  // build drops tsc and `npm run build` dies. The image must install FULL,
+  // build, then prune dev deps.
+  it('backend/Dockerfile installs devDependencies for the build, prunes after', () => {
+    const code = read('backend/Dockerfile')
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+    const ciIdx = code.search(/^RUN npm ci\b/m);
+    const buildIdx = code.indexOf('npm run build');
+    expect(ciIdx).toBeGreaterThanOrEqual(0);
+    expect(buildIdx).toBeGreaterThan(ciIdx);
+    expect(code.slice(ciIdx, buildIdx)).not.toContain('--omit=dev');
+    expect(code.slice(buildIdx)).toContain('npm prune --omit=dev');
+  });
+
+  // B2-L9: the image must define a healthcheck so orchestrators can tell a
+  // wedged API from a healthy one.
+  it('backend/Dockerfile defines a HEALTHCHECK against /healthz', () => {
+    const code = read('backend/Dockerfile');
+    expect(code).toMatch(/^HEALTHCHECK/m);
+    expect(code).toContain('/healthz');
+  });
 });
 
 describe('S-10 docker-compose.yml', () => {

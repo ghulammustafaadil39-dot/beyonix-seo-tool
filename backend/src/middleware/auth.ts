@@ -12,7 +12,14 @@ import { authCookieOptions, csrfCookieOptions } from '../services/securityHeader
 import type { PlanId } from '../plans.js';
 
 export interface TenantContext {
-  userId: string;
+  /**
+   * B1-R1: null when authenticated via API key. API keys authenticate as
+   * the tenant — they have NO user, so user-scoped endpoints must not
+   * receive a pseudo-id. (The old `apikey:<uuid>` string broke Postgres
+   * UUID columns with 22P02 500s on ~15 endpoints; null is honest and
+   * type-safe. Human-only routes additionally carry requireHumanSession.)
+   */
+  userId: string | null;
   tenantId: string;
   plan: PlanId;
   email: string;
@@ -150,7 +157,9 @@ async function tenantFromApiKey(rawKey: string): Promise<{ ctx: TenantContext; s
 
   return {
     ctx: {
-      userId: `apikey:${row.id as string}`,
+      // B1-R1: API keys carry no user — userId is null, never the old
+      // `apikey:<uuid>` pseudo-id (which 500'd on UUID columns).
+      userId: null,
       tenantId: row.tenant_id as string,
       plan: row.plan_id as PlanId,
       email: '',

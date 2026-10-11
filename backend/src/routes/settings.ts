@@ -5,7 +5,7 @@ import { query } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
 import { usageSummary } from '../metering.js';
 import { authPlugin } from '../middleware/auth.js';
-import { requireRole } from '../middleware/access.js';
+import { requireRole, requireScope } from '../middleware/access.js';
 import { getPayments } from '../providers/stripe.js';
 import { getGoogle } from '../providers/google.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
@@ -48,7 +48,9 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
     await authPlugin(authed);
 
-    authed.get('/settings', async (req) => {
+    // B1-M1: exposes notify_email / telegram_chat_id / plan — API keys
+    // need settings:read (session users pass through).
+    authed.get('/settings', { preHandler: requireScope('settings:read') }, async (req) => {
       const r = await query(`SELECT ${SETTINGS_COLS} FROM tenants WHERE id = $1`, [req.tenant.tenantId]);
       return toSettings(r.rows[0]);
     });
@@ -111,12 +113,14 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
       return toSettings(r.rows[0]);
     });
 
-    authed.get('/usage', async (req) => {
+    // B1-M1: plan/usage summary — API keys need settings:read.
+    authed.get('/usage', { preHandler: requireScope('settings:read') }, async (req) => {
       return { limits: await usageSummary(req.tenant.tenantId, req.tenant.plan) };
     });
 
     // N-A2-7 / frozen contract §3.2: every provider reports mock/real mode.
-    authed.get('/settings/providers', async () => {
+    // B1-M1: API keys need settings:read.
+    authed.get('/settings/providers', { preHandler: requireScope('settings:read') }, async () => {
       const payments = getPayments();
       return {
         providers: [

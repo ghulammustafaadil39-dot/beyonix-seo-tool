@@ -6,7 +6,7 @@ import { query } from '../db.js';
 import { notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
 import { weekStart } from '../services/reportJobs.js';
-import { enqueue, QUEUES, Jobs } from '../queues.js';
+import { enqueue, enqueueDeduped, QUEUES, Jobs } from '../queues.js';
 import { config } from '../config.js';
 import { checkLimit } from '../metering.js';
 import { generateReport, collectReportData } from '../services/reporter.js';
@@ -71,13 +71,16 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
-      await enqueue(
+      // B1-M3: report dedupe honestly — a repeat click in the same week
+      // must not get a fake `{queued:true}`.
+      const { deduplicated } = await enqueueDeduped(
         QUEUES.report,
         Jobs.WEEKLY_REPORT,
         { siteId: site.id, tenantId: site.tenant_id },
-        { idempotencyKey: `report:${site.id}:${weekStart()}` },
+        `report:${site.id}:${weekStart()}`,
+        7 * 86400,
       );
-      return { ok: true, queued: true };
+      return deduplicated ? { ok: true, queued: false, deduplicated: true } : { ok: true, queued: true };
     });
 
     // ---- F-08: white-label reports ----

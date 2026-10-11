@@ -477,18 +477,50 @@ export async function importKeywords(
   const locationCode = await siteLocation(siteId, tenantId, q);
   const metrics = await getKeywordMetrics(tenantId, kws, q, undefined, locationCode);
   const groupMap = groupKeywords(metrics.map((m) => m.keyword.toLowerCase().trim()).filter(Boolean));
-  let imported = 0;
+  // Dedupe defensively (metrics must not repeat a keyword, but the batch
+  // VALUES list must never contain two rows for one (site_id, keyword)
+  // anyway) and drop empties.
+  const seen = new Set<string>();
+  const rows: Array<{ keyword: string; volume: number | null; difficulty: number | null }> = [];
   for (const m of metrics) {
     const keyword = m.keyword.toLowerCase().trim();
-    if (!keyword) continue;
+    if (!keyword || seen.has(keyword)) continue;
+    seen.add(keyword);
+    rows.push({ keyword, volume: m.volume, difficulty: m.difficulty });
+  }
+  // B1-7: batch the upserts — one statement per 500 rows instead of one
+  // round trip per keyword (the same N+1 class as the A1-L1 backlinks fix).
+  let imported = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const batch = rows.slice(i, i + 500);
+    const values: string[] = [];
+    const params: unknown[] = [];
+    batch.forEach((row, j) => {
+      const o = j * 8;
+      values.push(
+        `(gen_random_uuid(), $${o + 1}, $${o + 2}, $${o + 3}, $${o + 4}, $${o + 5}, $${o + 6}, $${o + 7}, 'import', $${o + 8})`,
+      );
+      params.push(
+        tenantId,
+        siteId,
+        row.keyword,
+        row.volume,
+        row.difficulty,
+        classifyIntent(row.keyword),
+        priorityScore(row.volume, row.difficulty),
+        groupMap.get(row.keyword) ?? 'misc',
+      );
+    });
     const r = await q(
       `INSERT INTO keywords (id, tenant_id, site_id, keyword, volume, difficulty, intent, priority_score, added_from, group_key)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'import', $8)
+       VALUES ${values.join(', ')}
        ON CONFLICT (site_id, keyword) DO NOTHING
        RETURNING id`,
-      [tenantId, siteId, keyword, m.volume, m.difficulty, classifyIntent(keyword), priorityScore(m.volume, m.difficulty), groupMap.get(keyword) ?? 'misc'],
+      params,
     );
-    if (r.rows.length > 0) imported++;
+    imported += r.rows.length;
   }
+  // skipped = every parsed keyword that did not become a new row: no-data
+  // drops from getKeywordMetrics, dupes, and already-tracked conflicts.
   return { imported, skipped: kws.length - imported };
 }

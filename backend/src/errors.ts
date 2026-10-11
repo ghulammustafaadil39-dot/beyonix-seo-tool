@@ -25,6 +25,18 @@ export function errorEnvelope(err: unknown, requestId?: string) {
   // Frozen contract: validation errors → 400 VALIDATION_ERROR (N-A1-1).
   const fErr = err as { code?: string; validation?: unknown[] } | null | undefined;
   if (fErr?.code === 'FST_ERR_VALIDATION' || Array.isArray(fErr?.validation)) {
+    // B2-L4: raw `validation` items carry schema internals (schemaPath,
+    // params — incl. regex patterns and allowed-value lists). In
+    // production only the failing field path + message go out; the full
+    // items stay in dev/test where they help debugging.
+    const raw = fErr.validation ?? [];
+    const details =
+      process.env.NODE_ENV === 'production'
+        ? (raw as Array<{ instancePath?: string; message?: string }>).map((v) => ({
+            instancePath: v?.instancePath ?? '',
+            message: v?.message ?? 'invalid value',
+          }))
+        : raw;
     return {
       status: 400,
       body: {
@@ -32,7 +44,7 @@ export function errorEnvelope(err: unknown, requestId?: string) {
         error: {
           code: 'VALIDATION_ERROR',
           message: 'Request validation failed',
-          details: fErr.validation ?? [],
+          details,
           ...rid,
         },
       },

@@ -9,7 +9,7 @@ import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query as defaultQuery } from '../db.js';
 import { notFound, badRequest } from '../errors.js';
 import { requireSite } from '../services/sites.js';
-import { enqueue, QUEUES, Jobs } from '../queues.js';
+import { enqueue, enqueueDeduped, QUEUES, Jobs } from '../queues.js';
 import { positionVisibility, siteVisibilityShare, competitorPositions } from '../services/rankMetrics.js';
 import { DEFAULT_TRACKING } from '../services/rankJobs.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
@@ -398,10 +398,10 @@ export function registerRankRoutes(fastify: FastifyInstance) {
         const { tenantId } = req.tenant;
         const siteId = req.params.id;
         await requireSite(tenantId, siteId);
-        await enqueue(QUEUES.rankCheck, Jobs.RANK_CHECK, { siteId, tenantId }, {
-          idempotencyKey: `rank:${siteId}:${new Date().toISOString().slice(0, 10)}`,
-        });
-        return { ok: true, queued: true };
+        // B1-M3: report dedupe honestly — a repeat click in the same day
+        // must not get a fake `{queued:true}`.
+        const { deduplicated } = await enqueueDeduped(QUEUES.rankCheck, Jobs.RANK_CHECK, { siteId, tenantId }, `rank:${siteId}:${new Date().toISOString().slice(0, 10)}`);
+        return deduplicated ? { ok: true, queued: false, deduplicated: true } : { ok: true, queued: true };
       },
     );
   });

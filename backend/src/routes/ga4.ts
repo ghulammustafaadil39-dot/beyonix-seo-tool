@@ -4,7 +4,7 @@ import { encrypt } from '../crypto.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
-import { requireRoleOrScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { getGoogle, isMockGoogleAllowed } from '../providers/google.js';
 import {
   OAUTH_STATE_COOKIE,
@@ -85,7 +85,8 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
     });
 
     // List GA4 properties the connected Google account can access.
-    authed.get('/sites/:id/ga4/properties', { schema: { params: idParamSchema } }, async (req) => {
+    // B1-M1: GA4 traffic data is sensitive — API keys need ga4:read.
+    authed.get('/sites/:id/ga4/properties', { schema: { params: idParamSchema }, preHandler: requireScope('ga4:read') }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       if (!site.gsc_refresh_token_enc) {
@@ -125,7 +126,8 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
 
     // Traffic overview for the last 28 days: sessions/users/pageviews,
     // top pages and top referrers.
-    authed.get('/sites/:id/ga4/overview', { schema: { params: idParamSchema } }, async (req) => {
+    // B1-M1: API keys need ga4:read.
+    authed.get('/sites/:id/ga4/overview', { schema: { params: idParamSchema }, preHandler: requireScope('ga4:read') }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       if (!site.ga4_connected || !site.ga4_property_id || !site.gsc_refresh_token_enc) {
