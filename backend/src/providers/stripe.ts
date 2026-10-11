@@ -111,18 +111,18 @@ export async function applyPaymentEvent(
   const { type, data } = evt;
   if (type === 'checkout.session.completed') {
     let tenantId: string | undefined = data.metadata?.tenantId ?? data.tenant_id;
-    // Security review: never trust an unvalidated plan id — an unsigned mock
-    // webhook (or a tampered event) could otherwise escalate any tenant.
-    const rawPlanId = data.metadata?.planId ?? data.plan_id;
-    if (!tenantId || !isPlanId(rawPlanId)) return;
-    const planId: PlanId = rawPlanId;
     const customerId: string | undefined = data.customer;
     const subId: string | undefined = data.subscription;
     if (!tenantId && customerId) {
       const t = await q(`SELECT id FROM tenants WHERE stripe_customer_id = $1`, [customerId]);
       tenantId = t.rows[0]?.id;
     }
-    if (!tenantId || !planId) return;
+    // Security review: never trust an unvalidated plan id — an unsigned mock
+    // webhook (or a tampered event) could otherwise escalate any tenant.
+    // (Lookup runs first so customerId-resolved tenants aren't skipped.)
+    const rawPlanId = data.metadata?.planId ?? data.plan_id;
+    if (!tenantId || !isPlanId(rawPlanId)) return;
+    const planId: PlanId = rawPlanId;
     await q(
       `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, stripe_customer_id, plan_id, status, current_period_end)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, 'active', now() + interval '30 days')

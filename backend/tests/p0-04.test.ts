@@ -236,8 +236,10 @@ describe('P0-04 checkout plan guard', () => {
       data: { metadata: { tenantId: 't-victim', planId }, subscription: 'sub_x' },
     });
     await applyPaymentEvent(evt('pro'), q as any);
-    expect(writes.length).toBe(1);
+    // subscriptions INSERT + tenants UPDATE, both carrying the validated plan
+    expect(writes.length).toBe(2);
     expect((writes[0][1] as unknown[])[3]).toBe('pro');
+    expect((writes[1][1] as unknown[])[1]).toBe('pro');
     writes.length = 0;
     await applyPaymentEvent(evt('enterprise'), q as any);
     expect(writes.length).toBe(0);
