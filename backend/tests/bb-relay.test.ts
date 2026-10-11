@@ -132,7 +132,11 @@ describe('LA relay integrations', () => {
     await recordProviderSpend(tenantId, 'dataforseo', 'serp', 7, 0);
     const spend = await getProviderSpend(tenantId, { provider: 'dataforseo', feature: 'serp' });
     expect(spend.units).toBe(7);
-    expect(spend.costCents).toBe(0);
+    // C5-M-3 (Wave-4 Pass#3 BE-2): unpriced units are priced from the default
+    // per-feature table — recording everything at 0 made the
+    // GLOBAL_PROVIDER_DAILY_CAP_CENTS circuit a dead knob. 7 serp units at
+    // 0.2c/unit = 1.4c, ceiled to 2c (integer cost_cents column).
+    expect(spend.costCents).toBe(2);
   });
 
   it('returns VALIDATION_ERROR for invalid input (sweep)', async () => {
