@@ -1,9 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { encrypt } from '../crypto.js';
+import { hasSmtp, hasTelegram } from '../config.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { usageSummary } from '../metering.js';
 import { authPlugin } from '../middleware/auth.js';
+import { getPayments } from '../providers/stripe.js';
+import { getGoogle } from '../providers/google.js';
+import { getKeywordSerpProvider } from '../providers/dataforseo.js';
+import { getLLM } from '../providers/llm.js';
 
 const SETTINGS_COLS =
   'name, plan_id, notify_email, telegram_chat_id, llm_provider, (llm_api_key_enc IS NOT NULL) AS llm_key_set';
@@ -79,6 +84,33 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
 
     authed.get('/usage', async (req) => {
       return { limits: await usageSummary(req.tenant.tenantId, req.tenant.plan) };
+    });
+
+    // N-A2-7 / frozen contract §3.2: every provider reports mock/real mode.
+    authed.get('/settings/providers', async () => {
+      const payments = getPayments();
+      return {
+        providers: [
+          { name: 'payments', impl: payments.name, mode: payments.isMock ? 'mock' : 'real' },
+          { name: 'google', impl: getGoogle().name, mode: getGoogle().isMock ? 'mock' : 'real' },
+          {
+            name: 'keyword_serp',
+            impl: getKeywordSerpProvider().name,
+            mode: getKeywordSerpProvider().isMock ? 'mock' : 'real',
+          },
+          { name: 'llm', impl: getLLM().name, mode: getLLM().isMock ? 'mock' : 'real' },
+          {
+            name: 'notify_email',
+            impl: hasSmtp() ? 'smtp' : 'mock-log',
+            mode: hasSmtp() ? 'real' : 'mock',
+          },
+          {
+            name: 'notify_telegram',
+            impl: hasTelegram() ? 'telegram' : 'mock-log',
+            mode: hasTelegram() ? 'real' : 'mock',
+          },
+        ],
+      };
     });
   });
 }

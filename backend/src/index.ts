@@ -11,8 +11,18 @@ import { createRateLimitStore } from './services/redisRateLimitStore.js';
 import { apiSecurityHeaders, parseCorsOrigins } from './services/securityHeaders.js';
 import { csrfGuard } from './middleware/csrf.js';
 import { errorEnvelope } from './errors.js';
+import { recordRouteForDocs } from './services/openapi.js';
+import { registerDefaultBillingHooks } from './services/billing.js';
+import { wireDefaultUsageAlerts } from './services/notifications.js';
+import { closeRedis } from './redis.js';
+import { installGracefulShutdown } from './shutdown.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerBillingRoutes } from './routes/billing.js';
+import { registerAccountRoutes } from './routes/account.js';
+import { registerAdminRoutes } from './routes/admin.js';
+import { registerApiKeyRoutes } from './routes/apikeys.js';
+import { registerWebhookRoutes } from './routes/webhooks.js';
+import { registerOpenApiRoutes } from './routes/openapi.js';
 import { registerSitesRoutes } from './routes/sites.js';
 import { registerGscRoutes } from './routes/gsc.js';
 import { registerGa4Routes } from './routes/ga4.js';
@@ -77,6 +87,17 @@ export async function buildApp() {
     reply.status(status).send(body);
   });
 
+  // C-07 / N-A2-8: collect every route's schema for the generated OpenAPI
+  // spec. Registered before any routes so it sees all of them (including
+  // routes added later by other teams).
+  app.addHook('onRoute', (opts) => {
+    recordRouteForDocs({
+      method: Array.isArray(opts.method) ? opts.method.join(',') : (opts.method as string),
+      url: opts.url as string,
+      schema: opts.schema as any,
+    });
+  });
+
   // Unknown routes also get the contract envelope (with requestId), not
   // fastify's default 404 shape.
   app.setNotFoundHandler((req, reply) => {
@@ -122,6 +143,11 @@ export async function buildApp() {
       // and the API server never finishes booting (found by audit smoke test).
       await registerAuthRoutes(v1);
       await registerBillingRoutes(v1);
+      await registerAccountRoutes(v1);
+      await registerAdminRoutes(v1);
+      await registerApiKeyRoutes(v1);
+      await registerWebhookRoutes(v1);
+      await registerOpenApiRoutes(v1);
       await registerSitesRoutes(v1);
       await registerGscRoutes(v1);
       await registerGa4Routes(v1);
@@ -143,9 +169,29 @@ export async function buildApp() {
 
 async function main() {
   await runMigrations();
+  // C-01: dunning/lifecycle emails. F-10/C-02: usage alerts -> notifications.
+  registerDefaultBillingHooks();
+  wireDefaultUsageAlerts();
   const app = await buildApp();
   await app.listen({ port: config.port, host: '0.0.0.0' });
   console.log(`[api] listening on :${config.port}`);
+
+  // C-03 / N-A2-1: graceful shutdown — finish in-flight requests before exit.
+  installGracefulShutdown([
+    {
+      name: 'http-server',
+      run: async () => {
+        await app.close();
+      },
+    },
+    {
+      name: 'redis+db',
+      run: async () => {
+        await closeRedis();
+        await pool.end();
+      },
+    },
+  ]);
 }
 
 if (process.argv[1]?.endsWith('index.js')) {

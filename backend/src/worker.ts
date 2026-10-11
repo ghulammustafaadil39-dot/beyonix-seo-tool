@@ -4,6 +4,8 @@ import { pool, runMigrations } from './db.js';
 import { startScheduler, stopScheduler } from './scheduler.js';
 import { closeRedis } from './redis.js';
 import { installGracefulShutdown } from './shutdown.js';
+import { registerDefaultBillingHooks } from './services/billing.js';
+import { wireDefaultUsageAlerts } from './services/notifications.js';
 import { crawlProcessor } from './services/crawlJobs.js';
 import { backlinkProcessor } from './services/backlinkJobs.js';
 import { rankCheckProcessor } from './services/rankJobs.js';
@@ -77,6 +79,10 @@ function workerFor(queueName: string, processor: (job: Job) => Promise<unknown>,
 
 async function main() {
   await runMigrations();
+  // The scheduler runs billing-grace + usage alerts here: the hooks must be
+  // registered in the worker process too (not just the API).
+  registerDefaultBillingHooks();
+  wireDefaultUsageAlerts();
   const workers: Worker[] = [
     workerFor(QUEUES.crawl, crawlQueueProcessor, 2),
     workerFor(QUEUES.rankCheck, rankCheckProcessor, 4),

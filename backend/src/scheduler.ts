@@ -5,6 +5,8 @@ import { getPlan } from './plans.js';
 import { createLeaderElection } from './services/leaderElection.js';
 import { processBillingGrace } from './services/billing.js';
 import { runRetentionCleanup } from './services/retention.js';
+import { processWebhookRetries } from './services/webhookDelivery.js';
+import { processDigests } from './services/notifications.js';
 
 /**
  * ISO week key, computed with UTC getters ONLY (N-A2-2). The old version
@@ -144,6 +146,22 @@ export const SCHEDULES: ScheduleDef[] = [
       const results = await runRetentionCleanup();
       const total = results.reduce((a, r) => a + r.deleted, 0);
       if (total > 0) console.log(`[scheduler] retention cleanup: deleted ${total} row(s)`, results);
+    },
+  },
+  {
+    name: 'webhook-retries',
+    cron: '*/5 * * * *', // every 5 min — signed webhook delivery retries (F-10)
+    run: async () => {
+      const n = await processWebhookRetries();
+      if (n > 0) console.log(`[scheduler] webhook retries: attempted ${n} deliverie(s)`);
+    },
+  },
+  {
+    name: 'notification-digests',
+    cron: '0 7 * * *', // daily 07:00 UTC — due digest emails (F-10)
+    run: async () => {
+      const n = await processDigests();
+      if (n > 0) console.log(`[scheduler] digests: processed ${n} user(s)`);
     },
   },
 ];
