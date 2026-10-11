@@ -52,6 +52,9 @@ export const config = {
   appUrl: opt('APP_URL', 'http://localhost:3000').replace(/\/$/, ''),
   apiUrl: opt('API_URL', 'http://localhost:4000').replace(/\/$/, ''),
   encryptionKey: opt('ENCRYPTION_KEY', ''),
+  // S-07: key versioning — "kid:hex,kid:hex,...", first entry is primary.
+  // When set, it takes precedence over the legacy single ENCRYPTION_KEY.
+  encryptionKeys: opt('ENCRYPTION_KEYS', ''),
 
   stripeSecretKey: opt('STRIPE_SECRET_KEY'),
   stripeWebhookSecret: opt('STRIPE_WEBHOOK_SECRET'),
@@ -138,6 +141,8 @@ export const KNOWN_PLACEHOLDER_SECRETS = new Set(
 export interface SecretsEnv {
   jwtSecret?: string;
   encryptionKey?: string;
+  /** S-07: raw ENCRYPTION_KEYS value ("kid:hex,kid:hex,..."). */
+  encryptionKeys?: string;
 }
 
 /**
@@ -159,7 +164,19 @@ export function validateSecrets(nodeEnv: string, secrets: SecretsEnv): void {
     throw new Error('FATAL: JWT_SECRET is a known placeholder value — set a real random secret');
   }
   const enc = (secrets.encryptionKey ?? '').trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(enc)) {
+  const encKeys = (secrets.encryptionKeys ?? '').trim();
+  if (encKeys) {
+    // S-07: versioned key set — every entry must be kid:32-byte-hex.
+    const bad = encKeys.split(',').some((part) => {
+      const idx = part.indexOf(':');
+      return idx === -1 || !/^[A-Za-z0-9_-]{1,64}$/.test(part.slice(0, idx).trim()) || !/^[0-9a-fA-F]{64}$/.test(part.slice(idx + 1).trim());
+    });
+    if (bad) {
+      throw new Error(
+        `FATAL: ENCRYPTION_KEYS must be "kid:hex,kid:hex,..." with 32-byte hex keys in ${nodeEnv}.`,
+      );
+    }
+  } else if (!/^[0-9a-fA-F]{64}$/.test(enc)) {
     throw new Error(
       `FATAL: ENCRYPTION_KEY must be a 32-byte hex string in ${nodeEnv}. Generate with: openssl rand -hex 32`,
     );
@@ -172,4 +189,5 @@ export function validateSecrets(nodeEnv: string, secrets: SecretsEnv): void {
 validateSecrets(config.nodeEnv, {
   jwtSecret: process.env.JWT_SECRET,
   encryptionKey: process.env.ENCRYPTION_KEY,
+  encryptionKeys: process.env.ENCRYPTION_KEYS,
 });

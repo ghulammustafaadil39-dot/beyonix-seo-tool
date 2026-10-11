@@ -13,6 +13,11 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['tests/*.test.ts'],
+          // NOTE: root test options are not inherited by projects in this
+          // setup — declare explicitly so unit tests get the per-worktree
+          // test env and the intended 30s timeout (bcrypt-heavy tests).
+          setupFiles: ['./tests/setup.ts'],
+          testTimeout: 30000,
         },
       },
       {

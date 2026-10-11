@@ -41,7 +41,8 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration --project integration-stripe",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "rotate-keys": "tsx scripts/rotate-encryption-keys.ts"
   },
   "type": "module",
   "version": "0.1.0"
