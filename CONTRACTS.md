@@ -438,3 +438,5 @@ on boot.
 - There are NO `PATCH /billing/email` / `DELETE /billing/subscription` endpoints: billing email is the tenant `notify_email` (GET/PATCH /settings) — the address dunning/receipts use; cancellation happens in the Stripe portal and surfaces as `cancel_at_period_end` via webhook.
 - Onboarding state: `GET/PUT /api/v1/account/sites/:siteId/onboarding` → `{ siteId, steps: [{ step, completed, completed_at }] }`; step keys incl. `connect_gsc`.
 - Team/notifications live under `/api/v1/account/*`; API keys under `/api/v1/apikeys` (create returns `key` once; prefix `bseo_` + hex).
+- Share management: `GET /api/v1/audits/:auditId/shares` and `GET /api/v1/reports/:id/shares` list ACTIVE shares (`{ data: [{ id, resource_type, resource_id, created_at, expires_at }] }`, never token/hash; scopes `audits:write` / `reports:write`); `DELETE …/shares/:tokenId` → 204, cross-tenant → 404. Revocation deletes the share_tokens row; public resolve then 404s.
+- CMS publish: WordPress `siteUrl` must be a valid https URL (else 400 `BAD_REQUEST`); delivery via safeFetch, 15s timeout; publish error messages contain the upstream STATUS only, never body content.
