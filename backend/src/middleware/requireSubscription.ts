@@ -3,11 +3,13 @@
 // LA product decision (2026-10-11): every new signup gets a SERVER-SIDE
 // 14-day trial (tenants.trial_ends_at, set at signup in routes/auth.ts)
 // with Starter quota. While the trial is live — or a subscription is
-// active/trialing/past_due/incomplete — paid features work. After the trial
-// expires with no live subscription, spend routes 402 and the tenant is
-// flipped read-only (the existing read-only machinery then blocks
-// mutations; billing/account/auth routes stay open so the user can
-// subscribe).
+// active/trialing/past_due — paid features work. F2-M-1 / E4-M-1:
+// 'incomplete' is NOT billable (the first payment never succeeded), so a
+// trial-expired tenant with only an 'incomplete' subscription gets 402s
+// like any other expired tenant. After the trial expires with no live
+// subscription, spend routes 402 and the tenant is flipped read-only
+// (the existing read-only machinery then blocks mutations;
+// billing/account/auth routes stay open so the user can subscribe).
 //
 // NULL trial_ends_at = grandfathered (pre-trial tenants: seed/demo/existing
 // rows backfilled far-future by migration 044). A tenant whose trial is
@@ -16,8 +18,10 @@
 //
 // Wiring (preHandler arrays — add alongside requireVerifiedEmail):
 //   keywords.ts, ranks.ts, content.ts, geo.ts, audit.ts, reports.ts,
-//   competitors.ts, backlinks.ts (all routes carrying requireVerifiedEmail
-//   for paid use), e.g.
+//   competitors.ts, backlinks.ts, onpage.ts — EVERY route that spends
+//   provider budget (LLM / DataForSEO / crawl), whether or not it carries
+//   requireVerifiedEmail (onpage.ts never did — that's the heuristic that
+//   let it slip through the gate in E1-H-1), e.g.
 //     preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, ...]
 // Do NOT add to /billing/checkout or /billing/portal — those are how an
 // expired-trial user subscribes.
