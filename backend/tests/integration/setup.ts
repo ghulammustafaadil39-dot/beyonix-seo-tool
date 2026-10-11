@@ -15,7 +15,9 @@ const profile = process.env.INTEGRATION_PROFILE ?? 'default';
 const isStripe = profile === 'stripe';
 
 process.env.NODE_ENV = 'test';
-process.env.DATABASE_URL = 'postgres://bseo:bseo@localhost:5432/bseo_test';
+// LA directive: DATABASE_URL comes from the environment when set (per-session
+// test DB, e.g. bseo_test_qa); fallback is the shared bseo_test database.
+process.env.DATABASE_URL ??= 'postgres://bseo:bseo@localhost:5432/bseo_test';
 process.env.REDIS_URL = 'redis://localhost:6379/1';
 process.env.JWT_SECRET = 'test-jwt-secret-32-chars-minimum-ok!!';
 process.env.ENCRYPTION_KEY =
@@ -61,4 +63,24 @@ const { ensureMigrated } = await import('./helpers/db.js');
 const { FakeSmtpCatcher, FakeWebhookCatcher, registerFakes } = await import('./helpers/fakes.js');
 
 await ensureMigrated();
-registerFakes(await FakeSmtpCatcher.start(smtpPort), await FakeWebhookCatcher.start(hookPort));
+// Vitest re-executes setupFiles once per TEST FILE (isolate:true) inside the
+// same worker process. The fake TCP servers can only bind their ports once
+// per process, so start them once and share the instances across files via
+// globalThis (each file's own module registry still gets them through
+// registerFakes()). Keyed by profile so the `stripe` project (separate
+// worker process) keeps its own catchers on the stripe ports.
+// NOTE for test authors: catcher message/request arrays are shared across
+// files in a project — call .clear() in beforeEach when asserting on them.
+const g = globalThis as Record<string, unknown>;
+const fakesKey = `__bseoFakes_${profile}`;
+let fakes = g[fakesKey] as
+  | { smtp: FakeSmtpCatcher; hook: FakeWebhookCatcher }
+  | undefined;
+if (!fakes) {
+  fakes = {
+    smtp: await FakeSmtpCatcher.start(smtpPort),
+    hook: await FakeWebhookCatcher.start(hookPort),
+  };
+  g[fakesKey] = fakes;
+}
+registerFakes(fakes.smtp, fakes.hook);
