@@ -1,0 +1,233 @@
+import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
+import { decrypt, encrypt } from '../crypto.js';
+import { query as defaultQuery, type QueryFn } from '../db.js';
+import { isBlockedIp, isLoopbackBypassActive } from './safeFetch.js';
+import { CircuitBreaker } from './circuitBreaker.js';
+
+// ---------------------------------------------------------------------------
+// F-10: outbound webhooks — SIGNED delivery with retries and replay.
+// ---------------------------------------------------------------------------
+
+/** Retry schedule after each failed attempt (C-03/F-10). */
+const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3_600_000, 12 * 3_600_000];
+const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
+
+const breakers = new Map<string, CircuitBreaker>();
+function breakerFor(host: string): CircuitBreaker {
+  let b = breakers.get(host);
+  if (!b) {
+    b = new CircuitBreaker(`webhook:${host}`, { failureThreshold: 5, resetTimeoutMs: 60_000 });
+    breakers.set(host, b);
+  }
+  return b;
+}
+
+/**
+ * SSRF validation for customer-supplied webhook URLs (F-10, SECURITY-
+ * SENSITIVE — Security Lead review required). Rejects non-http(s)
+ * schemes, embedded credentials, and any hostname that resolves to a
+ * blocked IP (private/loopback/link-local/etc. via safeFetch's
+ * isBlockedIp). Re-validated at delivery time (per-attempt), not just at
+ * registration, to blunt DNS-rebinding.
+ */
+export async function validateWebhookUrl(rawUrl: string): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error('Invalid webhook URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Webhook URL must use http(s)');
+  }
+  if (url.username || url.password) {
+    throw new Error('Webhook URL must not embed credentials');
+  }
+  let records: Array<{ address: string }>;
+  try {
+    records = await dns.lookup(url.hostname, { all: true });
+  } catch {
+    throw new Error('Webhook URL hostname does not resolve');
+  }
+  const allowLoopback = isLoopbackBypassActive(process.env.NODE_ENV ?? '');
+  for (const r of records) {
+    if (isBlockedIp(r.address, { allowLoopback })) {
+      throw new Error(`SSRF blocked: webhook host resolves to a private address (${r.address})`);
+    }
+  }
+  return url;
+}
+
+/** Signs a delivery: `X-BSEO-Signature: sha256=<hmac(secret, ts.body)>`. */
+export function signWebhookDelivery(secret: string, timestamp: number, body: string): string {
+  return `sha256=${crypto.createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex')}`;
+}
+
+/** Verifies a delivery signature (used by tests + receiver docs). */
+export function verifyWebhookSignature(
+  secret: string,
+  timestamp: number,
+  body: string,
+  signature: string,
+): boolean {
+  const expected = signWebhookDelivery(secret, timestamp, body);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+export interface WebhookEndpoint {
+  id: string;
+  tenant_id: string;
+  url: string;
+  secret_enc: string;
+  events: string[];
+  enabled: boolean;
+}
+
+/**
+ * Emits an event to every enabled endpoint of the tenant subscribed to it.
+ * Creates 'pending' delivery rows; processWebhookRetries() (scheduler, every
+ * 5 min) performs the actual HTTP delivery with retries.
+ */
+export async function emitWebhookEvent(
+  tenantId: string,
+  event: string,
+  payload: Record<string, unknown>,
+  q: QueryFn = defaultQuery,
+): Promise<number> {
+  const eps = await q(
+    `SELECT id FROM webhook_endpoints
+     WHERE tenant_id = $1 AND enabled = TRUE AND $2 = ANY(events)`,
+    [tenantId, event],
+  );
+  let n = 0;
+  for (const ep of eps.rows) {
+    await q(
+      `INSERT INTO webhook_deliveries (id, endpoint_id, tenant_id, event, payload, status, attempts, next_retry_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, 'pending', 0, now())`,
+      [ep.id, tenantId, event, JSON.stringify({ event, ...payload })],
+    );
+    n += 1;
+  }
+  return n;
+}
+
+async function deliverOne(
+  q: QueryFn,
+  delivery: { id: string; event: string; payload: any },
+  endpoint: WebhookEndpoint,
+): Promise<void> {
+  // SSRF re-validation at delivery time (DNS may have changed since
+  // registration).
+  const url = await validateWebhookUrl(endpoint.url);
+  const secret = decrypt(endpoint.secret_enc);
+  const body = JSON.stringify(delivery.payload);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = signWebhookDelivery(secret, timestamp, body);
+
+  await breakerFor(url.host).exec(async () => {
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-BSEO-Event': delivery.event,
+        'X-BSEO-Delivery': delivery.id,
+        'X-BSEO-Timestamp': String(timestamp),
+        'X-BSEO-Signature': signature,
+        'User-Agent': 'Beyonix-SEO-Webhooks/1.0',
+      },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 500);
+      throw new Error(`webhook HTTP ${res.status}: ${text}`);
+    }
+  });
+
+  await q(
+    `UPDATE webhook_deliveries SET status = 'delivered', delivered_at = now(), last_error = NULL
+     WHERE id = $1`,
+    [delivery.id],
+  );
+}
+
+/**
+ * Delivers due webhook retries (called from the scheduler every 5 min, and
+ * directly by tests). Returns the number of deliveries attempted.
+ */
+export async function processWebhookRetries(q: QueryFn = defaultQuery): Promise<number> {
+  const due = await q(
+    `SELECT d.id, d.event, d.payload, d.attempts, d.endpoint_id,
+            e.url, e.secret_enc, e.tenant_id
+     FROM webhook_deliveries d
+     JOIN webhook_endpoints e ON e.id = d.endpoint_id
+     WHERE d.status = 'pending' AND d.next_retry_at <= now()
+     ORDER BY d.next_retry_at ASC
+     LIMIT 100`,
+  );
+  let attempted = 0;
+  for (const row of due.rows) {
+    attempted += 1;
+    const attempts = Number(row.attempts) + 1;
+    try {
+      await deliverOne(q, { id: row.id, event: row.event, payload: row.payload }, {
+        id: row.endpoint_id,
+        tenant_id: row.tenant_id,
+        url: row.url,
+        secret_enc: row.secret_enc,
+        events: [],
+        enabled: true,
+      });
+    } catch (err) {
+      const message = (err as Error)?.message?.slice(0, 1000) ?? String(err);
+      if (attempts >= MAX_ATTEMPTS) {
+        await q(
+          `UPDATE webhook_deliveries SET status = 'failed', attempts = $2, last_error = $3 WHERE id = $1`,
+          [row.id, attempts, message],
+        );
+      } else {
+        const nextRetry = new Date(Date.now() + RETRY_DELAYS_MS[attempts - 1]);
+        await q(
+          `UPDATE webhook_deliveries SET attempts = $2, next_retry_at = $3, last_error = $4 WHERE id = $1`,
+          [row.id, attempts, nextRetry.toISOString(), message],
+        );
+      }
+    }
+  }
+  return attempted;
+}
+
+/** Replays a delivery (admin/owner): resets it to pending for redelivery. */
+export async function replayDelivery(
+  tenantId: string,
+  deliveryId: string,
+  q: QueryFn = defaultQuery,
+): Promise<boolean> {
+  const r = await q(
+    `UPDATE webhook_deliveries SET status = 'pending', attempts = 0,
+       next_retry_at = now(), last_error = NULL
+     WHERE id = $1 AND tenant_id = $2 AND status IN ('failed', 'delivered')`,
+    [deliveryId, tenantId],
+  );
+  return (r.rowCount ?? 0) > 0;
+}
+
+/** Registers a tenant webhook endpoint (URL SSRF-validated). Returns the id + raw secret (shown once). */
+export async function registerWebhookEndpoint(
+  tenantId: string,
+  url: string,
+  events: string[],
+  q: QueryFn = defaultQuery,
+): Promise<{ id: string; secret: string }> {
+  await validateWebhookUrl(url);
+  const secret = crypto.randomBytes(32).toString('hex');
+  const r = await q(
+    `INSERT INTO webhook_endpoints (id, tenant_id, url, secret_enc, events, enabled)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, TRUE) RETURNING id`,
+    [tenantId, url, encrypt(secret), events],
+  );
+  return { id: r.rows[0].id as string, secret };
+}
