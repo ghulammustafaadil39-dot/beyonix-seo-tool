@@ -56,6 +56,7 @@ import {
   revokeAllSessions,
   revokeSession,
 } from '../services/sessions.js';
+import { newTenantTrialEndsAt } from '../services/billing.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -166,10 +167,10 @@ async function createGoogleUser(
   try {
     await client.query('BEGIN');
     const t = await client.query(
-      `INSERT INTO tenants (id, name, plan_id)
-       VALUES (gen_random_uuid(), $1, 'starter')
+      `INSERT INTO tenants (id, name, plan_id, trial_ends_at)
+       VALUES (gen_random_uuid(), $1, 'starter', $2)
        RETURNING id`,
-      [profile.name],
+      [profile.name, newTenantTrialEndsAt()],
     );
     const tenantId = t.rows[0].id as string;
     const u = await client.query(
@@ -274,10 +275,10 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     try {
       await client.query('BEGIN');
       const t = await client.query(
-        `INSERT INTO tenants (id, name, plan_id)
-         VALUES (gen_random_uuid(), $1, 'starter')
+        `INSERT INTO tenants (id, name, plan_id, trial_ends_at)
+         VALUES (gen_random_uuid(), $1, 'starter', $2)
          RETURNING id, name, plan_id`,
-        [displayName],
+        [displayName, newTenantTrialEndsAt()],
       );
       const tenantId = t.rows[0].id as string;
       const pwHash = await hashPassword(password);
@@ -526,9 +527,12 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post('/auth/logout', async (req, reply) => {
-    // Revoke the session server-side too (revokes the jti session and bumps
-    // token_version so the JWT stops working even if copied). Best-effort:
-    // the cookie is always cleared.
+    // D1-M-1: plain logout revokes ONLY the current session (jti-scoped).
+    // The old code called revokeAllSessions (logout-everywhere semantics)
+    // despite the comment claiming jti-scoped revocation; "log out
+    // everywhere" lives at POST /auth/logout-everywhere. token_version is
+    // deliberately NOT bumped — that would kill every other device's
+    // session too. Best-effort: the cookie is always cleared.
     try {
       const h = req.headers.authorization;
       const token = h?.startsWith('Bearer ')
@@ -536,8 +540,17 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
         : (req as any).cookies?.['bseo_token'];
       if (token) {
         const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as any;
-        if (payload?.uid) {
-          await revokeAllSessions(payload.uid as string);
+        const uid = payload?.uid as string | undefined;
+        const jti = payload?.jti as string | undefined;
+        if (uid && jti) {
+          const s = await query(
+            'SELECT id FROM user_sessions WHERE user_id = $1 AND jti_hash = $2 AND revoked_at IS NULL',
+            [uid, hashJti(jti)],
+          );
+          const sessionId = s.rows[0]?.id as string | undefined;
+          // Session-less legacy tokens have no row — nothing server-side
+          // to revoke; the cleared cookie ends the session regardless.
+          if (sessionId) await revokeSession(uid, sessionId);
         }
       }
     } catch {

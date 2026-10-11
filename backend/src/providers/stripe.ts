@@ -512,6 +512,13 @@ export async function applyPaymentEvent(
       );
       if ((red.rowCount ?? 0) === 0) {
         console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted, inactive, or unknown at completion`);
+        // D5-L-1: the reserved hold must be released even when the redeem
+        // predicate fails (e.g. admin deactivated the coupon mid-flight) —
+        // otherwise the slot leaks against max_redemptions forever.
+        await q(
+          `UPDATE billing_coupons SET reserved_count = GREATEST(reserved_count - 1, 0) WHERE code = $1`,
+          [couponCode.toUpperCase()],
+        );
       }
     }
     const { emitBillingEvent } = await import('../services/billing.js');
@@ -566,6 +573,14 @@ export async function applyPaymentEvent(
         `[billing] UNRESOLVED_STRIPE_PRICE: price ${priceId} on subscription ${subId} ` +
           `for tenant ${tenantId} maps to no plan — refusing to write plan state (C5-M-2)`,
       );
+      // D5-M-1: do NOT leave the idempotency-ledger row behind. A retained
+      // unprocessed row turns every Stripe retry into a permanent
+      // deduplicated no-op (the tenant would be billed the higher price
+      // while stuck on the old plan forever). Deleting the row lets the
+      // retry re-insert and reprocess once ops configures the price.
+      if (eventId) {
+        await q(`DELETE FROM stripe_webhook_events WHERE event_id = $1`, [eventId]);
+      }
       throw new ApiError(
         502,
         'PRICE_NOT_CONFIGURED',
@@ -683,24 +698,71 @@ export async function applyPaymentEvent(
     const { emitBillingEvent, graceDeadline } = await import('../services/billing.js');
     if (paid) {
       // Recovery: a paid invoice clears past_due + grace.
-      await q(
-        `UPDATE subscriptions SET status = 'active', grace_until = NULL
-         WHERE tenant_id = $1 AND status = 'past_due'`,
-        [tenantId],
-      );
+      // D1-H-1 / D5-M-2: reconcile with Stripe — recover from a LOCAL
+      // 'canceled' too when the invoice proves the Stripe subscription is
+      // still alive (the subscription id on the invoice matches the stored
+      // one). Otherwise a payer whose Stripe retry succeeded after a local
+      // downgrade keeps paying while the product shows Starter. The plan is
+      // re-resolved from the invoice's price so the product matches what
+      // Stripe billed.
+      const { id: invSubId } = subObject(data);
+      const curSub = await q(`SELECT status, stripe_sub_id, plan_id FROM subscriptions WHERE tenant_id = $1`, [
+        tenantId,
+      ]);
+      const curStatus = curSub.rows[0]?.status as string | undefined;
+      if (curStatus === 'past_due' || curStatus === 'incomplete') {
+        await q(`UPDATE subscriptions SET status = 'active', grace_until = NULL WHERE tenant_id = $1`, [
+          tenantId,
+        ]);
+      } else if (
+        curStatus === 'canceled' &&
+        invSubId &&
+        invSubId === (curSub.rows[0]?.stripe_sub_id as string | undefined)
+      ) {
+        const invPriceId: string | undefined = data.lines?.data?.[0]?.price?.id;
+        const planFromEvent =
+          planIdFromStripePrice(invPriceId) ?? (isPlanId(data.metadata?.planId) ? data.metadata.planId : null);
+        if (planFromEvent) {
+          await q(
+            `UPDATE subscriptions SET status = 'active', plan_id = $2, grace_until = NULL WHERE tenant_id = $1`,
+            [tenantId, planFromEvent],
+          );
+          await q(`UPDATE tenants SET plan_id = $2 WHERE id = $1`, [tenantId, planFromEvent]);
+          const { recomputeReadOnly } = await import('../services/billing.js');
+          await recomputeReadOnly(tenantId, planFromEvent, q);
+        } else {
+          // The invoice proves the subscription is alive but carries no
+          // resolvable plan — revive the status, keep the stored plan, and
+          // log loudly for ops instead of guessing.
+          console.error(
+            `[billing] invoice.paid for locally-canceled subscription ${invSubId} ` +
+              `(tenant ${tenantId}): no resolvable plan on the invoice — status revived, plan kept`,
+          );
+          await q(`UPDATE subscriptions SET status = 'active', grace_until = NULL WHERE tenant_id = $1`, [
+            tenantId,
+          ]);
+        }
+      }
       await emitBillingEvent({ type: 'invoice.paid', tenantId, detail: { invoiceId, amount } });
     } else {
-      const cur = await q(`SELECT grace_until FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+      const cur = await q(`SELECT status, grace_until FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
       const existingGrace = cur.rows[0]?.grace_until as string | null | undefined;
-      if (!existingGrace) {
+      const curStatus = cur.rows[0]?.status as string | undefined;
+      if (curStatus === 'past_due' && !existingGrace) {
+        // D1-H-1: grace already consumed (post-downgrade) and Stripe is
+        // still retrying. Do NOT mint a fresh grace or re-dun — that would
+        // restart the downgrade cycle on every failed retry. Just record
+        // the invoice; a later invoice.paid recovers via the branch above.
+      } else if (!existingGrace) {
         await q(`UPDATE subscriptions SET status = 'past_due', grace_until = $2 WHERE tenant_id = $1`, [
           tenantId,
           graceDeadline(),
         ]);
+        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount } });
       } else {
         await q(`UPDATE subscriptions SET status = 'past_due' WHERE tenant_id = $1`, [tenantId]);
+        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount } });
       }
-      await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount } });
     }
   } else if (type === 'charge.refunded') {
     const invoiceId: string | undefined =

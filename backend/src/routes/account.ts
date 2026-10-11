@@ -629,10 +629,12 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       // the pre-move cookie 401s after the move (tenant binding), so the
       // fresh token MUST also land in the httpOnly session cookie (+ CSRF
       // cookie), or browser users would have to re-login after accepting.
-      // The body token stays for API clients.
+      // D3-M-1: the session JWT is delivered ONLY via the httpOnly cookie —
+      // never in the JSON body (A3-H1 cookie-only policy; the page never
+      // read res.token). API clients re-authenticate after the tenant move.
       setAuthCookie(reply, fresh);
       setCsrfCookie(reply, issueCsrfToken());
-      return { ok: true, tenantId: acceptedTenantId, role: acceptedRole, token: fresh };
+      return { ok: true, tenantId: acceptedTenantId, role: acceptedRole };
     });
 
     // ---- Client workspaces (F-09) ----
