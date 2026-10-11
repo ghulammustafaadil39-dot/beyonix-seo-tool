@@ -5,6 +5,7 @@ import { query } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
 import { usageSummary } from '../metering.js';
 import { authPlugin } from '../middleware/auth.js';
+import { requireRole } from '../middleware/access.js';
 import { getPayments } from '../providers/stripe.js';
 import { getGoogle } from '../providers/google.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
@@ -52,7 +53,13 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
       return toSettings(r.rows[0]);
     });
 
-    authed.patch('/settings', { schema: patchSettingsSchema }, async (req) => {
+    // SEC-FIX (Wave-3): the whole PATCH is owner/admin-only. The handler
+    // mixes cosmetic fields (name, notify_email) with cost- and
+    // credential-bearing fields (llm_cost_cap_words, llm_api_key,
+    // llm_provider): a per-field gate inside one request body is smuggable,
+    // so one route-level gate for everything is the safe default. API keys
+    // pass requireRole only with the 'admin' scope (access.ts).
+    authed.patch('/settings', { schema: patchSettingsSchema, preHandler: requireRole('owner', 'admin') }, async (req) => {
       const body = req.body as {
         name?: string;
         notify_email?: string | null;

@@ -19,6 +19,17 @@ function median(values: number[]): number {
 }
 
 async function main() {
+  // SEC-FIX (Wave-3 W-08): footgun guard — this script TRUNCATEs tenants.
+  // Refuse to run against anything that doesn't look like a test database
+  // (same /test/i convention as the test helpers).
+  if (!/test/i.test(process.env.DATABASE_URL ?? '')) {
+    console.error(
+      'REFUSING to run bench-hot: DATABASE_URL does not look like a test database ' +
+      `(${process.env.DATABASE_URL ? 'value does not match /test/i' : 'DATABASE_URL is unset'}). ` +
+      'This script runs TRUNCATE tenants CASCADE — point DATABASE_URL at a test DB first.',
+    );
+    process.exit(2);
+  }
   await runMigrations();
   await query(`TRUNCATE tenants CASCADE`);
   const email = `bench-${Date.now()}@example.com`;

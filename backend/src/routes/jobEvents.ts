@@ -58,6 +58,19 @@ export async function registerJobEventRoutes(fastify: FastifyInstance) {
         };
         req.raw.on('close', close);
 
+        // SEC-FIX (Wave-3 W-05): writes on a dead socket must never throw
+        // (unhandled rejection). safeWrite closes + cleans up instead.
+        const safeWrite = (chunk: string): boolean => {
+          if (closed) return false;
+          try {
+            reply.raw.write(chunk);
+            return true;
+          } catch {
+            close();
+            return false;
+          }
+        };
+
         const emit = async () => {
           if (closed) return;
           try {
@@ -65,16 +78,19 @@ export async function registerJobEventRoutes(fastify: FastifyInstance) {
             const hash = snapshotHash(snap);
             if (hash !== lastHash) {
               lastHash = hash;
-              reply.raw.write(`event: snapshot\ndata: ${JSON.stringify(snap)}\n\n`);
+              safeWrite(`event: snapshot\ndata: ${JSON.stringify(snap)}\n\n`);
             } else {
-              reply.raw.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+              safeWrite(`: heartbeat ${new Date().toISOString()}\n\n`);
             }
             if (snap.settled || Date.now() >= deadline) {
-              reply.raw.write(`event: done\ndata: ${JSON.stringify({ settled: snap.settled, at: new Date().toISOString() })}\n\n`);
+              safeWrite(`event: done\ndata: ${JSON.stringify({ settled: snap.settled, at: new Date().toISOString() })}\n\n`);
               close();
             }
           } catch (err) {
-            reply.raw.write(`event: error\ndata: ${JSON.stringify({ message: (err as Error).message })}\n\n`);
+            // Generic wire message (never echoes err.message — it can carry
+            // Postgres internals); the original is logged server-side.
+            console.error('[jobs-stream] snapshot emit failed', err);
+            safeWrite(`event: error\ndata: ${JSON.stringify({ message: 'internal error' })}\n\n`);
             close();
           }
         };

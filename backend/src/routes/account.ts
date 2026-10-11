@@ -219,6 +219,40 @@ async function requireWorkspace(tenantId: string, workspaceId: string) {
   return r.rows[0];
 }
 
+const EXPORT_REDACTED = '[REDACTED]';
+
+/**
+ * SEC-FIX (Wave-3 W-07): redact bearer-style secrets that live in tenant
+ * config rows before they land in the GDPR export. Non-secret fields
+ * (channels, rules, metadata) stay intact.
+ */
+function redactNotificationConfig(config: unknown): unknown {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+  const out: Record<string, unknown> = { ...(config as Record<string, unknown>) };
+  for (const key of Object.keys(out)) {
+    if (key.toLowerCase() === 'slack_webhook_url') out[key] = EXPORT_REDACTED;
+  }
+  return out;
+}
+
+/** Redact bearer tokens embedded in a URL's query string (Slack bridge
+ * tokens, api keys, ...). The URL itself stays so the config remains
+ * understandable. */
+function redactUrlTokens(url: unknown): unknown {
+  if (typeof url !== 'string') return url;
+  return url.replace(/([?&])(token|secret|api[_-]?key|access[_-]?token|auth[_-]?token|password)=[^&#\s]*/gi, '$1$2=' + EXPORT_REDACTED);
+}
+
+function redactExportSection(section: string, rows: any[]): any[] {
+  if (section === 'notification_rules') {
+    return rows.map((r) => ({ ...r, config: redactNotificationConfig(r.config) }));
+  }
+  if (section === 'webhook_endpoints') {
+    return rows.map((r) => ({ ...r, url: redactUrlTokens(r.url) }));
+  }
+  return rows;
+}
+
 export async function registerAccountRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
     await authPlugin(authed);
@@ -852,7 +886,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           const exists = await query(`SELECT to_regclass($1) AS cls`, [`public.${table}`]);
           if (!exists.rows[0]?.cls) continue;
           const r = await query(sql, [tenantId]);
-          dump[section] = r.rows;
+          dump[section] = redactExportSection(section, r.rows);
         }
         await logActivity(tenantId, { userId: u(req), action: 'account.exported' });
         return reply
