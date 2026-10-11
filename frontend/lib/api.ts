@@ -131,6 +131,22 @@ export interface AuthResponse {
   user: User;
   tenant: Tenant;
 }
+/**
+ * S-05: password login returns this instead of a session when 2FA is
+ * enabled. The short-lived totpToken can only be exchanged for a session
+ * at POST /api/v1/auth/totp/verify — it is NOT a session JWT and must not
+ * be stored (it lives only in page state until the URL is scrubbed).
+ */
+export interface TotpChallenge {
+  totpRequired: true;
+  totpToken: string;
+}
+/** S-05: POST /api/v1/auth/totp/verify response. Session JWT arrives only
+ * via the httpOnly cookie — never in this body. */
+export interface TotpVerifyResponse {
+  user: { id: string; email: string; name: string | null; emailVerified: boolean };
+  tenant: { id: string; name: string; plan_id: string };
+}
 
 export interface Site {
   id: string;
@@ -325,7 +341,14 @@ export const authApi = {
   signup: (input: { email: string; password: string; name: string }) =>
     api<AuthResponse>('/api/v1/auth/signup', { method: 'POST', body: input }),
   login: (input: { email: string; password: string }) =>
-    api<AuthResponse>('/api/v1/auth/login', { method: 'POST', body: input }),
+    api<AuthResponse | TotpChallenge>('/api/v1/auth/login', { method: 'POST', body: input }),
+  /**
+   * S-05: exchanges the short-lived 2FA challenge token (+ TOTP code) for a
+   * full session. Public — the totpToken is the auth. The session JWT is
+   * delivered ONLY via the httpOnly cookie, never in the response body.
+   */
+  verifyTotp: (input: { totpToken: string; code: string }) =>
+    api<TotpVerifyResponse>('/api/v1/auth/totp/verify', { method: 'POST', body: input }),
   logout: () => api<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => api<{ user: User; tenant: Tenant }>('/api/v1/auth/me'),
 };
