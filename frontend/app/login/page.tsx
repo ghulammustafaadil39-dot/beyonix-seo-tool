@@ -54,7 +54,12 @@ function LoginForm({ onTotp }: { onTotp: (token: string) => void }) {
         />
       </div>
       <div>
-        <label htmlFor="login-password" className="bx-label">Password</label>
+        <div className="mb-1 flex items-center justify-between">
+          <label htmlFor="login-password" className="bx-label !mb-0">Password</label>
+          <Link href="/forgot-password" className="bx-link text-sm">
+            Forgot password?
+          </Link>
+        </div>
         <input
           id="login-password"
           type="password"
@@ -223,6 +228,9 @@ function LoginFlow() {
   const router = useRouter();
   const params = useSearchParams();
   const wantsTotp = params.get('totp') === '1';
+  // After a password change the backend revokes all sessions; the settings
+  // page redirects here so the user knows why they were signed out.
+  const passwordChanged = params.get('password-changed') === '1';
   const [totpToken, setTotpToken] = useState<string | null>(null);
   const [urlScrubbed, setUrlScrubbed] = useState(false);
 
@@ -272,7 +280,14 @@ function LoginFlow() {
           )
         ) : null
       ) : (
-        <LoginForm onTotp={setTotpToken} />
+        <>
+          {passwordChanged && (
+            <p role="status" className="bx-alert-ok mb-4">
+              Password changed — please sign in again with your new password.
+            </p>
+          )}
+          <LoginForm onTotp={setTotpToken} />
+        </>
       )}
     </>
   );
