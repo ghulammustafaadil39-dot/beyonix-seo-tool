@@ -5,7 +5,9 @@ import { pool, query, type QueryFn } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
 import { authPlugin, signToken, setAuthCookie, setCsrfCookie } from '../middleware/auth.js';
 import { issueCsrfToken } from '../middleware/csrf.js';
-import { canAssignRole, requireRole, requireScope } from '../middleware/access.js';
+import { canAssignRole, requireHumanSession, requireRole, requireScope } from '../middleware/access.js';
+import { DEFAULT_RETENTION_POLICIES } from '../services/retention.js';
+import { getQueue, QUEUES } from '../queues.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { getNotify } from '../providers/notify.js';
 import { createSession } from '../services/sessions.js';
@@ -809,35 +811,146 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       async (req, reply) => {
         const tenantId = t(req);
         const dump: Record<string, unknown> = { exported_at: new Date().toISOString(), tenant_id: tenantId };
-        const tables: Array<[string, string]> = [
-          ['users', 'SELECT id, email, name, role, created_at FROM users WHERE tenant_id = $1'],
-          ['sites', 'SELECT id, domain, verified, workspace_id, created_at FROM sites WHERE tenant_id = $1'],
-          ['workspaces', 'SELECT id, name, limits, created_at FROM workspaces WHERE tenant_id = $1'],
-          ['audits', 'SELECT * FROM audits WHERE tenant_id = $1'],
-          ['audit_issues', 'SELECT * FROM audit_issues WHERE tenant_id = $1'],
-          ['keywords', 'SELECT * FROM keywords WHERE tenant_id = $1'],
-          ['rank_checks', 'SELECT * FROM rank_checks WHERE tenant_id = $1'],
-          ['content_pieces', 'SELECT * FROM content_pieces WHERE tenant_id = $1'],
-          ['geo_checks', 'SELECT * FROM geo_checks WHERE tenant_id = $1'],
-          ['backlinks', 'SELECT * FROM backlinks WHERE tenant_id = $1'],
-          ['reports', 'SELECT * FROM reports WHERE tenant_id = $1'],
-          ['subscriptions', 'SELECT * FROM subscriptions WHERE tenant_id = $1'],
-          ['invoices', 'SELECT * FROM invoices WHERE tenant_id = $1'],
-          ['usage_events', 'SELECT * FROM usage_events WHERE tenant_id = $1'],
-          ['notification_rules', 'SELECT id, rule_type, channels, config, enabled FROM notification_rules WHERE tenant_id = $1'],
-          ['activity_log', 'SELECT * FROM activity_log WHERE tenant_id = $1'],
+        // [dump section, actual table, sql] — table is used for the
+        // to_regclass existence guard; section is the dump key.
+        const tables: Array<[string, string, string]> = [
+          ['users', 'users', 'SELECT id, email, name, role, created_at FROM users WHERE tenant_id = $1'],
+          // W-07: tenant row itself (no secrets: no llm_api_key_enc).
+          ['tenant', 'tenants', 'SELECT id, name, plan_id, notify_email, telegram_chat_id, llm_provider, llm_cost_cap_words, created_at FROM tenants WHERE id = $1'],
+          ['sites', 'sites', 'SELECT id, domain, verified, workspace_id, created_at FROM sites WHERE tenant_id = $1'],
+          ['workspaces', 'workspaces', 'SELECT id, name, limits, created_at FROM workspaces WHERE tenant_id = $1'],
+          ['audits', 'audits', 'SELECT * FROM audits WHERE tenant_id = $1'],
+          ['audit_issues', 'audit_issues', 'SELECT * FROM audit_issues WHERE tenant_id = $1'],
+          ['keywords', 'keywords', 'SELECT * FROM keywords WHERE tenant_id = $1'],
+          ['rank_checks', 'rank_checks', 'SELECT * FROM rank_checks WHERE tenant_id = $1'],
+          // W-07: Wave-2 data completeness (metadata only for keys: no hashes).
+          ['api_keys', 'api_keys', 'SELECT id, name, key_prefix, scopes, rate_limit_per_min, created_by, last_used_at, revoked_at, created_at FROM api_keys WHERE tenant_id = $1'],
+          ['webhook_endpoints', 'webhook_endpoints', 'SELECT id, url, events, enabled, created_at FROM webhook_endpoints WHERE tenant_id = $1'],
+          ['webhook_deliveries', 'webhook_deliveries', 'SELECT id, endpoint_id, event, status, attempts, last_error, delivered_at, created_at FROM webhook_deliveries WHERE tenant_id = $1'],
+          ['notification_rules', 'notification_rules', 'SELECT id, rule_type, channels, config, enabled, created_at FROM notification_rules WHERE tenant_id = $1'],
+          ['notification_digests', 'notification_digests', 'SELECT * FROM notification_digests WHERE tenant_id = $1'],
+          ['notification_log', 'notification_log', 'SELECT * FROM notification_log WHERE tenant_id = $1'],
+          ['report_schedules', 'report_schedules', 'SELECT * FROM report_schedules WHERE tenant_id = $1'],
+          ['competitors', 'competitors', 'SELECT * FROM competitors WHERE tenant_id = $1'],
+          ['keyword_gaps', 'keyword_gaps', 'SELECT * FROM keyword_gaps WHERE tenant_id = $1'],
+          ['tenant_branding', 'tenant_branding', 'SELECT * FROM tenant_branding WHERE tenant_id = $1'],
+          ['content_versions', 'content_versions', 'SELECT * FROM content_versions WHERE tenant_id = $1'],
+          ['content_profiles', 'content_profiles', 'SELECT * FROM content_profiles WHERE tenant_id = $1'],
+          ['geo_prompts', 'geo_prompts', 'SELECT * FROM geo_prompts WHERE tenant_id = $1'],
+          ['rank_alerts', 'rank_alerts', 'SELECT * FROM rank_alerts WHERE tenant_id = $1'],
+          ['onboarding_state', 'onboarding_state', 'SELECT * FROM onboarding_state WHERE tenant_id = $1'],
+          ['content_pieces', 'content_pieces', 'SELECT * FROM content_pieces WHERE tenant_id = $1'],
+          ['geo_checks', 'geo_checks', 'SELECT * FROM geo_checks WHERE tenant_id = $1'],
+          ['backlinks', 'backlinks', 'SELECT * FROM backlinks WHERE tenant_id = $1'],
+          ['reports', 'reports', 'SELECT * FROM reports WHERE tenant_id = $1'],
+          ['subscriptions', 'subscriptions', 'SELECT * FROM subscriptions WHERE tenant_id = $1'],
+          ['invoices', 'invoices', 'SELECT * FROM invoices WHERE tenant_id = $1'],
+          ['usage_events', 'usage_events', 'SELECT * FROM usage_events WHERE tenant_id = $1'],
+          ['activity_log', 'activity_log', 'SELECT * FROM activity_log WHERE tenant_id = $1'],
         ];
-        for (const [name, sql] of tables) {
-          const exists = await query(`SELECT to_regclass($1) AS cls`, [`public.${name}`]);
+        for (const [section, table, sql] of tables) {
+          const exists = await query(`SELECT to_regclass($1) AS cls`, [`public.${table}`]);
           if (!exists.rows[0]?.cls) continue;
           const r = await query(sql, [tenantId]);
-          dump[name] = r.rows;
+          dump[section] = r.rows;
         }
         await logActivity(tenantId, { userId: u(req), action: 'account.exported' });
         return reply
           .header('Content-Type', 'application/json')
           .header('Content-Disposition', `attachment; filename="beyonix-seo-export-${tenantId}.json"`)
           .send(dump);
+      },
+    );
+
+    // W-07: audit-log retention controls — read the effective retention
+    // windows (DB policies override built-in defaults; see C-06).
+    authed.get(
+      '/account/retention',
+      { preHandler: [requireRole('owner', 'admin'), requireScope('sites:read')] },
+      async (req) => {
+        // keep_for is a Postgres interval; cast to text for a stable JSON shape.
+        const dbRows = (await query(`SELECT entity, keep_for::text AS keep_for FROM retention_policies`)).rows as Array<{ entity: string; keep_for: string }>;
+        const effective: Record<string, string> = { ...DEFAULT_RETENTION_POLICIES };
+        for (const r of dbRows) effective[r.entity] = r.keep_for;
+        return { defaults: DEFAULT_RETENTION_POLICIES, overrides: dbRows, effective };
+      },
+    );
+
+    // W-07: GDPR ERASE — hard-deletes the tenant and every row it owns.
+    // Guardrails: owner/admin human session ONLY (no API keys — a stolen key
+    // must never be able to erase the account), explicit {confirm:'ERASE'}
+    // body, tenant-scoped tables enumerated from SHELL_TENANT_TABLES (the
+    // frozen maintenance obligation — ANY new tenant table must be added
+    // there), plus user-scoped rows, the users, and best-effort purge of
+    // queued BullMQ jobs carrying this tenantId.
+    authed.delete(
+      '/account/erase',
+      {
+        preHandler: [requireHumanSession, requireRole('owner', 'admin')],
+        schema: { body: { type: 'object', required: ['confirm'], properties: { confirm: { type: 'string', const: 'ERASE' } }, additionalProperties: false } },
+      },
+      async (req) => {
+        const tenantId = t(req);
+        const userId = u(req);
+        const deleted: Record<string, number> = {};
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const q: QueryFn = (text, params) => client.query(text, params as any[]);
+          // The audit trail survives the erase: write the row BEFORE deleting
+          // users/tenants (FKs are ON DELETE SET NULL, but the insert itself
+          // needs the actor/user + tenant rows to exist).
+          await q(
+            `INSERT INTO admin_audit_log (id, actor_user_id, actor_tenant_id, action, target_tenant_id, meta)
+             VALUES (gen_random_uuid(), $1, $2, 'account.erased', $2, $3)`,
+            [userId, tenantId, JSON.stringify({ erasedTenantId: tenantId })],
+          );
+          for (const table of SHELL_TENANT_TABLES) {
+            const exists = await q(`SELECT to_regclass($1) AS cls`, [`public.${table}`]);
+            if (!exists.rows[0]?.cls) continue;
+            const r = await q(`DELETE FROM "${table}" WHERE tenant_id = $1`, [tenantId]);
+            deleted[table] = r.rowCount ?? 0;
+          }
+          // User-scoped rows (the shell's users move/delete with the tenant).
+          const userIds = (await q(`SELECT id FROM users WHERE tenant_id = $1`, [tenantId])).rows.map((x: any) => x.id as string);
+          if (userIds.length > 0) {
+            // TOTP lives on users.* columns (cascade-deleted); sessions and
+            // verification tokens are explicit user-scoped tables.
+            for (const ut of ['user_sessions', 'email_verification_tokens']) {
+              const exists = await q(`SELECT to_regclass($1) AS cls`, [`public.${ut}`]);
+              if (!exists.rows[0]?.cls) continue;
+              const r = await q(`DELETE FROM "${ut}" WHERE user_id = ANY($1)`, [userIds]);
+              deleted[ut] = r.rowCount ?? 0;
+            }
+          }
+          const uDel = await q(`DELETE FROM users WHERE tenant_id = $1`, [tenantId]);
+          deleted['users'] = uDel.rowCount ?? 0;
+          const tDel = await q(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+          deleted['tenants'] = tDel.rowCount ?? 0;
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
+        }
+        // Queues: best-effort removal of queued jobs for this tenant (outside
+        // the DB transaction; a leftover job's processor no-ops on missing tenant).
+        const purged: Record<string, number> = {};
+        for (const name of Object.values(QUEUES)) {
+          try {
+            const queue = getQueue(name);
+            const jobs = await queue.getJobs(['waiting', 'delayed', 'paused', 'prioritized'] as any, 0, -1);
+            let n = 0;
+            for (const j of jobs) {
+              if ((j.data as any)?.tenantId === tenantId) { await j.remove(); n++; }
+            }
+            purged[name] = n;
+          } catch {
+            purged[name] = -1; // Redis unavailable in this path — job rows age out via BullMQ retention
+          }
+        }
+        return { ok: true, erasedTenantId: tenantId, deleted, queuesPurged: purged };
       },
     );
   });
