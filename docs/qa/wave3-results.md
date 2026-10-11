@@ -30,12 +30,26 @@ tampered payload rejected, wrong-secret rejected, unsigned rejected,
 mock/real envelope parity (2 unit tests). Run:
 `npx vitest run --project integration-stripe`.
 
-## Q-01(b) — coverage ⏳
+## Q-01(b) — coverage ✅ TARGET MET
 
-`npm run test:coverage` (v8, core: `src/services/**`, `src/routes/**`,
-`src/metering.ts`, `src/plans.ts`, `src/config.ts`) — full run in progress.
-Target ≥85% on core business logic; gaps get integration tests, not padding.
-(Preliminary: `src/services/metrics.ts` 97.9% lines from its own suite.)
+`npm run test:coverage` (v8; core scope = `src/services/**`,
+`src/routes/**`, `src/metering.ts`, `src/plans.ts`, `src/config.ts`):
+**85.34% lines / 85.34% stmts / 93.67% funcs / 79.81% branches**
+(63 files, 606 passed / 9 skipped / 0 failed in the coverage run).
+
+Path: baseline 82.9% → +2.4pts from real gap tests, not padding:
+- `tests/wave3/q01-coverage-gaps.test.ts` (8 tests): on-page analysis
+  end-to-end (routes/onpage.ts 32→80%), backlink refresh processor
+  (backlinkJobs 8→66%), weekly re-verify processor paths.
+- `tests/wave3/q01-coverage-gaps2.test.ts` (6 tests): content processor
+  (generate→review, idempotent skip, ai_words cost-guard skip) and report
+  processor (build + idempotent re-run + email).
+
+Remaining honest gaps (all worker-processor/notification plumbing, covered
+by job-level tests elsewhere): keywordJobs 18.8%, geoJobs 20.4%,
+notifications.ts 45.8%, services/billing.ts 55.7%, crawlJobs 56.5%,
+routes/sites.ts 65.2%, routes/ga4.ts 68.2%. Recommended for Wave-4/audit
+follow-up, not blockers.
 
 ## Q-01(c) — Playwright E2E ✅
 
@@ -152,8 +166,15 @@ pending — compose says so explicitly rather than inventing an entry point).
 
 ## Suite status at report time
 
-See final report; chaos-test note: `tests/wave2/journey-chaos.test.ts`
-(2 tests) failed **only** inside the V8-coverage instrumented run
-(timed-out waiting for the dead-letter row — timing-sensitive: tsc compile +
-real worker spawn + retry backoff under coverage slowdown). Re-run without
-coverage: _TODO_.
+- Full suite (no coverage), final run on `agent/qa/wave3`: **63 files,
+  606 passed / 9 skipped / 0 failed** (Wave-2 baseline on main was
+  577/9/0; +29 = 11 stripe + 4 observability + 8 gap + 6 gap2).
+  Backend `tsc --noEmit` clean; frontend `tsc --noEmit` clean;
+  `next build` green (30 routes, incl. new `/status`).
+- Chaos-test note (resolved): `tests/wave2/journey-chaos.test.ts` (3 tests)
+  failed twice during Wave 3 — both times root-caused as **test-DB
+  contention from my own concurrent runs** (a second suite truncating the
+  shared `bseo_test_qa` mid-run, and once a V8-coverage-slowed run against
+  a loaded VM), never a code regression. Solo re-run on this branch:
+  **3/3 pass**. Standing rule: never run two suites against the same test
+  DB concurrently.
