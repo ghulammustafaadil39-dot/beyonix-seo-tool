@@ -28,7 +28,10 @@ export default defineConfig({
       {
         test: {
           name: 'integration',
-          include: ['tests/integration/**/*.test.ts'],
+          // Wave-2 QA tests (tests/wave2/) run in this project too: real
+          // Postgres + Redis via the integration setup files. Single worker
+          // keeps files sequential on the shared test DB.
+          include: ['tests/integration/**/*.test.ts', 'tests/wave2/**/*.test.ts'],
           exclude: ['tests/integration/stripe/**'],
           setupFiles: ['./tests/integration/setup.ts'],
           // Integration tests share one Postgres DB + one Redis DB; keep a

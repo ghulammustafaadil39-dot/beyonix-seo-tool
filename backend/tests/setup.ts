@@ -1,7 +1,7 @@
-// Vitest setup: per-worktree test database (LA directive — do NOT use shared bseo_test).
-// Runs before test files, so src/config.ts and src/db.ts pick these up at import.
+// Vitest setup: DATABASE_URL is read from the environment when set (per
+// worktree / per session), falling back to the shared test database.
 // (Local dev credentials only — same values as .env.example / docker-compose.yml.)
-process.env.DATABASE_URL ??= 'postgres://bseo:bseo@localhost:5432/bseo_test_security';
+process.env.DATABASE_URL ??= 'postgres://bseo:bseo@localhost:5432/bseo_test';
 process.env.REDIS_URL ??= 'redis://localhost:6379';
 // S-07: unit tests exercise the real AES path (not the dev-only plain:
 // fallback). Same throwaway test key as tests/integration/setup.ts.
