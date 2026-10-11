@@ -177,6 +177,9 @@ select option {
   .bx-meter-fill-over {
     @apply h-full rounded-full bg-red-400;
   }
+  .bx-meter-fill-warn {
+    @apply h-full rounded-full bg-amber-400;
+  }
 
   /* ——— Terminal glow panel ——— */
   .bx-glow {
