@@ -55,6 +55,7 @@ export const API_SCOPES = [
   'reports:read',
   'reports:write',
   'billing:read',
+  'webhooks:read',
   'webhooks:write',
   'admin',
 ] as const;
@@ -74,13 +75,57 @@ export function requireScope(...scopes: ApiScope[]) {
     const t = (req as any).tenant;
     if (!t?.apiKeyId) return; // user session: roles gate elsewhere
     const held: string[] = t.apiKeyScopes ?? [];
-    if (held.includes('admin')) return;
-    const missing = scopes.filter((s) => !held.includes(s));
+    const missing = scopes.filter((s) => !scopeSatisfied(held, s));
     if (missing.length > 0) {
       throw new ApiError(403, 'INSUFFICIENT_SCOPE', `API key lacks required scope(s): ${missing.join(', ')}`, {
         missing,
       });
     }
+  };
+}
+
+/** True when the held scopes satisfy a requirement ('admin' and ':write' imply ':read'). */
+function scopeSatisfied(held: string[], need: string): boolean {
+  if (held.includes('admin') || held.includes(need)) return true;
+  if (need.endsWith(':read')) return held.includes(`${need.slice(0, -5)}:write`);
+  return false;
+}
+
+/** The acting user for audit/UUID columns: null when the caller is an API key
+ * (API keys carry no user; attribution goes in meta.apiKeyId instead). */
+export function actorUserId(req: FastifyRequest): string | null {
+  const t = (req as any).tenant;
+  return t?.apiKeyId ? null : ((t?.userId as string | null) ?? null);
+}
+
+/** Attribution meta for activity logs when the actor is an API key. */
+export function actorMeta(req: FastifyRequest): Record<string, unknown> {
+  const t = (req as any).tenant;
+  return t?.apiKeyId ? { apiKeyId: t.apiKeyId } : {};
+}
+
+/**
+ * Dual gate for routes shared by team sessions and API keys: team sessions
+ * are authorized by role, API keys by scope. Replaces stacking requireRole +
+ * requireScope (which rejected scoped keys at the role layer).
+ */
+export function requireRoleOrScope(roles: string[], ...scopes: ApiScope[]) {
+  return async (req: FastifyRequest) => {
+    const t = (req as any).tenant;
+    if (!t) throw forbidden();
+    if (t.apiKeyId) {
+      const held: string[] = t.apiKeyScopes ?? [];
+      const missing = scopes.filter((s) => !scopeSatisfied(held, s));
+      if (missing.length > 0) {
+        throw new ApiError(403, 'INSUFFICIENT_SCOPE', `API key lacks required scope(s): ${missing.join(', ')}`, {
+          missing,
+        });
+      }
+      return;
+    }
+    const minRank = Math.min(...roles.map((r) => ROLE_RANK[r] ?? 99));
+    const rank = ROLE_RANK[t.role as string] ?? 0;
+    if (rank < minRank) throw forbidden(`Requires role: ${roles.join(' | ')}`);
   };
 }
 
