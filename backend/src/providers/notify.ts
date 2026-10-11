@@ -29,6 +29,9 @@ class RealNotifyProvider implements NotifyProvider {
     const res = await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      // B2-M5: fire-and-forget notification — never let a stalled Telegram
+      // call hold a request/job; 10s is generous for a sendMessage call.
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true }),
     });
     if (!res.ok) throw new Error(`Telegram error: ${res.status} ${await res.text()}`);

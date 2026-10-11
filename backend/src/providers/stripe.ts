@@ -15,13 +15,23 @@ export function planIdFromStripePrice(priceId: string | null | undefined): PlanI
   if (!priceId) return null;
   // config.stripePrices is a snapshot at import; tests/ops may set
   // STRIPE_PRICE_* later, so consult the live env too (env wins).
+  // B1-6: annual prices included — without them, annual subscribers'
+  // plan resolution depended entirely on the subscription metadata
+  // fallback, breaking the "price id is the single source of truth" claim
+  // for dashboard-created subscriptions without metadata.
   const live: Record<string, string | undefined> = {
     starter: process.env.STRIPE_PRICE_STARTER || config.stripePrices.starter,
     growth: process.env.STRIPE_PRICE_GROWTH || config.stripePrices.growth,
     pro: process.env.STRIPE_PRICE_PRO || config.stripePrices.pro,
+    starter_annual: process.env.STRIPE_PRICE_STARTER_ANNUAL,
+    growth_annual: process.env.STRIPE_PRICE_GROWTH_ANNUAL,
+    pro_annual: process.env.STRIPE_PRICE_PRO_ANNUAL,
   };
-  for (const [plan, id] of Object.entries(live)) {
-    if (id && id === priceId && isPlanId(plan)) return plan;
+  for (const [key, id] of Object.entries(live)) {
+    if (id && id === priceId) {
+      const plan = key.replace(/_annual$/, '');
+      if (isPlanId(plan)) return plan;
+    }
   }
   return null;
 }
@@ -313,15 +323,28 @@ export async function applyPaymentEvent(
   // processing; a redelivery hits the conflict and becomes a no-op.
   // Direct callers (tests, mock-confirm) carry it on evt.id.
   eventId = eventId ?? (typeof (evt as any).id === 'string' ? (evt as any).id : undefined);
+  let tenantForLedger: string | null = null;
+  // B2-L7: the webhook ledger's processed_at must be stamped on EVERY exit
+  // path (early returns included) — otherwise handled events show as
+  // perpetually unprocessed. tenantForLedger is read at call time.
+  const markProcessed = (): Promise<unknown> =>
+    eventId
+      ? q(`UPDATE stripe_webhook_events SET processed_at = now(), tenant_id = $2 WHERE event_id = $1`, [
+          eventId,
+          tenantForLedger,
+        ])
+      : Promise.resolve();
   if (eventId) {
     const ins = await q(
       `INSERT INTO stripe_webhook_events (event_id, event_type)
        VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`,
       [eventId, type],
     );
-    if ((ins.rowCount ?? 0) === 0) return { deduplicated: true };
+    if ((ins.rowCount ?? 0) === 0) {
+      await markProcessed(); // redelivery of an already-handled event
+      return { deduplicated: true };
+    }
   }
-  let tenantForLedger: string | null = null;
 
   // Ordering guard (C-01 fix): an event OLDER than the newest event already
   // applied to this subscription must not overwrite newer state (e.g. a
@@ -373,7 +396,10 @@ export async function applyPaymentEvent(
     // webhook (or a tampered event) could otherwise escalate any tenant.
     // (Lookup runs first so customerId-resolved tenants aren't skipped.)
     const rawPlanId = data.metadata?.planId ?? data.plan_id;
-    if (!tenantId || !isPlanId(rawPlanId)) return { deduplicated: false };
+    if (!tenantId || !isPlanId(rawPlanId)) {
+      await markProcessed();
+      return { deduplicated: false };
+    }
     const planId: PlanId = rawPlanId;
     tenantForLedger = tenantId;
 
@@ -426,7 +452,10 @@ export async function applyPaymentEvent(
     });
   } else if (type === 'customer.subscription.created' || type === 'customer.subscription.updated') {
     const subId: string | undefined = data.id;
-    if (!subId) return { deduplicated: false };
+    if (!subId) {
+      await markProcessed();
+      return { deduplicated: false };
+    }
     const status: string = data.status ?? 'active';
     // P0-04: the plan is authoritative from the Stripe price id (single source
     // of truth = STRIPE_PRICE_*), falling back to subscription metadata, then
@@ -436,7 +465,10 @@ export async function applyPaymentEvent(
     const fromMeta = data.metadata?.planId ?? data.plan_id;
     const planFromEvent = fromPrice ?? (isPlanId(fromMeta) ? fromMeta : null);
     const tenantId = await resolveTenantForSubscription(q, data, subId);
-    if (!tenantId) return { deduplicated: false };
+    if (!tenantId) {
+      await markProcessed();
+      return { deduplicated: false };
+    }
     tenantForLedger = tenantId;
 
     const r = await q(`SELECT plan_id FROM subscriptions WHERE stripe_sub_id = $1`, [subId]);
@@ -498,9 +530,15 @@ export async function applyPaymentEvent(
     }
   } else if (type === 'customer.subscription.deleted') {
     const subId: string | undefined = data.id;
-    if (!subId) return { deduplicated: false };
+    if (!subId) {
+      await markProcessed();
+      return { deduplicated: false };
+    }
     const tenantId = await resolveTenantForSubscription(q, data, subId);
-    if (!tenantId) return { deduplicated: false };
+    if (!tenantId) {
+      await markProcessed();
+      return { deduplicated: false };
+    }
     tenantForLedger = tenantId;
     const { downgradeTenant, emitBillingEvent } = await import('../services/billing.js');
     await downgradeTenant(tenantId, 'subscription_deleted');
@@ -508,7 +546,10 @@ export async function applyPaymentEvent(
   } else if (type === 'invoice.paid' || type === 'invoice.payment_failed') {
     const invoiceId: string | undefined = data.id;
     const tenantId = await resolveTenantForSubscription(q, data);
-    if (!tenantId || !invoiceId) return { deduplicated: false };
+    if (!tenantId || !invoiceId) {
+      await markProcessed();
+      return { deduplicated: false };
+    }
     tenantForLedger = tenantId;
     const paid = type === 'invoice.paid';
     const amount = Number(data.amount_due ?? data.amount_paid ?? 0);
@@ -555,7 +596,10 @@ export async function applyPaymentEvent(
       (typeof data.invoice === 'string' ? data.invoice : data.invoice?.id) ?? data.metadata?.invoiceId;
     const tenantId: string | null =
       (data.metadata?.tenantId as string | undefined) ?? (await resolveTenantForSubscription(q, data));
-    if (!tenantId) return { deduplicated: false };
+    if (!tenantId) {
+      await markProcessed();
+      return { deduplicated: false };
+    }
     tenantForLedger = tenantId;
     const amount = Math.round(Number(data.amount_refunded ?? data.amount ?? 0));
     if (invoiceId) {

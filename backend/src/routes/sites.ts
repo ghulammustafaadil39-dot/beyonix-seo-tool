@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { query } from '../db.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
-import { requireRoleOrScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { withUsageReservation } from '../metering.js';
 import { requireSite, toPublicSite } from '../services/sites.js';
 import { softDeleteSite, restoreSite } from '../services/retention.js';
@@ -140,14 +140,15 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       },
     );
 
-    authed.get('/sites', async (req) => {
+    // B1-M1: reads need sites:read for API keys (session users pass through).
+    authed.get('/sites', { preHandler: requireScope('sites:read') }, async (req) => {
       const r = await query('SELECT * FROM sites WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC', [
         req.tenant.tenantId,
       ]);
       return { data: r.rows.map(toPublicSite) };
     });
 
-    authed.get('/sites/:id', { schema: { params: idParamSchema } }, async (req) => {
+    authed.get('/sites/:id', { schema: { params: idParamSchema }, preHandler: requireScope('sites:read') }, async (req) => {
       const { id } = req.params as { id: string };
       return toPublicSite(await requireSite(req.tenant.tenantId, id));
     });
@@ -279,7 +280,8 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       },
     );
 
-    authed.get('/sites/:id/overview', { schema: { params: idParamSchema } }, async (req) => {
+    // B1-M1: sites:read for API keys.
+    authed.get('/sites/:id/overview', { schema: { params: idParamSchema }, preHandler: requireScope('sites:read') }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const tid = req.tenant.tenantId;

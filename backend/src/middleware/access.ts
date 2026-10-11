@@ -79,6 +79,16 @@ export const API_SCOPES = [
   'reports:read',
   'reports:write',
   'billing:read',
+  // B1-M2: billing mutations via API key (currently only the customer
+  // portal) need an expressible least-privilege scope — the catalog had
+  // only billing:read, so any portal gate was all-or-nothing.
+  'billing:write',
+  // B1-M1: read scopes for the resources whose GET routes previously had
+  // no scope gate at all (any valid key could read them).
+  'gsc:read',
+  'ga4:read',
+  'settings:read',
+  'account:read',
   'webhooks:read',
   'webhooks:write',
   'admin',
@@ -126,6 +136,26 @@ export function actorUserId(req: FastifyRequest): string | null {
 export function actorMeta(req: FastifyRequest): Record<string, unknown> {
   const t = (req as any).tenant;
   return t?.apiKeyId ? { apiKeyId: t.apiKeyId } : {};
+}
+
+/**
+ * B1-R1: the human user id for routes that act on a user account.
+ * Throws HUMAN_SESSION_REQUIRED when the caller is an API key (userId is
+ * null for key callers) — defense in depth alongside the
+ * requireHumanSession preHandler on these routes, so a missing gate can
+ * never turn into a 22P02 500 on a UUID column again.
+ */
+export function humanUserId(req: FastifyRequest): string {
+  const t = (req as any).tenant;
+  const uid = t?.userId as string | null;
+  if (!uid) {
+    throw new ApiError(
+      403,
+      'HUMAN_SESSION_REQUIRED',
+      'This action requires a signed-in user session; API keys have no user account',
+    );
+  }
+  return uid;
 }
 
 /**

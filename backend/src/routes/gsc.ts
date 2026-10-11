@@ -4,6 +4,7 @@ import { encrypt } from '../crypto.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
+import { requireScope } from '../middleware/access.js';
 import { getGoogle, isMockGoogleAllowed } from '../providers/google.js';
 import {
   OAUTH_STATE_COOKIE,
@@ -54,7 +55,8 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
       return { url: getGoogle().getAuthUrl(state, { codeChallenge }) };
     });
 
-    authed.get('/sites/:id/gsc/queries', { schema: { params: idParamSchema } }, async (req) => {
+    // B1-M1: Search Console query data is sensitive — API keys need gsc:read.
+    authed.get('/sites/:id/gsc/queries', { schema: { params: idParamSchema }, preHandler: requireScope('gsc:read') }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       if (!site.gsc_connected) {

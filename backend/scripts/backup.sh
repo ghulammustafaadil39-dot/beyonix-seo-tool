@@ -18,13 +18,18 @@ shift
 
 : "${DATABASE_URL:?DATABASE_URL must be set}"
 
+# B2-L3: split DATABASE_URL into PG* env vars — the password must never
+# appear as a command-line argument (visible via `ps`).
+# shellcheck source=_pg_env.sh
+source "$(dirname "$0")/_pg_env.sh"
+
 EXTRA=("$@")
 if [[ ${#EXTRA[@]} -eq 0 ]]; then
   EXTRA=(--format=custom --compress=6)
 fi
 
 mkdir -p "$(dirname "$OUT")"
-pg_dump "$DATABASE_URL" "${EXTRA[@]}" --file="$OUT"
+pg_dump "${EXTRA[@]}" --file="$OUT"
 
 # Integrity check: a custom-format archive must list cleanly.
 if [[ "$OUT" == *.dump ]]; then

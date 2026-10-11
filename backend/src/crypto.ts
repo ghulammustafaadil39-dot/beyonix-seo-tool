@@ -8,7 +8,9 @@
 //
 // Stored formats:
 //   enc2:<kid>:<base64(iv|tag|ct)>  — current, kid-tagged
-//   enc:<base64(iv|tag|ct)>          — legacy (no kid), decrypts with primary
+//   enc:<base64(iv|tag|ct)>          — legacy (no kid); B2-M6: decryption
+//     tries every known key, primary first (AES-GCM auth rejects wrong
+//     keys), so legacy rows survive a rotation that changed the primary.
 //   plain:<base64>                   — DEV/TEST ONLY. Refused outside
 //                                      development/test (fail fast, S-07).
 import crypto from 'node:crypto';
@@ -102,6 +104,17 @@ export interface DecryptOpts {
   allowPlain?: boolean;
 }
 
+/** AES-256-GCM decrypt of an iv|tag|ct base64 payload; throws on wrong key. */
+function decryptPayload(key: Buffer, b64: string): string {
+  const buf = Buffer.from(b64, 'base64');
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const enc = buf.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+}
+
 /** Decrypt with an explicit key map (pure w.r.t. keys — used by tests + rotation). */
 export function decryptWithKeys(stored: string, byKid: Map<string, Buffer>, opts: DecryptOpts = {}): string {
   if (stored.startsWith('plain:')) {
@@ -119,19 +132,36 @@ export function decryptWithKeys(stored: string, byKid: Map<string, Buffer>, opts
     kid = rest.slice(0, idx);
     b64 = rest.slice(idx + 1);
   } else if (stored.startsWith('enc:')) {
-    b64 = stored.slice(4); // legacy: decrypt with the primary key
+    b64 = stored.slice(4);
   } else {
     throw new Error('Unknown encrypted format');
   }
-  const key = kid ? byKid.get(kid) : [...byKid.values()][0];
-  if (!key) throw new Error(`Unknown encryption key id: ${kid}`);
-  const buf = Buffer.from(b64, 'base64');
-  const iv = buf.subarray(0, 12);
-  const tag = buf.subarray(12, 28);
-  const enc = buf.subarray(28);
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+  let candidates: Buffer[];
+  if (kid !== null) {
+    const key = byKid.get(kid);
+    if (!key) throw new Error(`Unknown encryption key id: ${kid}`);
+    candidates = [key];
+  } else {
+    // B2-M6: legacy kid-less `enc:` rows are tried against EVERY known key
+    // (primary first), not just the primary. The old code resolved them
+    // with `[...byKid.values()][0]` — after a rotation that is the NEW key,
+    // so any remaining `enc:` rows encrypted under the old key became
+    // undecryptable (the rotation script counted them `failed` and exited
+    // 1). Trying each key is safe: AES-GCM authentication rejects wrong
+    // keys, so only the true key succeeds; payloads that decrypted before
+    // (under the primary) still decrypt first-try.
+    candidates = [...byKid.values()];
+    if (candidates.length === 0) throw new Error('Unknown encryption key id: null');
+  }
+  let lastErr: unknown = new Error('decryption failed');
+  for (const key of candidates) {
+    try {
+      return decryptPayload(key, b64);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 
 /** Encrypt with the primary key (dev/test without a key: base64 fallback). */

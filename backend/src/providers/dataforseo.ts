@@ -130,6 +130,10 @@ export class DataForSEOProvider implements KeywordSerpProvider {
       const res = await fetch(`https://api.dataforseo.com/v3${path}`, {
         method: 'POST',
         headers: { Authorization: this.auth, 'Content-Type': 'application/json' },
+        // B2-M5: 30s cap — a stalled DataForSEO call must surface as a
+        // thrown error (which the breaker counts) instead of hanging the
+        // worker until the job timeout.
+        signal: AbortSignal.timeout(30_000),
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`DataForSEO ${path}: ${res.status} ${await res.text()}`);

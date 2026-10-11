@@ -5,7 +5,7 @@ import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
 import { badRequest, validationError } from '../errors.js';
 import { requireSite } from '../services/sites.js';
-import { enqueue, QUEUES, Jobs } from '../queues.js';
+import { enqueue, enqueueDeduped, QUEUES, Jobs } from '../queues.js';
 import { rescoreToxicLinks, TOXIC_THRESHOLD } from '../services/toxicLinks.js';
 import { findLinkOpportunities, buildDisavowFile } from '../services/linkOpportunities.js';
 
@@ -125,13 +125,15 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
-      await enqueue(
+      // B1-M3: report dedupe honestly — a repeat click in the same day
+      // must not get a fake `{queued:true}`.
+      const { deduplicated } = await enqueueDeduped(
         QUEUES.crawl,
         Jobs.BACKLINK_REFRESH,
         { siteId: site.id, tenantId: site.tenant_id },
-        { idempotencyKey: `bl:${site.id}:${new Date().toISOString().slice(0, 10)}` },
+        `bl:${site.id}:${new Date().toISOString().slice(0, 10)}`,
       );
-      return { ok: true, queued: true };
+      return deduplicated ? { ok: true, queued: false, deduplicated: true } : { ok: true, queued: true };
     });
 
     // Upload backlinks as CSV (e.g. exported from Google Search Console UI:

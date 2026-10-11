@@ -57,11 +57,20 @@ class TestCaptchaProvider implements CaptchaProvider {
  * Resolves the configured CAPTCHA provider. Reads process.env live (in
  * addition to the frozen config) so integration tests can toggle it without
  * a reboot — same pattern as the MOCK_GOOGLE_* test knobs.
+ *
+ * B2-L2: the 'test' provider is refused outside test/development (same
+ * pattern as isMockGoogleAllowed) — one misconfigured env var must not
+ * disable signup CAPTCHA in production. Falls back to 'none' with a
+ * loud warning so the misconfiguration is visible.
  */
 export function getCaptcha(): CaptchaProvider {
   const name = (process.env.CAPTCHA_PROVIDER ?? config.captchaProvider ?? 'none').trim().toLowerCase();
   if (name === 'hcaptcha') return new HCaptchaProvider();
-  if (name === 'test') return new TestCaptchaProvider();
+  if (name === 'test') {
+    if (config.nodeEnv === 'test' || config.nodeEnv === 'development') return new TestCaptchaProvider();
+    console.error("[captcha] refusing CAPTCHA_PROVIDER=test outside test/development — falling back to 'none'");
+    return new NoneCaptchaProvider();
+  }
   return new NoneCaptchaProvider();
 }
 
