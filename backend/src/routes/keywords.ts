@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { query as defaultQuery } from '../db.js';
 import { notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -37,7 +38,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['seeds'],
           },
         },
-        preHandler: requireVerifiedEmail, // S-01: DataForSEO spend
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit()], // S-01: DataForSEO spend; S-03: per-tenant budget
       },
       async (req) => {
         const { tenantId } = req.tenant;

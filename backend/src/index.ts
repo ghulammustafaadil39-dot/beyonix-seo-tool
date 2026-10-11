@@ -6,6 +6,8 @@ import rateLimit from '@fastify/rate-limit';
 import { config } from './config.js';
 import { pool, runMigrations } from './db.js';
 import { Redis } from 'ioredis';
+import { getRedis } from './redis.js';
+import { createRateLimitStore } from './services/redisRateLimitStore.js';
 import { errorEnvelope } from './errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerBillingRoutes } from './routes/billing.js';
@@ -25,6 +27,11 @@ import { registerSettingsRoutes } from './routes/settings.js';
 export async function buildApp() {
   const app = Fastify({
     logger: config.nodeEnv !== 'test',
+    // S-03: TRUST_PROXY from env. Default false (fail closed) — req.ip comes
+    // from the socket unless the operator explicitly trusts their proxy.
+    // (Fastify's types omit `number`, but proxy-addr underneath accepts a
+    // hop count — the cast is runtime-safe.)
+    trustProxy: config.trustProxy as unknown as boolean | string,
     // N-A1-2: every request gets an id (honors a client-supplied
     // x-request-id); it is echoed on responses and included in every error
     // body via errorEnvelope, and fastify logs carry it as `requestId`.
@@ -43,7 +50,14 @@ export async function buildApp() {
     origin: [config.appUrl],
     credentials: true,
   });
-  await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
+  // S-03: per-IP limits are Redis-backed (shared across API instances) —
+  // the old in-memory store let an attacker get N x limit by hitting each
+  // instance. Keyed on req.ip, which respects trustProxy above.
+  await app.register(rateLimit, {
+    max: config.globalRateLimitPerMin,
+    timeWindow: '1 minute',
+    store: createRateLimitStore(getRedis()),
+  });
 
   app.setErrorHandler((err, req, reply) => {
     const { status, body } = errorEnvelope(err, req.id);

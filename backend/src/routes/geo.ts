@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { query } from '../db.js';
 import { ApiError, badRequest } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -41,7 +42,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
     });
 
     app.post('/sites/:id/geo/check', {
-      preHandler: requireVerifiedEmail, // S-01: LLM spend
+      preHandler: [requireVerifiedEmail, expensiveTenantLimit()], // S-01: LLM spend; S-03: per-tenant budget
       schema: {
         params: idParams,
         body: {

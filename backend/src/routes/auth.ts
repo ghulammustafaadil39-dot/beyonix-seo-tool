@@ -12,8 +12,16 @@ import {
   verifyPassword,
 } from '../middleware/auth.js';
 import { getGoogle } from '../providers/google.js';
+import { getCaptcha, isCaptchaRequired } from '../providers/captcha.js';
+import { getRedis } from '../redis.js';
 import { getPlan } from '../plans.js';
 import { consumeSigninState, createSigninState } from '../services/oauthState.js';
+import { isDisposableEmail } from '../services/disposableEmail.js';
+import {
+  clearLoginAttempts,
+  isLoginLocked,
+  recordFailedLogin,
+} from '../services/loginLockout.js';
 import {
   assertResendAllowed,
   consumeVerificationToken,
@@ -37,6 +45,8 @@ const signupSchema = {
       email: { type: 'string', maxLength: 320 },
       password: { type: 'string', maxLength: 200 },
       name: { type: 'string', maxLength: 200 },
+      // S-03: CAPTCHA token (required only when a CAPTCHA provider is configured).
+      captchaToken: { type: 'string', maxLength: 2000 },
     },
     additionalProperties: false,
   },
@@ -143,16 +153,35 @@ export async function confirmEmailChange(userId: string): Promise<void> {
   );
 }
 
+/** S-03: live re-read of the disposable-email toggle (test hook friendly). */
+function disposableBlockEnabled(): boolean {
+  return process.env.DISPOSABLE_EMAIL_BLOCK === 'true' || config.disposableEmailBlock;
+}
+
 export async function registerAuthRoutes(fastify: FastifyInstance) {
   // Brute-force guard: auth endpoints get a much stricter limit than the
   // global 300/min (per-IP).
   const strictRateLimit = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
 
   fastify.post('/auth/signup', { schema: signupSchema, ...strictRateLimit }, async (req, reply) => {
-    const { email, password, name } = req.body as { email: string; password: string; name?: string };
+    const { email, password, name, captchaToken } = req.body as {
+      email: string;
+      password: string;
+      name?: string;
+      captchaToken?: string;
+    };
     const cleanEmail = (email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(cleanEmail)) throw validationError('Invalid email address');
     if (!password || password.length < 8) throw validationError('Password must be at least 8 characters');
+    // S-03: optional disposable-email block (signup abuse protection).
+    if (disposableBlockEnabled() && isDisposableEmail(cleanEmail)) {
+      throw validationError('Please sign up with a permanent email address');
+    }
+    // S-03: CAPTCHA when a provider is configured.
+    if (isCaptchaRequired()) {
+      const ok = await getCaptcha().verify(captchaToken ?? '', req.ip);
+      if (!ok) throw new ApiError(400, 'CAPTCHA_FAILED', 'CAPTCHA verification failed — please try again');
+    }
 
     const existing = await query('SELECT id FROM users WHERE email = $1', [cleanEmail]);
     if (existing.rows.length > 0) throw conflict('EMAIL_EXISTS', 'An account with this email already exists');
@@ -208,6 +237,23 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
   fastify.post('/auth/login', { schema: loginSchema, ...strictRateLimit }, async (req, reply) => {
     const { email, password } = req.body as { email: string; password: string };
     const cleanEmail = (email ?? '').trim().toLowerCase();
+    // S-03: login lockout with backoff. Checked BEFORE the user lookup and
+    // answered generically, so the 429 reveals nothing about whether the
+    // email is registered.
+    const redis = getRedis();
+    const lockOpts = {
+      maxAttempts: config.loginLockout.maxAttempts,
+      baseLockoutMs: config.loginLockout.baseLockoutMin * 60_000,
+      maxLockoutMs: config.loginLockout.maxLockoutMin * 60_000,
+    };
+    const locked = await isLoginLocked(redis, cleanEmail, req.ip, lockOpts);
+    if (locked.locked) {
+      throw new ApiError(
+        429,
+        'LOGIN_LOCKED',
+        `Too many failed sign-in attempts — please try again in ${Math.max(1, Math.ceil(locked.retryAfterMs / 60000))} minute(s)`,
+      );
+    }
     const r = await query(
       `SELECT u.id, u.email, u.name, u.password_hash, u.tenant_id, u.token_version,
               t.name AS tenant_name, t.plan_id
@@ -217,7 +263,14 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     );
     const row = r.rows[0];
     const ok = row?.password_hash ? await verifyPassword(password ?? '', row.password_hash) : false;
-    if (!row || !ok) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
+    if (!row || !ok) {
+      // Count the failure for both the email hash and the IP, even for
+      // unknown emails (no existence oracle), then the generic 401.
+      await recordFailedLogin(redis, cleanEmail, req.ip, lockOpts);
+      throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
+    }
+    // Success: clear any accumulated failures.
+    await clearLoginAttempts(redis, cleanEmail, req.ip);
     const verified = await isEmailVerified(row.id as string);
     // P0-01: sign with the stored token_version (logout bumps it); a default
     // tv=0 here would be permanently revoked after the first logout.

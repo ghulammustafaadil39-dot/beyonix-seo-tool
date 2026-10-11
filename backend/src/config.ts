@@ -15,6 +15,29 @@ export const config = {
   port: parseInt(opt('PORT', '4000'), 10),
   databaseUrl: opt('DATABASE_URL', 'postgres://bseo:bseo@localhost:5432/bseo'),
   redisUrl: opt('REDIS_URL', 'redis://localhost:6379'),
+  // S-03: which proxies to trust for req.ip / X-Forwarded-For. Default FALSE
+  // (fail closed): behind a proxy the operator sets TRUST_PROXY=true (or a
+  // hop count like "1") so per-IP rate limits key on the real client IP
+  // instead of the proxy's. Trusting a proxy you don't control lets an
+  // attacker spoof X-Forwarded-For and dodge IP rate limits.
+  trustProxy: parseTrustProxy(opt('TRUST_PROXY', '')),
+  // S-03: global per-IP rate limit (Redis-backed, shared across instances).
+  globalRateLimitPerMin: parseInt(opt('RATE_LIMIT_PER_MIN', '300'), 10),
+  // S-03: login lockout with exponential backoff (Redis-backed).
+  loginLockout: {
+    maxAttempts: parseInt(opt('LOGIN_LOCKOUT_MAX_ATTEMPTS', '5'), 10),
+    baseLockoutMin: parseInt(opt('LOGIN_LOCKOUT_BASE_MIN', '5'), 10),
+    maxLockoutMin: parseInt(opt('LOGIN_LOCKOUT_MAX_MIN', '60'), 10),
+  },
+  // S-03: signup abuse protection.
+  disposableEmailBlock: opt('DISPOSABLE_EMAIL_BLOCK', 'false') === 'true',
+  captchaProvider: opt('CAPTCHA_PROVIDER', 'none'),
+  captchaSecret: opt('CAPTCHA_SECRET', ''),
+  captchaSiteKey: opt('CAPTCHA_SITEKEY', ''),
+  // S-03: per-tenant hourly budget for expensive endpoints
+  // (keyword research, content generation). Re-read per request via a live
+  // env fallback so tests/ops can tune it without a reboot.
+  tenantExpensiveLimitPerHour: parseInt(opt('TENANT_EXPENSIVE_LIMIT_PER_HOUR', '30'), 10),
   jwtSecret: opt('JWT_SECRET', 'dev-only-jwt-secret-change-me'),
   // Local signing secret for the mock Stripe webhook (dev/test only).
   // Mock webhooks are rejected when this is unset, and always in production.
@@ -64,6 +87,27 @@ export const hasTelegram = () => !!config.telegramBotToken;
 // (all environments — dev with real keys hits the same storm).
 if (config.stripeSecretKey && !config.stripeWebhookSecret) {
   throw new Error('FATAL: STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is set');
+}
+
+// S-03: parses TRUST_PROXY. 'true' -> true (trust all hops — only behind a
+// proxy you control), a hop count ('1', '2') -> that number, anything else
+// (including '') -> false (fail closed: X-Forwarded-For is ignored).
+export function parseTrustProxy(raw: string): boolean | number {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === 'true') return true;
+  if (v === 'false' || v === '') return false;
+  if (/^\d+$/.test(v)) {
+    const n = parseInt(v, 10);
+    return n > 0 ? n : false;
+  }
+  return false;
+}
+
+/** S-03: live re-read of the per-tenant expensive-endpoint budget. */
+export function tenantExpensiveLimit(): number {
+  const v = parseInt(process.env.TENANT_EXPENSIVE_LIMIT_PER_HOUR ?? '', 10);
+  if (Number.isFinite(v) && v > 0) return v;
+  return config.tenantExpensiveLimitPerHour;
 }
 
 // (old production-only check superseded by validateSecrets below)
