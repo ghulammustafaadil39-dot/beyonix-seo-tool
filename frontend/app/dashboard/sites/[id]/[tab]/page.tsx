@@ -13,6 +13,7 @@ import ContentTab from '@/components/tabs/ContentTab';
 import OnpageTab from '@/components/tabs/OnpageTab';
 import BacklinksTab from '@/components/tabs/BacklinksTab';
 import GeoTab from '@/components/tabs/GeoTab';
+import CompetitorsTab from '@/components/tabs/CompetitorsTab';
 import ReportsTab from '@/components/tabs/ReportsTab';
 
 const TAB_COMPONENTS: Record<string, (props: { siteId: string }) => React.JSX.Element> = {
@@ -23,6 +24,7 @@ const TAB_COMPONENTS: Record<string, (props: { siteId: string }) => React.JSX.El
   onpage: OnpageTab,
   backlinks: BacklinksTab,
   geo: GeoTab,
+  competitors: CompetitorsTab,
   reports: ReportsTab,
 };
 

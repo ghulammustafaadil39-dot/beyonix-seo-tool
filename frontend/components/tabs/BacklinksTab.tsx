@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { backlinksApi, type Backlink } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
+import BacklinksV2Panel from './BacklinksV2Panel';
 
 export default function BacklinksTab({ siteId }: { siteId: string }) {
   const { report } = useErrorReporter();
@@ -151,6 +152,8 @@ export default function BacklinksTab({ siteId }: { siteId: string }) {
           </tbody>
         </table>
       </div>
+
+      <BacklinksV2Panel siteId={siteId} />
     </div>
   );
 }

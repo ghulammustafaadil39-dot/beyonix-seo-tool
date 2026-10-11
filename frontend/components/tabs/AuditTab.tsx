@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { auditsApi, type Audit, type AuditIssue } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import ScoreGauge from '../ScoreGauge';
+import AuditV2Panel from './AuditV2Panel';
 
 const SEVERITY_COLOR: Record<string, string> = {
   error: 'bx-pill-err',
@@ -215,6 +216,8 @@ export default function AuditTab({ siteId }: { siteId: string }) {
           </tbody>
         </table>
       </div>
+
+      <AuditV2Panel siteId={siteId} issues={issues} audits={audits} />
     </div>
   );
 }

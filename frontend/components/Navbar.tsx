@@ -1,12 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { authApi } from '@/lib/api';
 
 const LINKS = [
   { href: '/dashboard', label: 'Sites' },
+  { href: '/dashboard/team', label: 'Team' },
+  { href: '/dashboard/api-keys', label: 'API keys' },
+  { href: '/dashboard/notifications', label: 'Notifications' },
   { href: '/dashboard/billing', label: 'Billing' },
   { href: '/dashboard/settings', label: 'Settings' },
 ];
@@ -15,6 +18,15 @@ export default function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    // Show the Admin link only to admins (page itself also guards).
+    authApi
+      .me()
+      .then((me) => setIsAdmin(me.user.role === 'admin'))
+      .catch(() => {});
+  }, []);
 
   const logout = async () => {
     try {
@@ -55,6 +67,18 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
+          {isAdmin && (
+            <Link
+              href="/admin"
+              className={`rounded-md px-3 py-2 text-sm font-medium transition ${
+                pathname.startsWith('/admin')
+                  ? 'bg-teal-400/10 text-teal-300'
+                  : 'text-white/60 hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              Admin
+            </Link>
+          )}
           <button
             onClick={logout}
             className="bx-btn-secondary ml-2 !px-3 !py-2"
@@ -96,6 +120,19 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
+          {isAdmin && (
+            <Link
+              href="/admin"
+              onClick={() => setOpen(false)}
+              className={`block rounded-md px-3 py-2 text-sm font-medium ${
+                pathname.startsWith('/admin')
+                  ? 'bg-teal-400/10 text-teal-300'
+                  : 'text-white/60 hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              Admin
+            </Link>
+          )}
           <button
             onClick={logout}
             className="bx-btn-secondary mt-1 w-full !justify-start"

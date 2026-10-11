@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { keywordsApi, sitesApi, type Keyword } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
+import KeywordsV2Panel from './KeywordsV2Panel';
 
 interface GscQuery {
   query: string;
@@ -240,6 +241,8 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
           </tbody>
         </table>
       </div>
+
+      <KeywordsV2Panel siteId={siteId} />
     </div>
   );
 }

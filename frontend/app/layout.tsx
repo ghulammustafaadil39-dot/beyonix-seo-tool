@@ -1,10 +1,33 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import CookieBanner from '@/components/CookieBanner';
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://app.beyonixseo.com';
 
 export const metadata: Metadata = {
-  title: 'Beyonix SEO — SEO + GEO toolkit for small businesses',
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: 'Beyonix SEO — SEO + GEO toolkit for small businesses',
+    template: '%s — Beyonix SEO',
+  },
   description:
     'Site audits, keyword research, rank tracking, AI content, and AI-search (GEO) visibility — one simple dashboard.',
+  alternates: { canonical: '/' },
+  openGraph: {
+    type: 'website',
+    siteName: 'Beyonix SEO',
+    title: 'Beyonix SEO — SEO + GEO toolkit for small businesses',
+    description:
+      'Site audits, keyword research, rank tracking, AI content, and AI-search (GEO) visibility — one simple dashboard.',
+    url: '/',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Beyonix SEO — SEO + GEO toolkit for small businesses',
+    description:
+      'Site audits, keyword research, rank tracking, AI content, and AI-search (GEO) visibility — one simple dashboard.',
+  },
+  robots: { index: true, follow: true },
 };
 
 export const viewport: Viewport = {
@@ -22,7 +45,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body className="bg-[#04090c] text-white antialiased">{children}</body>
+      <body className="bg-[#04090c] text-white antialiased">
+        {children}
+        <CookieBanner />
+      </body>
     </html>
   );
 }

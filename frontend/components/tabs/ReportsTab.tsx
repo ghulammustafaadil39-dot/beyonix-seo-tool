@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { reportsApi, type Report } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
+import ReportsV2Panel from './ReportsV2Panel';
 
 interface Highlights {
   auditScore?: number | null;
@@ -144,6 +145,8 @@ export default function ReportsTab({ siteId }: { siteId: string }) {
           </div>
         )}
       </div>
+
+      <ReportsV2Panel siteId={siteId} />
     </div>
   );
 }

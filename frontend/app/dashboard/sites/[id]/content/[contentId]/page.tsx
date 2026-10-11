@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { contentApi, type ContentPiece } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
+import ContentV2Panel from '@/components/tabs/ContentV2Panel';
 
 /** View & edit a single content piece. */
 export default function ContentDetailPage({
@@ -143,6 +144,8 @@ export default function ContentDetailPage({
           {saving ? 'Saving…' : 'Save changes'}
         </button>
       </form>
+
+      <ContentV2Panel contentId={contentId} />
     </div>
   );
 }
