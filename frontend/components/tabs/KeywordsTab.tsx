@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { keywordsApi, sitesApi, type Keyword } from '@/lib/api';
+import { keywordsApi, sitesApi, type DataSource, type Keyword } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import { TableSkeleton } from '../Skeleton';
 import dynamic from 'next/dynamic';
@@ -77,6 +77,12 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
   const [trackedOnly, setTrackedOnly] = useState(false);
   const [seeds, setSeeds] = useState('');
   const [researching, setResearching] = useState(false);
+  // A3-M2: provenance of the volume/difficulty numbers from the last
+  // research run in this session ('mock' = seeded, no DataForSEO key).
+  // The keyword-list endpoint does not return provenance, so this only
+  // covers numbers produced by research above; the gap panel labels its
+  // own results the same way.
+  const [researchSource, setResearchSource] = useState<DataSource | null>(null);
 
   const load = async (tracked?: boolean) => {
     try {
@@ -101,7 +107,8 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
     if (seedList.length === 0) return;
     setResearching(true);
     try {
-      await keywordsApi.research(siteId, seedList);
+      const res = await keywordsApi.research(siteId, seedList);
+      setResearchSource(res.dataSource ?? null);
       setSeeds('');
       load(trackedOnly || undefined);
     } catch (err) {
@@ -188,6 +195,13 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
         </label>
         <span className="font-mono text-xs text-white/50">{keywords.length} keywords</span>
       </div>
+
+      {researchSource === 'mock' && (
+        <p className="bx-alert-info">
+          Volume &amp; difficulty are mock estimates (no DataForSEO key configured) —
+          treat them as illustrative. Add DataForSEO keys for live data.
+        </p>
+      )}
 
       {loading ? (
         <TableSkeleton rows={6} cols={7} />

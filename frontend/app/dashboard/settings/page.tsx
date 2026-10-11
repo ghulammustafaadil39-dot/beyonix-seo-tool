@@ -73,8 +73,9 @@ export default function SettingsPage() {
         {saved && <p className="bx-alert-ok">Settings saved.</p>}
 
         <div>
-          <label className="bx-label">Notification email</label>
+          <label htmlFor="notify-email" className="bx-label">Notification email</label>
           <input
+            id="notify-email"
             type="email"
             value={notifyEmail}
             onChange={(e) => setNotifyEmail(e.target.value)}
@@ -85,8 +86,9 @@ export default function SettingsPage() {
         </div>
 
         <div>
-          <label className="bx-label">Telegram chat ID</label>
+          <label htmlFor="telegram-chat-id" className="bx-label">Telegram chat ID</label>
           <input
+            id="telegram-chat-id"
             type="text"
             value={telegramChatId}
             onChange={(e) => setTelegramChatId(e.target.value)}
