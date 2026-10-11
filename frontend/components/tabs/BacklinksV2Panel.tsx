@@ -49,7 +49,7 @@ export default function BacklinksV2Panel({ siteId }: { siteId: string }) {
   };
 
   const downloadDisavow = () => {
-    const domains = [...disavowSel].map((u) => {
+    const domains = Array.from(disavowSel).map((u) => {
       try {
         return new URL(u).hostname;
       } catch {

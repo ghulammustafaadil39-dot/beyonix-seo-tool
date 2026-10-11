@@ -210,6 +210,16 @@ export default function BillingPage() {
       setNotice({ kind: 'success', text: 'Payment successful — your plan is now active.' });
     } else if (params.get('canceled') === '1') {
       setNotice({ kind: 'info', text: 'Checkout was canceled — no charge was made. You can retry anytime.' });
+    } else {
+      // Arrived from the public pricing page with a chosen plan.
+      const plan = params.get('plan');
+      const billing = params.get('billing') === 'annual' ? 'annual' : 'monthly';
+      if (plan && ['starter', 'growth', 'pro'].includes(plan)) {
+        setNotice({
+          kind: 'info',
+          text: `You picked the ${PLAN_NAMES[plan] ?? plan} plan (${billing} billing) — subscribe below to start your free trial.`,
+        });
+      }
     }
     window.history.replaceState(null, '', window.location.pathname);
     (async () => {

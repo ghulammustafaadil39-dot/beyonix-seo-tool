@@ -19,7 +19,15 @@ export default function SignupPage() {
     setError('');
     try {
       await authApi.signup({ name, email, password });
-      router.push('/dashboard');
+      // Preserve a plan choice from the public pricing page (?plan=&billing=).
+      const params = new URLSearchParams(window.location.search);
+      const plan = params.get('plan');
+      const billing = params.get('billing') === 'annual' ? 'annual' : 'monthly';
+      const dest =
+        plan && ['starter', 'growth', 'pro'].includes(plan)
+          ? `/dashboard/billing?plan=${plan}&billing=${billing}`
+          : '/dashboard';
+      router.push(dest);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Signup failed');
     } finally {

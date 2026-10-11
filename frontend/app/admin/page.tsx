@@ -302,11 +302,13 @@ export default function AdminPage() {
         <p className="bx-micro mb-3">~/ health</p>
         <h2 className="text-base font-bold text-white">System health</h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          {[
-            ['API', 'operational', true],
-            ['Worker queues', 'operational', true],
-            ['Stripe webhooks', 'operational', true],
-          ].map(([name, status, ok]) => (
+          {(
+            [
+              ['API', 'operational', true],
+              ['Worker queues', 'operational', true],
+              ['Stripe webhooks', 'operational', true],
+            ] as Array<[string, string, boolean]>
+          ).map(([name, status, ok]) => (
             <div key={name} className="bx-panel flex items-center justify-between">
               <span className="text-sm text-white/70">{name}</span>
               <span className={`bx-pill ${ok ? 'bx-pill-ok' : 'bx-pill-err'}`}>

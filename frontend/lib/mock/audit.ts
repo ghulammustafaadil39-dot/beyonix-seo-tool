@@ -44,7 +44,7 @@ export function groupIssues(issues: AuditIssue[]): Array<{ type: string; items: 
     arr.push(i);
     map.set(i.type, arr);
   }
-  return [...map.entries()]
+  return Array.from(map.entries())
     .map(([type, items]) => ({ type, items }))
     .sort((a, b) => b.items.length - a.items.length);
 }
