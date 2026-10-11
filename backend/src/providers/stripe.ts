@@ -546,8 +546,10 @@ export async function applyPaymentEvent(
     const couponCode: string | undefined = data.metadata?.couponCode ?? data.metadata?.coupon;
     const interval = data.metadata?.interval === 'annual' ? 'annual' : 'monthly';
     // G5-M#1: three cases.
-    // (a) Mock path — data.subscription is ABSENT entirely (no sub id):
-    //     keep the old behavior (treated as paid).
+    // (a) Mock path — data.subscription is ABSENT entirely, or carries the
+    //     mock-confirm marker prefix `sub_mock_` (routes/billing.ts
+    //     mock-confirm is the only producer of those ids; real Stripe
+    //     never issues them): keep the old behavior (treated as paid).
     // (b) Expanded subscription object: use its real status (C5-L-2).
     // (c) Real Stripe path — data.subscription is a plain STRING id
     //     (Stripe never expands it in checkout.session.completed): the
@@ -562,8 +564,9 @@ export async function applyPaymentEvent(
     //     customer.subscription.created event, wiping grace_until: up to
     //     ~23h of free Pro-limit spend for a never-payer.)
     const subStatus: string | undefined = subObj?.status;
+    const isMockSub = !subId || subId.startsWith('sub_mock_');
     let status: string;
-    if (!subId) {
+    if (isMockSub) {
       status = trialDays > 0 ? 'trialing' : 'active'; // (a) mock path
     } else if (subObj) {
       // (b) expanded object — use its status
