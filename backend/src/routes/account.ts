@@ -222,17 +222,63 @@ async function requireWorkspace(tenantId: string, workspaceId: string) {
 const EXPORT_REDACTED = '[REDACTED]';
 
 /**
- * SEC-FIX (Wave-3 W-07): redact bearer-style secrets that live in tenant
- * config rows before they land in the GDPR export. Non-secret fields
- * (channels, rules, metadata) stay intact.
+ * Redaction rule for exported notification config objects:
+ * redact ONLY the value of a key that looks like a webhook bearer
+ * secret — key matching /webhook|hook_url/i (case-insensitive), e.g.
+ * slack_webhook_url, webhook_url, hook_url, discord_webhook. Non-secret
+ * keys (threshold, channels, drop_positions, digest settings, labels)
+ * are never touched. The walk recurses into nested objects and arrays
+ * at arbitrary depth (e.g. config.slack.slack_webhook_url), but only
+ * key-matched VALUES are replaced — never structural content.
  */
-function redactNotificationConfig(config: unknown): unknown {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+const WEBHOOK_KEY_RE = /webhook|hook_url/i;
+
+function redactWebhookKeys(config: unknown): unknown {
+  if (Array.isArray(config)) return config.map(redactWebhookKeys);
+  if (!config || typeof config !== 'object') return config;
   const out: Record<string, unknown> = { ...(config as Record<string, unknown>) };
   for (const key of Object.keys(out)) {
-    if (key.toLowerCase() === 'slack_webhook_url') out[key] = EXPORT_REDACTED;
+    out[key] = WEBHOOK_KEY_RE.test(key) ? EXPORT_REDACTED : redactWebhookKeys(out[key]);
   }
   return out;
+}
+
+/**
+ * Redaction rule for webhook_endpoints.url values:
+ * third-party webhook hosts below hand out bearer URLs where the PATH
+ * itself is the secret (Slack services URLs, Discord webhook URLs,
+ * Zapier catch hooks, Google Chat webhooks, Teams workflow URLs,
+ * webhook-ingest hosts). Redacting query params only would leave the
+ * bearer secret fully visible, so the whole URL value is replaced with
+ * [REDACTED]. Host list (conservative — only where a bearer-secret
+ * shape is expected):
+ *   hooks.slack.com, discord.com, discordapp.com, hooks.zapier.com,
+ *   chat.googleapis.com, teams.office.com / *.office.com, and any host
+ *   containing "webhook".
+ * Customer-owned hosts are NOT on this list: their URLs stay intact
+ * and only query-param tokens (token=, secret=, api_key=, ...) are
+ * redacted, so the export remains understandable.
+ */
+const BEARER_URL_HOSTS = [
+  'hooks.slack.com',
+  'discord.com',
+  'discordapp.com',
+  'hooks.zapier.com',
+  'chat.googleapis.com',
+  'teams.office.com',
+  'office.com',
+];
+
+function isBearerUrlHost(url: string): boolean {
+  let host = '';
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (BEARER_URL_HOSTS.some((h) => host === h || host.endsWith('.' + h))) return true;
+  if (host.includes('webhook')) return true;
+  return false;
 }
 
 /** Redact bearer tokens embedded in a URL's query string (Slack bridge
@@ -243,12 +289,18 @@ function redactUrlTokens(url: unknown): unknown {
   return url.replace(/([?&])(token|secret|api[_-]?key|access[_-]?token|auth[_-]?token|password)=[^&#\s]*/gi, '$1$2=' + EXPORT_REDACTED);
 }
 
+function redactWebhookEndpointUrl(url: unknown): unknown {
+  if (typeof url !== 'string') return url;
+  if (isBearerUrlHost(url)) return EXPORT_REDACTED; // path-embedded secret on a bearer host
+  return redactUrlTokens(url); // customer host: keep URL, redact query tokens
+}
+
 function redactExportSection(section: string, rows: any[]): any[] {
   if (section === 'notification_rules') {
-    return rows.map((r) => ({ ...r, config: redactNotificationConfig(r.config) }));
+    return rows.map((r) => ({ ...r, config: redactWebhookKeys(r.config) }));
   }
   if (section === 'webhook_endpoints') {
-    return rows.map((r) => ({ ...r, url: redactUrlTokens(r.url) }));
+    return rows.map((r) => ({ ...r, url: redactWebhookEndpointUrl(r.url) }));
   }
   return rows;
 }

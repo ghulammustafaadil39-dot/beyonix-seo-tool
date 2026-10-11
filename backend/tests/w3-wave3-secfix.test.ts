@@ -164,6 +164,70 @@ describe.runIf(HAS_TEST_DB)('Wave-3 SEC-FIX regressions', () => {
     expect(ep.url).toBe('https://bridge.example.com/hook?token=[REDACTED]&foo=bar');
   });
 
+  it('SEC-FIX #4b: GDPR export redacts nested config webhook keys + path-embedded bearer URLs', async () => {
+    const u = await signupVerified(app); tc.add(u.tenantId);
+    const slackServices = 'https://hooks.slack.com/services/T9X/secretabc123';
+    const discordHook = 'https://discord.com/api/webhooks/987654321/discord-secret-token';
+    const zapierHook = 'https://hooks.zapier.com/hooks/catch/123/secretpath456';
+    const ownHook = 'https://hooks.acme.example.com/in/wh?token=own-secret-1&x=1';
+    // Discord-style key + a NESTED config object (config.slack.slack_webhook_url).
+    const ruleRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/alert-rules',
+      headers: auth(u.token),
+      payload: {
+        ruleType: 'critical_issue',
+        channels: ['webhook'],
+        config: {
+          webhook_url: discordHook,
+          threshold: 3,
+          channels: ['email'],
+          slack: { slack_webhook_url: slackServices },
+          digest: { cadence: 'weekly' },
+        },
+      },
+    });
+    expect(ruleRes.statusCode).toBe(200);
+    await query(
+      `INSERT INTO webhook_endpoints (id,tenant_id,url,secret_enc,events,enabled) VALUES (gen_random_uuid(),$1,$2,'x','{"audit.finished"}',TRUE)`,
+      [u.tenantId, zapierHook],
+    );
+    await query(
+      `INSERT INTO webhook_endpoints (id,tenant_id,url,secret_enc,events,enabled) VALUES (gen_random_uuid(),$1,$2,'x','{"rank.changed"}',TRUE)`,
+      [u.tenantId, ownHook],
+    );
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/account/export', headers: auth(u.token) });
+    expect(res.statusCode).toBe(200);
+    const wire = res.body as string;
+    // The literal secrets must appear NOWHERE on the wire...
+    expect(wire).not.toContain(discordHook);
+    expect(wire).not.toContain(slackServices);
+    expect(wire).not.toContain(zapierHook);
+    expect(wire).not.toContain('own-secret-1');
+    expect(wire).not.toContain('discord-secret-token');
+    expect(wire).not.toContain('secretpath456');
+    expect(wire).toContain('[REDACTED]');
+
+    const dump = res.json() as any;
+    const rule = (dump.notification_rules as any[]).find((r: any) => r.rule_type === 'critical_issue');
+    expect(rule.config.webhook_url).toBe('[REDACTED]');
+    expect(rule.config.slack.slack_webhook_url).toBe('[REDACTED]');
+    // Non-secret config stays intact.
+    expect(rule.config.threshold).toBe(3);
+    expect(rule.config.channels).toEqual(['email']);
+    expect(rule.config.digest.cadence).toBe('weekly');
+
+    const byEvents = (ev: string) =>
+      (dump.webhook_endpoints as any[]).find((e: any) => (e.events ?? '').includes(ev));
+    // Third-party bearer URL (Zapier catch hook): whole URL gone.
+    expect(byEvents('audit.finished').url).toBe('[REDACTED]');
+    // Customer-owned host: URL intact, only the query token redacted.
+    expect(byEvents('rank.changed').url).toBe(
+      'https://hooks.acme.example.com/in/wh?token=[REDACTED]&x=1',
+    );
+  });
+
   it('SEC-FIX #5: bench-hot refuses to run against a non-test DATABASE_URL', async () => {
     const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     const tsxBin = path.join(backendDir, 'node_modules', '.bin', 'tsx');
