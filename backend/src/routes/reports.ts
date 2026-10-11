@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
+import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
 import { notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -55,6 +56,7 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/reports/generate', {
       schema: { params: idParams },
+      preHandler: requireVerifiedEmail, // S-01: report generation spend
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);

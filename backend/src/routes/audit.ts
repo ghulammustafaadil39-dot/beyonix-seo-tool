@@ -3,6 +3,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
+import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { requireSite } from '../services/sites.js';
 import { enqueue, QUEUES, Jobs } from '../queues.js';
 import { query } from '../db.js';
@@ -36,6 +37,7 @@ export function registerAuditRoutes(fastify: FastifyInstance) {
     // Trigger a new full-site audit (enqueues a crawl job). 409 if one is active.
     app.post('/sites/:id/audits', {
       schema: { params: uuidParams('id'), body: { type: 'object', properties: {} } },
+      preHandler: requireVerifiedEmail, // S-01: crawls cost provider budget
     }, async (req, reply) => {
       const { tenantId, plan } = req.tenant;
       const siteId = (req.params as { id: string }).id;

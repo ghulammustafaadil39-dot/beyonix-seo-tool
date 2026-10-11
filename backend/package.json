@@ -7,6 +7,7 @@
     "bullmq": "^5.12.0",
     "cheerio": "^1.0.0",
     "fastify": "^5.2.0",
+    "fastify-plugin": "^5.0.1",
     "googleapis": "^144.0.0",
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
@@ -14,7 +15,7 @@
     "nodemailer": "^6.10.0",
     "pg": "^8.13.1",
     "stripe": "^17.5.0",
-    "fastify-plugin": "^5.0.1"
+    "undici": "7.30.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

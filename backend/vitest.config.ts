@@ -4,6 +4,10 @@ export default defineConfig({
   test: {
     environment: 'node',
     testTimeout: 30000,
+    // Per-worktree test database default (LA directive): runs before any src
+    // import so config/db pick it up. Overridable via env; QA's integration
+    // setup.ts takes precedence for the integration projects.
+    setupFiles: ['./tests/setup.ts'],
     projects: [
       {
         test: {

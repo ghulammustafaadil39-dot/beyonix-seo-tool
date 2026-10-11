@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { config, hasGoogle } from '../config.js';
 import { encrypt } from '../crypto.js';
@@ -6,6 +5,7 @@ import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
 import { getGoogle } from '../providers/google.js';
+import { consumeGscState, createGscState } from '../services/oauthState.js';
 import { requireSite, siteUrl } from '../services/sites.js';
 
 const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
@@ -34,24 +34,6 @@ const mockConsentQuerySchema = {
   },
 } as const;
 
-interface GscState {
-  tenantId: string;
-  siteId: string;
-  exp: number;
-}
-
-/** state -> {tenantId, siteId, exp} for the GSC OAuth flow. */
-const gscStates = new Map<string, GscState>();
-const GSC_STATE_TTL_MS = 15 * 60 * 1000;
-
-function sweepGscStates() {
-  if (gscStates.size < 500) return;
-  const now = Date.now();
-  for (const [k, v] of gscStates) {
-    if (v.exp < now) gscStates.delete(k);
-  }
-}
-
 export async function registerGscRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
     await authPlugin(authed);
@@ -59,9 +41,7 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
     authed.get('/sites/:id/gsc/auth-url', { schema: { params: idParamSchema } }, async (req) => {
       const { id } = req.params as { id: string };
       await requireSite(req.tenant.tenantId, id);
-      const state = randomBytes(16).toString('hex');
-      sweepGscStates();
-      gscStates.set(state, { tenantId: req.tenant.tenantId, siteId: id, exp: Date.now() + GSC_STATE_TTL_MS });
+      const state = createGscState({ tenantId: req.tenant.tenantId, siteId: id });
       return { url: getGoogle().getAuthUrl(state) };
     });
 
@@ -78,9 +58,8 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
 
   fastify.get('/gsc/callback', { schema: callbackQuerySchema }, async (req, reply) => {
     const { code, state } = req.query as { code?: string; state?: string };
-    const s = state ? gscStates.get(state) : undefined;
-    if (state) gscStates.delete(state);
-    if (!state || !s || s.exp < Date.now() || !code) {
+    const s = state ? consumeGscState(state) : null;
+    if (!s || !code) {
       throw new ApiError(400, 'INVALID_STATE', 'Invalid or expired OAuth state');
     }
     const { refreshToken } = await getGoogle().exchangeCode(code);

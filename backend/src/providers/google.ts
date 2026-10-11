@@ -1,7 +1,8 @@
 import { google } from 'googleapis';
+import { CodeChallengeMethod } from 'google-auth-library';
 import { config, hasGoogle } from '../config.js';
 import { decrypt } from '../crypto.js';
-import type { GoogleProvider, GscQuery, GscLink, Ga4Property, Ga4Overview, Ga4TopEntry } from './types.js';
+import type { GoogleProfile, GoogleProvider, GscQuery, GscLink, Ga4Property, Ga4Overview, Ga4TopEntry } from './types.js';
 
 function oauthClient() {
   return new google.auth.OAuth2(config.googleClientId, config.googleClientSecret, config.googleRedirectUri);
@@ -11,7 +12,7 @@ class RealGoogleProvider implements GoogleProvider {
   name = 'google';
   isMock = false;
 
-  getAuthUrl(state: string): string {
+  getAuthUrl(state: string, opts?: { codeChallenge?: string }): string {
     return oauthClient().generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
@@ -20,6 +21,10 @@ class RealGoogleProvider implements GoogleProvider {
         'https://www.googleapis.com/auth/analytics.readonly',
       ],
       state,
+      // S-04 PKCE: the caller generates the verifier and keeps it server-side.
+      ...(opts?.codeChallenge
+        ? { code_challenge: opts.codeChallenge, code_challenge_method: CodeChallengeMethod.S256 }
+        : {}),
     });
   }
 
@@ -29,15 +34,22 @@ class RealGoogleProvider implements GoogleProvider {
     return { refreshToken: tokens.refresh_token };
   }
 
-  async getProfile(code: string): Promise<{ email: string; name: string; googleId: string }> {
+  async getProfile(code: string, codeVerifier?: string): Promise<GoogleProfile> {
     const client = oauthClient();
-    const { tokens } = await client.getToken(code);
+    const { tokens } = codeVerifier
+      ? await client.getToken({ code, codeVerifier })
+      : await client.getToken(code);
     client.setCredentials(tokens);
     const oauth2 = google.oauth2({ version: 'v2', auth: client });
     const me = await oauth2.userinfo.get();
     const email = me.data.email;
     if (!email) throw new Error('Google did not return an email address');
-    return { email, name: me.data.name ?? email, googleId: me.data.id ?? '' };
+    return {
+      email,
+      name: me.data.name ?? email,
+      googleId: me.data.id ?? '',
+      emailVerified: me.data.verified_email ?? false,
+    };
   }
 
   private async authed(refreshTokenEnc: string) {
@@ -175,8 +187,15 @@ class MockGoogleProvider implements GoogleProvider {
     return { refreshToken: 'mock-refresh-token' };
   }
 
-  async getProfile(_code: string): Promise<{ email: string; name: string; googleId: string }> {
-    return { email: 'mock.user@example.com', name: 'Mock User', googleId: 'mock-google-id' };
+  async getProfile(_code: string): Promise<GoogleProfile> {
+    // Dev/test knobs: MOCK_GOOGLE_EMAIL_VERIFIED=false simulates a Google
+    // account whose email is NOT verified (S-01 merge-rule tests).
+    return {
+      email: process.env.MOCK_GOOGLE_EMAIL ?? 'mock.user@example.com',
+      name: 'Mock User',
+      googleId: 'mock-google-id',
+      emailVerified: process.env.MOCK_GOOGLE_EMAIL_VERIFIED !== 'false',
+    };
   }
 
   async searchQueries(_refreshToken: string, _siteUrl: string, _days = 28): Promise<GscQuery[]> {

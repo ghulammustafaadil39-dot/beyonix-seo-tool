@@ -75,13 +75,22 @@ export interface Ga4Overview {
   topPages: Ga4TopEntry[];
   topReferrers: Ga4TopEntry[];
 }
+/** Profile returned by Google sign-in. emailVerified comes from Google's userinfo. */
+export interface GoogleProfile {
+  email: string;
+  name: string;
+  googleId: string;
+  /** S-01: true only when Google attests the email is verified. */
+  emailVerified: boolean;
+}
+
 export interface GoogleProvider {
   name: string;
   isMock: boolean;
-  getAuthUrl(state: string): string;
+  getAuthUrl(state: string, opts?: { codeChallenge?: string }): string;
   exchangeCode(code: string): Promise<{ refreshToken: string }>;
   /** Email/profile for the user who completed OAuth (used for signup/login via Google). */
-  getProfile(code: string): Promise<{ email: string; name: string; googleId: string }>;
+  getProfile(code: string, codeVerifier?: string): Promise<GoogleProfile>;
   searchQueries(refreshToken: string, siteUrl: string, days?: number): Promise<GscQuery[]>;
   backlinks(refreshToken: string, siteUrl: string): Promise<GscLink[]>;
   /** GA4: list Analytics properties the Google account can access. */

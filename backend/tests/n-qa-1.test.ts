@@ -61,16 +61,35 @@ describe.runIf(HAS_TEST_DB)('N-QA-1 public routes are not auth-gated', () => {
 
   // Mock-provider only: with real Stripe keys the webhook requires a valid
   // Stripe signature (covered by the signed-fixture tests in p0-04.test.ts).
+  // P0-05: mock webhooks require the local MOCK_WEBHOOK_SECRET signature.
+  // This test proves the route is PUBLIC (no auth preHandler) by sending a
+  // correctly SIGNED event (expect 200), and proves an unsigned event fails
+  // on the webhook's own signature check — never on "Authentication required".
   it.runIf(!process.env.STRIPE_SECRET_KEY)(
     'POST /billing/webhook is reachable without a token (mock provider)',
     async () => {
-      const res = await app.inject({
+      const { config } = await import('../src/config.js');
+      const { signMockWebhookEvent } = await import('../src/providers/stripe.js');
+      const secret = 'n-qa-1-webhook-test-secret';
+      (config as unknown as Record<string, unknown>).mockWebhookSecret = secret;
+      const raw = JSON.stringify({ type: 'unknown.test.event', data: {} });
+      const sig = signMockWebhookEvent(raw, secret);
+      const ok = await app.inject({
         method: 'POST',
         url: '/api/v1/billing/webhook',
-        payload: { type: 'unknown.test.event' },
+        headers: { 'stripe-signature': sig, 'content-type': 'application/json' },
+        payload: raw,
       });
-      expect(res.statusCode).toBe(200);
-      expect(res.json().received).toBe(true);
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().received).toBe(true);
+      const unsigned = await app.inject({
+        method: 'POST',
+        url: '/api/v1/billing/webhook',
+        headers: { 'content-type': 'application/json' },
+        payload: raw,
+      });
+      expect(unsigned.json().error.code).toBe('INVALID_WEBHOOK_SIGNATURE');
+      expect(unsigned.json().error.message).not.toMatch(/Authentication required/);
     },
   );
 
