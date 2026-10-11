@@ -196,7 +196,19 @@ async function main() {
   ]);
 }
 
-if (process.argv[1]?.endsWith('index.js')) {
+/**
+ * BUG-QA-W2-1 (same pattern as worker.ts): entry-point predicate. The
+ * built entry is `dist/index.js` (`npm start`), but the dev entry is
+ * `src/index.ts` run under tsx (`npm run dev`) — argv[1] then ends in
+ * `index.ts`, so a `.js`-only guard silently no-ops in dev. Accept both;
+ * importing this module (tests, buildApp) must never start the server.
+ */
+export function isApiEntryPoint(argv1: string | undefined): boolean {
+  if (!argv1) return false;
+  return argv1.endsWith('index.js') || argv1.endsWith('index.ts');
+}
+
+if (isApiEntryPoint(process.argv[1])) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

@@ -12,6 +12,12 @@ import { requireSite } from '../services/sites.js';
 import { enqueue, QUEUES, Jobs } from '../queues.js';
 import { positionVisibility, siteVisibilityShare, competitorPositions } from '../services/rankMetrics.js';
 import { DEFAULT_TRACKING } from '../services/rankJobs.js';
+import { getKeywordSerpProvider } from '../providers/dataforseo.js';
+
+/** BUG-QA-W2-4: honest source label, same convention as the keyword-gap endpoint. */
+function rankDataSource(): 'mock' | 'real' {
+  return getKeywordSerpProvider().isMock ? 'mock' : 'real';
+}
 
 const siteParams = {
   type: 'object',
@@ -67,7 +73,15 @@ export function registerRankRoutes(fastify: FastifyInstance) {
       { preHandler: requireScope('ranks:read'),
         schema: {
           params: siteParams,
-          response: { 200: { type: 'object', properties: { data: { type: 'array', items: rankRowSchema('r') } } } },
+          response: {
+            200: {
+              type: 'object',
+              properties: {
+                data: { type: 'array', items: rankRowSchema('r') },
+                dataSource: { type: 'string', enum: ['mock', 'real'] },
+              },
+            },
+          },
         },
       },
       async (req) => {
@@ -128,6 +142,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
         }
 
         return {
+          dataSource: rankDataSource(),
           data: latest.map((r: any) => ({
             keyword_id: r.keyword_id,
             keyword: r.keyword,
@@ -212,6 +227,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
         });
 
         return {
+          dataSource: rankDataSource(),
           site: { domain: site.domain, ...summary },
           competitors,
           keywords: own,
@@ -276,6 +292,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
         );
         return {
           keyword: kw.rows[0].keyword,
+          dataSource: rankDataSource(),
           data: r.rows.map((row: any) => ({ ...row, not_ranked: row.position == null })),
         };
       },
@@ -306,6 +323,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
         const s = r.rows[0];
         return {
           keyword: kw.rows[0].keyword,
+          dataSource: rankDataSource(),
           snapshot: {
             id: s.id,
             location_code: s.location_code,
