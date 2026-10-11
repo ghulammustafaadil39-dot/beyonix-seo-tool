@@ -10,7 +10,8 @@
 //    validated IP via a custom undici lookup (no re-resolution at connect
 //    time) — this closes the DNS-rebinding hole (validate-then-fetch)
 //  - redirects are followed manually, each hop re-resolved + re-validated;
-//    Authorization/Cookie headers are dropped on cross-host redirects
+//    Authorization/Cookie headers are dropped on cross-origin redirects
+//    (host change or https→http downgrade)
 //  - response size is capped (streaming abort) and content-type allow-listed
 //    (gzip-bomb / huge-file OOM defense)
 //  - absolute total deadline supported for crawl time budgets
@@ -365,6 +366,17 @@ function withoutCredentialHeaders(
   return h;
 }
 
+/**
+ * Whether a redirect from `current` to `target` crosses an origin boundary
+ * for credential purposes: a different host, or an https→http downgrade on
+ * the same host (credentials must never travel over plaintext). Exported for
+ * unit tests.
+ */
+export function shouldStripCredentials(current: URL, target: URL): boolean {
+  if (target.host !== current.host) return true;
+  return current.protocol === 'https:' && target.protocol === 'http:';
+}
+
 // ---------------------------------------------------------------------------
 // safeFetch
 // ---------------------------------------------------------------------------
@@ -426,10 +438,11 @@ export async function safeFetch(
       await dispatcher.close().catch(() => undefined);
       if (!loc) return res;
       const target = new URL(loc, current.url.toString());
-      // Cross-host redirect: never forward credentials to the new host
-      // (native fetch strips Authorization cross-origin; Cookie likewise).
-      // Same-host redirects keep the original headers.
-      if (target.host !== current.url.host && currentInit?.headers) {
+      // Cross-origin redirect: never forward credentials (native fetch
+      // strips Authorization on any origin change; Cookie likewise).
+      // Origin change = different host OR https→http scheme downgrade.
+      // Same-origin redirects keep the original headers.
+      if (shouldStripCredentials(current.url, target) && currentInit?.headers) {
         currentInit = { ...currentInit, headers: withoutCredentialHeaders(currentInit.headers) };
       }
       current = await assertUrlSafe(target.toString(), opts);

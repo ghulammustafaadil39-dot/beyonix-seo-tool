@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { FastifyInstance } from 'fastify';
-import { safeFetch } from '../src/services/safeFetch.js';
+import { safeFetch , shouldStripCredentials } from '../src/services/safeFetch.js';
 import { buildApp } from '../src/index.js';
 import { pool, query, runMigrations } from '../src/db.js';
 import { getLLMForTenant } from '../src/providers/llm.js';
@@ -179,5 +179,25 @@ describe.runIf(HAS_TEST_DB)('Hardening-1 settings llm_provider', () => {
     const mock = await getLLMForTenant(u.tenantId);
     expect(mock.name).toBe('mock');
     expect(mock.isMock).toBe(true);
+  });
+});
+
+describe('shouldStripCredentials (LA: https->http downgrade residual)', () => {
+  const u = (s: string) => new URL(s);
+  it('strips on host change', () => {
+    expect(shouldStripCredentials(u('https://a.example/x'), u('https://b.example/y'))).toBe(true);
+  });
+  it('strips on same-host https->http downgrade', () => {
+    expect(shouldStripCredentials(u('https://a.example/x'), u('http://a.example/y'))).toBe(true);
+  });
+  it('keeps headers on same-origin redirects', () => {
+    expect(shouldStripCredentials(u('https://a.example/x'), u('https://a.example/y'))).toBe(false);
+    expect(shouldStripCredentials(u('http://a.example/x'), u('http://a.example/y'))).toBe(false);
+  });
+  it('keeps headers on http->https upgrade (same host)', () => {
+    expect(shouldStripCredentials(u('http://a.example/x'), u('https://a.example/y'))).toBe(false);
+  });
+  it('strips when the port changes (host includes port)', () => {
+    expect(shouldStripCredentials(u('https://a.example:8443/x'), u('https://a.example:9443/y'))).toBe(true);
   });
 });
