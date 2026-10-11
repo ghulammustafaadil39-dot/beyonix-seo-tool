@@ -249,3 +249,35 @@ Har phase ke end par testable product — "sab kuch ek saath" nahi.
 **Audit hardening (Oct 10, 2026):** SSRF-safe crawler fetches (private-IP/DNS rebinding blocked), production fail-fast on missing JWT/encryption secrets, `verify_token` + encrypted Google token never leave the API, logout revokes all sessions (token_version), OAuth state TTL sweep, auth rate limiting, generic 500s in prod, ai_words enforced at every spend point, monthly DataForSEO spend caps (`serp_checks`, `keyword_metrics`, `crawl_pages`) with 402 upgrade path, real organic keyword difficulty (bulk_keyword_difficulty, not Ads competition index), location-configurable rank tracking (default US 2840), GEO checks labeled as simulated estimates in the UI.
 
 **Hamari costing (build/test phase):** VPS ~$6–8 + DataForSEO ~$5–15 + LLM ~$5–15 + domain/email ~$2–3 = **~$20–40/mo**
+
+---
+
+## 13. Wave 3 additions (Oct 11, 2026 — QA/Release Lead)
+
+- **Observability**: `GET /metrics` (Prometheus text: HTTP histogram, job
+  outcomes, live queue depth, provider spend, dead letters) and `GET /status`
+  (JSON: db/redis health, queues, spend, hook flags) registered in
+  `backend/src/index.ts` via `routes/metrics.ts`; request ids propagate
+  API→error bodies and pino logs (worker logs remain unstructured —
+  documented gap). Frontend `/status` page renders the same data.
+- **Ops**: `docker-compose.prod.yml` (Caddy TLS, healthchecks, resource
+  limits, log rotation, backup sidecar, zero-downtime notes in
+  `RUNBOOK.md`); `RUNBOOK.md` (start/stop, migrations, backups/restore, key
+  rotation, incidents, CI↔local command map); `.github/workflows/ci.yml`
+  (lint, tsc, tests+PG/Redis services, frontend build, migration dry-run,
+  npm audit, gitleaks, E2E) + `.gitleaks.toml`.
+- **Dev quality**: `backend/scripts/seed.ts` (idempotent demo data,
+  `npm run seed`), root `Makefile` (`make dev` one-command bootstrap).
+- **Test pyramid**: `integration-stripe` project populated with 11 signed
+  webhook tests against the REAL Stripe provider path (BUG-QA-W2-3);
+  `tests/wave3/` observability tests; `tests/load/hot-reads.load.mjs`
+  (Node load baseline); Playwright E2E attempted (see
+  `docs/qa/wave3-results.md`).
+- **Docs**: `docs/methodology.md` (score/GEO honesty), `docs/observability.md`,
+  `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`; README rewritten to the
+  real product; `.env.example` complete and proven against `config.ts`.
+
+Correction to §12: the "Deferred to v2" list is **superseded** — the master
+prompt program (Oct 11, 2026) brought CMS publish, white-label, agency
+workspaces, competitor analysis, PDF reports, disavow/toxic workflow and
+content workflow into the product (F-02..F-08, F-13, F-14, W-* in progress).

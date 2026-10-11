@@ -39,6 +39,7 @@ import { registerSettingsRoutes } from './routes/settings.js';
 import { registerWellKnownRoutes } from './routes/wellKnown.js';
 import { registerInsightRoutes } from './routes/insights.js';
 import { registerJobEventRoutes } from './routes/jobEvents.js';
+import { registerMetricsRoutes } from './routes/metrics.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -110,6 +111,10 @@ export async function buildApp() {
       error: { code: 'NOT_FOUND', message: 'Not found', ...(req.id ? { requestId: req.id } : {}) },
     });
   });
+
+  // Q-03: Prometheus /metrics + /status data endpoint (root-level, like
+  // /healthz — scrapers carry no session). Additive only.
+  await registerMetricsRoutes(app);
 
   // Liveness: dependency-free, answers even when DB/Redis are down.
   app.get('/healthz', async () => ({ ok: true, time: new Date().toISOString() }));

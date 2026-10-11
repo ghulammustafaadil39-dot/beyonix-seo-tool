@@ -1,0 +1,19 @@
+# Q-02: gitleaks config for the secret-scan CI job.
+# Scans commits/PRs for accidentally committed secrets.
+[extend]
+useDefault = true
+
+# Allow the documented placeholders and the throwaway CI test secrets that
+# live in tests/ and the CI workflow (fake, never real).
+[allowlist]
+description = "test fixtures, docs placeholders, .env.example"
+paths = [
+  '''.env.example''',
+  '''.github/workflows/ci.yml''',
+  '''backend/tests/.*''',
+  '''docs/.*''',
+  '''README.md''',
+]
+regexes = [
+  '''(?i)(ci[-_]?mock[-_]?webhook[-_]?secret|whsec_(test_integration|ci)[-_0-9a-f]+|sk_test_(integration_fake|ci)[-_0-9a-z]+)''',
+]

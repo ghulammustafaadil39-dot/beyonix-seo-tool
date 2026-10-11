@@ -1,0 +1,17 @@
+# Q-05: Caddy reverse proxy for production.
+# Set APP_HOST / API_HOST in .env (e.g. app.example.com, api.example.com).
+# Caddy obtains/renews TLS automatically via ACME (ports 80/443 must be open).
+#
+# Alternative: serve both from one hostname — comment the api block and let
+# the Next.js same-origin /api proxy route (app/api/[...path]/route.ts)
+# forward to the API. One hostname = no CORS/Cookie-SameSite split concerns.
+
+{$APP_HOST:localhost} {
+	tls {$APP_TLS_EMAIL:}
+	reverse_proxy web:3000
+}
+
+{$API_HOST:localhost} {
+	tls {$APP_TLS_EMAIL:}
+	reverse_proxy api:4000
+}

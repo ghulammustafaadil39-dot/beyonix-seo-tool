@@ -28,6 +28,7 @@
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^6.4.17",
     "@types/pg": "^8.11.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^3.0.5"
@@ -45,7 +46,9 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration --project integration-stripe",
     "test:watch": "vitest",
-    "rotate-keys": "tsx scripts/rotate-encryption-keys.ts"
+    "rotate-keys": "tsx scripts/rotate-encryption-keys.ts",
+    "test:coverage": "vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.include=\"src/services/**/*.ts\" --coverage.include=\"src/routes/**/*.ts\" --coverage.include=\"src/metering.ts\" --coverage.include=\"src/plans.ts\" --coverage.include=\"src/config.ts\"",
+    "seed": "tsx scripts/seed.ts"
   },
   "type": "module",
   "version": "0.1.0"

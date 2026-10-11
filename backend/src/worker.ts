@@ -16,6 +16,7 @@ import { geoCheckProcessor } from './services/geoJobs.js';
 import { reportProcessor } from './services/reportJobs.js';
 import { contentProcessor } from './services/contentJobs.js';
 import { reverifyProcessor } from './services/verifyJobs.js';
+import { recordJobOutcome } from './services/metrics.js';
 
 /** The crawl queue carries crawl + light-check + backlink-refresh + reverify jobs; dispatch by name. */
 async function crawlQueueProcessor(job: Job) {
@@ -126,6 +127,7 @@ async function main() {
 
   for (const w of workers) {
     w.on('failed', (job, err) => {
+      recordJobOutcome(w.name, 'failed');
       console.error(`[worker] job ${job?.id} failed:`, err.message);
       // C-03: terminal failures go to the dead-letter table (replayable
       // from the admin back-office); retried failures stay in BullMQ.
@@ -141,7 +143,10 @@ async function main() {
         }).catch((e) => console.error('[worker] dead-letter capture failed', e));
       }
     });
-    w.on('completed', (job) => console.log(`[worker] job ${job?.id} done`));
+    w.on('completed', (job) => {
+      recordJobOutcome(w.name, 'completed');
+      console.log(`[worker] job ${job?.id} done`);
+    });
   }
 
   const schedules = startScheduler();
