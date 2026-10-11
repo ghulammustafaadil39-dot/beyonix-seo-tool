@@ -8,6 +8,7 @@ import { useErrorReporter } from '@/components/ErrorBanner';
 import TabNav from '@/components/TabNav';
 import StatCard from '@/components/StatCard';
 import ScoreGauge from '@/components/ScoreGauge';
+import OnboardingChecklist from '@/components/OnboardingChecklist';
 
 // MUST match the backend allowlist in routes/sites.ts (SERP_LOCATIONS).
 // Rank data (DataForSEO) is only as good as this setting: pick the country
@@ -415,6 +416,8 @@ function SitePageInner({ siteId }: { siteId: string }) {
       )}
 
       <TabNav siteId={siteId} />
+
+      <OnboardingChecklist siteId={siteId} />
 
       <LocationPicker site={site} onSaved={setSite} />
 
