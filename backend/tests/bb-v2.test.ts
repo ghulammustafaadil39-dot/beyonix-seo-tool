@@ -2,7 +2,7 @@
 // No network, no DB, no Redis.
 import { describe, it, expect } from 'vitest';
 import { analyzeToxicity, TOXIC_THRESHOLD } from '../src/services/toxicLinks.js';
-import { signShareToken, verifyShareToken, hashShareToken } from '../src/services/shareTokens.js';
+import { createShareToken, verifyShareTokenFormat, hashShareToken } from '../src/services/shareTokens.js';
 import { topTerms, termCoverage, pageTextForTerms } from '../src/services/nlpTerms.js';
 import { isQuestionKeyword } from '../src/services/keywordText.js';
 
@@ -27,35 +27,27 @@ describe('toxicLinks (heuristics — labeled as such)', () => {
 
 describe('shareTokens', () => {
   const secret = 'test-secret-32-chars-minimum-000000';
-  const payload = {
-    resourceType: 'audit',
-    resourceId: '11111111-1111-1111-1111-111111111111',
-    tenantId: '22222222-2222-2222-2222-222222222222',
-    expiresAt: Date.now() + 3600_000,
-    issuedAt: Date.now(),
-  };
-  it('signs and verifies a token', () => {
-    const token = signShareToken(secret, payload);
-    const back = verifyShareToken(secret, token, 'audit');
-    expect(back).not.toBeNull();
-    expect(back!.resourceId).toBe(payload.resourceId);
+  it('creates short signed tokens that verify', () => {
+    const { token, tokenHash } = createShareToken(secret);
+    expect(token.length).toBeLessThan(100); // fits Fastify's default maxParamLength
+    expect(token.startsWith('bseo1.')).toBe(true);
+    const id = verifyShareTokenFormat(secret, token);
+    expect(id).not.toBeNull();
+    expect(hashShareToken(token)).toBe(tokenHash);
+    expect(tokenHash).toHaveLength(64);
   });
-  it('rejects tampered tokens', () => {
-    const token = signShareToken(secret, payload);
-    const parts = token.split('.');
-    const tampered = `${parts[0]}.${parts[1]}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
-    expect(verifyShareToken(secret, tampered)).toBeNull();
+  it('rejects tampered tokens and wrong secrets', () => {
+    const { token } = createShareToken(secret);
+    const tampered = token.slice(0, -2) + 'AA';
+    expect(verifyShareTokenFormat(secret, tampered)).toBeNull();
+    expect(verifyShareTokenFormat('wrong-secret-0000000000000000000000', token)).toBeNull();
+    expect(verifyShareTokenFormat(secret, 'bseo1.not-a-token')).toBeNull();
+    expect(verifyShareTokenFormat(secret, '')).toBeNull();
   });
-  it('rejects expired tokens and wrong resource type', () => {
-    const expired = signShareToken(secret, { ...payload, expiresAt: Date.now() - 1000 });
-    expect(verifyShareToken(secret, expired)).toBeNull();
-    const token = signShareToken(secret, payload);
-    expect(verifyShareToken(secret, token, 'report')).toBeNull();
-  });
-  it('hashes tokens deterministically for revocation lookup', () => {
-    const token = signShareToken(secret, payload);
-    expect(hashShareToken(token)).toBe(hashShareToken(token));
-    expect(hashShareToken(token)).toHaveLength(64);
+  it('produces unique tokens', () => {
+    const a = createShareToken(secret);
+    const b = createShareToken(secret);
+    expect(a.token).not.toBe(b.token);
   });
 });
 
