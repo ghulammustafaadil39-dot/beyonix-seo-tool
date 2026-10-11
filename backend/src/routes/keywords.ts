@@ -12,6 +12,12 @@ import {
 } from '../services/keywordService.js';
 import { isQuestionKeyword, keywordsToCsv } from '../services/keywordText.js';
 import { checkLimit, assertLimit } from '../metering.js';
+import { getKeywordSerpProvider } from '../providers/dataforseo.js';
+
+/** BUG-QA-W2-4: honest source label, same convention as the gap endpoint. */
+function keywordDataSource(): 'mock' | 'real' {
+  return getKeywordSerpProvider().isMock ? 'mock' : 'real';
+}
 
 const siteParams = {
   type: 'object',
@@ -57,7 +63,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
           }
         }
         const rows = await researchKeywords(tenantId, siteId, req.body.seeds);
-        return { data: rows, total: rows.length };
+        return { data: rows, total: rows.length, dataSource: keywordDataSource() };
       },
     );
 
@@ -156,7 +162,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
       async (req) => {
         const { tenantId } = req.tenant;
         const rows = await expandKeywords(tenantId, req.params.id, req.body.seeds);
-        return { data: rows, total: rows.length };
+        return { data: rows, total: rows.length, dataSource: keywordDataSource() };
       },
     );
 
@@ -427,7 +433,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
       async (req) => {
         const { tenantId } = req.tenant;
         const res = await importKeywords(tenantId, req.params.id, req.body.csv);
-        return res;
+        return { ...res, dataSource: keywordDataSource() };
       },
     );
 

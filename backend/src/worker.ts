@@ -141,7 +141,19 @@ async function main() {
   ]);
 }
 
-if (process.argv[1]?.endsWith('worker.js')) {
+/**
+ * BUG-QA-W2-1: entry-point predicate. The built entry is `dist/worker.js`
+ * (`npm run start:worker`), but the dev entry is `src/worker.ts` run under
+ * tsx (`npm run dev:worker`) — argv[1] then ends in `worker.ts`, so a
+ * `.js`-only guard silently no-ops in dev. Accept both; importing this
+ * module (tests) must never start the worker, so anything else is false.
+ */
+export function isWorkerEntryPoint(argv1: string | undefined): boolean {
+  if (!argv1) return false;
+  return argv1.endsWith('worker.js') || argv1.endsWith('worker.ts');
+}
+
+if (isWorkerEntryPoint(process.argv[1])) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

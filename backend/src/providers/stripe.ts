@@ -130,7 +130,22 @@ export function verifyMockWebhookEvent(
     fail('invalid JSON payload');
   }
   if (!evt.type) fail('missing event type');
-  return { type: evt.type as string, data: evt.data ?? {} };
+  // BUG-QA-W2-2: mirror the real provider's envelope. Real Stripe events
+  // (and the RealStripeProvider) carry the Stripe object at
+  // `data.object` and constructWebhookEvent returns THAT object as
+  // `data`. A genuine Stripe-shaped payload posted to the mock path was
+  // previously returned as `{type, data: evt.data}`, so applyPaymentEvent
+  // saw the envelope (no metadata/customer at top level) and silently
+  // ignored the event with HTTP 200. Unwrap when `data.object` is an
+  // object; when it is absent — or is the string object-tag of the
+  // direct convention (`data: {id, object: 'checkout.session', ...}`
+  // used by existing tests) — keep `data` as-is.
+  const rawData = evt.data ?? {};
+  const inner =
+    rawData && typeof rawData === 'object' ? (rawData as any).object : undefined;
+  const data =
+    inner && typeof inner === 'object' ? inner : rawData;
+  return { type: evt.type as string, data };
 }
 
 class RealStripeProvider implements PaymentsProvider {
@@ -208,6 +223,8 @@ class MockStripeProvider implements PaymentsProvider {
         'Set MOCK_WEBHOOK_SECRET in dev/test to accept mock webhook events',
       );
     }
+    // verifyMockWebhookEvent unwraps the real Stripe envelope
+    // (`data.object`) to match RealStripeProvider (BUG-QA-W2-2).
     return verifyMockWebhookEvent(rawBody, signature, secret);
   }
 }
