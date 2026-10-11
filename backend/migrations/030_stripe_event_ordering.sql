@@ -1,0 +1,11 @@
+-- Wave 2 fix (Backend-A, Security review C-01): Stripe event ordering.
+-- NOTE FOR LA: Backend-A's reserved range 010-019 is fully used
+-- (010-019 all exist) and Backend-B's 020-029 is fully used on its branch,
+-- so this lands at 030 (inside the frozen CONTRACTS.md Backend Lead range
+-- 010-039). LA may renumber at merge if preferred.
+--
+-- last_event_at records the `created` timestamp of the newest Stripe
+-- event applied to a subscription. applyPaymentEvent skips subscription
+-- mutations from events older than this (out-of-order delivery), while
+-- still recording them in the stripe_webhook_events ledger.
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ;
