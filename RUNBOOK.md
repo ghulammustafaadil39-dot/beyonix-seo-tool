@@ -85,6 +85,16 @@ promote.
   update `.env`, redeploy.
 - **REDIS_PASSWORD / POSTGRES_PASSWORD**: change in `.env` + the DB, redeploy.
 
+### Tenant BYOK keys (operator note)
+
+Tenants can bring their own LLM key (`llm_provider` + key in tenant
+settings; encrypted with `ENCRYPTION_KEYS`). **Fail-closed by design
+(A2-H1):** a stored key with no explicit `llm_provider` is silently ignored
+(never sent to a guessed provider). If a tenant reports "my key isn't
+being used", check that *both* provider and key are set. Tenant keys use
+the same key-versioning as server keys — rotate `ENCRYPTION_KEYS` and run
+`npm run rotate-keys` to re-encrypt.
+
 ## Incident basics
 
 | Symptom | First checks |
@@ -92,6 +102,7 @@ promote.
 | 5xx spike | `GET /status` (db/redis flags), `GET /metrics` (queue depth, error series) |
 | Webhooks not applying | `stripe_webhook_events` ledger — replay-safe; check `last_event_at` ordering guard and `dead_letter_jobs` |
 | Queue stuck | `/admin` dead-letter queue (replay/discard); `bseo_queue_jobs{state="failed"}` in metrics |
+| Suspected rogue admin session | `/admin` audit log shows every impersonation (`impersonate` rows with `asUserId`); impersonation tokens are 5-min JWTs registered as sessions — revoke the session to kill it immediately |
 | High provider cost | `/admin/spend` (provider_spend trailing 30d); per-tenant spend in `provider_spend` |
 | Auth failures spike | login-lockout counters (Redis); check `RATE_LIMIT_PER_MIN` / `AUTH_RATE_LIMIT_PER_MIN` tuning |
 
