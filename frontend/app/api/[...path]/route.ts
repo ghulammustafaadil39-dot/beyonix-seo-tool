@@ -42,10 +42,11 @@ const SKIP_RESPONSE_HEADERS = new Set([
   'upgrade',
 ]);
 
-type Ctx = { params: { path: string[] } };
+type Ctx = { params: Promise<{ path: string[] }> };
 
 async function proxy(req: Request, ctx: Ctx): Promise<Response> {
-  const target = `${apiOrigin()}/api/${ctx.params.path.map(encodeURIComponent).join('/')}${
+  const { path } = await ctx.params;
+  const target = `${apiOrigin()}/api/${path.map(encodeURIComponent).join('/')}${
     new URL(req.url).search
   }`;
 

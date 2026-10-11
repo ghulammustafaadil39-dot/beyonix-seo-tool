@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { sitesApi, auditsApi, ga4Api, type Site, type SiteOverview, type Ga4Property, type Ga4Overview } from '@/lib/api';
@@ -512,10 +512,11 @@ function SitePageInner({ siteId }: { siteId: string }) {
   );
 }
 
-export default function SitePage({ params }: { params: { id: string } }) {
+export default function SitePage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
   return (
     <Suspense fallback={<p className="font-mono text-sm text-white/55">$ loading site…</p>}>
-      <SitePageInner siteId={params.id} />
+      <SitePageInner siteId={id} />
     </Suspense>
   );
 }
