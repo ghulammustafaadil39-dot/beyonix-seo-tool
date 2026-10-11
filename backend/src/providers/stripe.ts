@@ -625,16 +625,23 @@ export async function applyPaymentEvent(
     // have a real session id, the claim may be a 'creating' row whose
     // 'open' UPDATE was swallowed (or crashed) — NULL session id, so the
     // scoped predicate can't match. The session just completed, so that
-    // claim is dead: release it (a 'creating' claim's URL was never
-    // delivered... except here it was, and the payment proves it — either
-    // way the claim served its purpose). Safe: a live 'open' claim is
-    // never 'creating', and a concurrent in-flight 'creating' claim can't
-    // coexist with a completed session for a different checkout (its URL
-    // was never delivered, so it can't have been paid).
+    // claim is dead: release it.
+    // L2-1 (pass#12): pin the fallback to claims that PREDATE the session
+    // (created_at < data.created). A stealer's fresh 'creating' claim is
+    // NEWER than the completing session — deleting it would kill the 409
+    // guard and reopen a double-session path. The orphan's claim always
+    // predates its session (INSERT ran before the Stripe call).
     if ((released.rowCount ?? 0) === 0 && completedSessionId) {
-      await q(`DELETE FROM checkout_sessions WHERE tenant_id = $1 AND status = 'creating'`, [tenantId]).catch(
-        () => undefined,
-      );
+      const sessionCreated = fromStripeTs((data as any)?.created);
+      if (sessionCreated) {
+        await q(
+          `DELETE FROM checkout_sessions
+           WHERE tenant_id = $1 AND status = 'creating' AND created_at < $2`,
+          [tenantId, sessionCreated.toISOString()],
+        ).catch(() => undefined);
+      }
+      // Unknown session creation time (mock shape): fail safe — the
+      // 10-minute steal still heals a genuinely orphaned claim.
     }
 
     // C-01: period comes FROM Stripe (the subscription object when the

@@ -105,10 +105,12 @@ describe.runIf(HAS_TEST_DB)('Pass#11 fixes', () => {
   test('K2-3: completed releases a creating-NULL claim via the fallback path', async () => {
     const owner = await signupOwner(app);
     // Simulates the swallowed 'open' UPDATE: claim stuck 'creating' with
-    // NULL session id, but the Stripe session was created and paid.
+    // NULL session id (5 min old), but the Stripe session was created and
+    // paid. L2-1 pin: the fallback only fires when the claim predates the
+    // session, so data.created (session creation) must be newer.
     await query(
-      `INSERT INTO checkout_sessions (tenant_id, plan_id, billing_interval, status)
-       VALUES ($1, 'growth', 'monthly', 'creating')`,
+      `INSERT INTO checkout_sessions (tenant_id, plan_id, billing_interval, status, created_at)
+       VALUES ($1, 'growth', 'monthly', 'creating', now() - interval '5 minutes')`,
       [owner.tenantId],
     );
     await applyPaymentEvent(
@@ -118,6 +120,7 @@ describe.runIf(HAS_TEST_DB)('Pass#11 fixes', () => {
         created: nowSec(),
         data: {
           id: 'cs_k23_paid',
+          created: nowSec() - 60, // session created 1 min ago, after the claim
           metadata: { tenantId: owner.tenantId, planId: 'growth', interval: 'monthly' },
           customer: `cus_p11k23_${uid()}`,
           subscription: `sub_mock_p11k23_${uid()}`,
@@ -131,6 +134,36 @@ describe.runIf(HAS_TEST_DB)('Pass#11 fixes', () => {
     expect(Number(r.rows[0].c)).toBe(0);
     // And the subscription was still created from the completed event.
     expect((await subRow(owner.tenantId)).status).toBe('active');
+  });
+
+  test('L2-1: completed does NOT fallback-delete a newer stealer claim', async () => {
+    const owner = await signupOwner(app);
+    // S1's session (created 20 min ago) completes AFTER S2 stole the claim
+    // (S2's claim is 5 min old — newer than S1's session). The fallback must
+    // not touch S2's live claim.
+    await query(
+      `INSERT INTO checkout_sessions (tenant_id, plan_id, billing_interval, status, created_at)
+       VALUES ($1, 'growth', 'monthly', 'creating', now() - interval '5 minutes')`,
+      [owner.tenantId],
+    );
+    await applyPaymentEvent(
+      {
+        id: `evt_p12_l21_${uid()}`,
+        type: 'checkout.session.completed',
+        created: nowSec(),
+        data: {
+          id: 'cs_s1_old',
+          created: nowSec() - 20 * 60, // S1's session predates S2's claim
+          metadata: { tenantId: owner.tenantId, planId: 'growth', interval: 'monthly' },
+          customer: `cus_p12l21_${uid()}`,
+          subscription: `sub_mock_p12l21_${uid()}`,
+        },
+      },
+      query,
+      `evt_p12_l21_${uid()}`,
+    );
+    const r = await query(`SELECT COUNT(*)::int c FROM checkout_sessions WHERE tenant_id = $1`, [owner.tenantId]);
+    expect(Number(r.rows[0].c)).toBe(1); // S2's claim survives
   });
 
   test('K5-LOW-3: open claim older than 24h is stolen (no dead URL reuse)', async () => {

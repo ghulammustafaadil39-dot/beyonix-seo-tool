@@ -128,12 +128,22 @@ export const SCHEDULES: ScheduleDef[] = [
       for (const row of r.rows) {
         const freq = getPlan(row.plan_id).rankcheck_freq;
         if (freq === 'daily' || (freq === 'weekly' && isSunday)) {
-          await enqueue(
-            QUEUES.rankCheck,
-            Jobs.RANK_CHECK,
-            { siteId: row.site_id, tenantId: row.tenant_id },
-            { idempotencyKey: `rank:${row.site_id}:${today}`, rateLimit: false },
-          );
+          // L2-2 (pass#12): per-site error isolation (like
+          // enqueueForVerifiedSites above) — one failing enqueue must not
+          // orphan the rest of the tick.
+          try {
+            await enqueue(
+              QUEUES.rankCheck,
+              Jobs.RANK_CHECK,
+              { siteId: row.site_id, tenantId: row.tenant_id },
+              { idempotencyKey: `rank:${row.site_id}:${today}`, rateLimit: false },
+            );
+          } catch (err) {
+            console.error(
+              `[scheduler] rank-check enqueue failed for site ${row.site_id}:`,
+              (err as Error)?.message ?? err,
+            );
+          }
         }
       }
     },
