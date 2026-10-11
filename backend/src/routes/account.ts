@@ -590,6 +590,15 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           uid,
         ]);
         if (dissolveShell) {
+          // D1-L-13: a Stripe subscription created moments ago (webhook not
+          // yet processed) has no local row — cancel by customer id before
+          // dissolving, best effort.
+          try {
+            const { cancelTenantBilling } = await import('../providers/stripe.js');
+            await cancelTenantBilling(oldTenantId);
+          } catch (e) {
+            console.error('[invite] dissolve: cancelTenantBilling failed', { tenantId: oldTenantId, err: (e as Error).message });
+          }
           await cq(`DELETE FROM tenants WHERE id = $1`, [oldTenantId]);
         }
       }
@@ -1066,6 +1075,12 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         // aborts — the customer is never left being charged with no
         // account. tenant_credits (money owed) are tombstoned in the
         // surviving audit row below, never silently hard-deleted.
+        // D1-L-14 (known limitation): if the DB delete below fails AFTER a
+        // successful cancel, the tenant survives with a canceled
+        // subscription. Recovery is re-subscribing via /billing/checkout
+        // (the subscription is canceled, not the Stripe customer). The
+        // reverse ordering (delete-then-cancel) would risk charging with
+        // no account — the worse failure — so cancel-first stands.
         const { cancelTenantBilling } = await import('../providers/stripe.js');
         const { canceled, creditsCents } = await cancelTenantBilling(tenantId);
         const deleted: Record<string, number> = {};

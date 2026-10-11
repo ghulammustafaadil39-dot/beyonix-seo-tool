@@ -420,6 +420,10 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
 
     authed.get('/billing/mock-confirm', { schema: mockConfirmSchema }, async (req, reply) => {
       if (!getPayments().isMock) throw new ApiError(404, 'NOT_FOUND', 'Not found');
+      // D1-L-1 (mock-only known limitation): abandoned mock checkouts leak
+      // coupon reserved_count (no checkout.session.expired webhook in mock
+      // mode). Dev/test only — production Stripe fires the expiry webhook
+      // which releases the hold.
       const { plan, customer, interval, coupon } = req.query as {
         session_id?: string;
         plan?: string;
