@@ -16,6 +16,9 @@ interface BannerState {
   needsBilling: boolean;
   /** No-plan (trial-expired) copy vs plan-quota copy. */
   noPlan: boolean;
+  /** L3-L-1/L3-L-2 (pass#12): headline override — "Plan limit reached."
+      is wrong when the cause is a failed/incomplete payment, not quota. */
+  title?: string;
 }
 
 interface ErrorCtxValue {
@@ -80,14 +83,25 @@ export function ErrorBannerProvider({ children }: { children: ReactNode }) {
             // succeeded (fail-closed, G5-M#1) — not a plan limit. Point at
             // the billing page where the recovery CTA lives.
             const incomplete = sub?.status === 'incomplete';
+            // L3-L-2 (pass#12): grace-consumed past_due (downgraded after
+            // failed retries) is read-only because the payment failed —
+            // not because a quota was hit.
+            const pastDueConsumed = sub?.status === 'past_due' && !sub?.grace_until;
             setErr({
               message: incomplete
                 ? 'Your payment hasn\u2019t completed yet — your account is read-only until it succeeds. Complete the payment on the billing page.'
                 : trialEnded
                   ? 'Your trial has ended. Subscribe to keep making changes to your workspace.'
-                  : e.message,
-              needsBilling: needsBilling || trialEnded || incomplete,
+                  : pastDueConsumed
+                    ? 'Your last payment failed and your account is read-only. Update your payment method on the billing page to restore full access.'
+                    : e.message,
+              needsBilling: needsBilling || trialEnded || incomplete || pastDueConsumed,
               noPlan: trialEnded,
+              title: incomplete
+                ? 'Payment incomplete.'
+                : pastDueConsumed
+                  ? 'Payment failed.'
+                  : undefined,
             });
           })
           .catch(() => {
@@ -123,7 +137,7 @@ export function ErrorBannerProvider({ children }: { children: ReactNode }) {
             <div>
               {err.needsBilling && (
                 <strong className="mr-2 font-semibold">
-                  {err.noPlan ? 'Free trial ended.' : 'Plan limit reached.'}
+                  {err.title ?? (err.noPlan ? 'Free trial ended.' : 'Plan limit reached.')}
                 </strong>
               )}
               <span>{err.message}</span>

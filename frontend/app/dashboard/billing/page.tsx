@@ -390,7 +390,11 @@ export default function BillingPage() {
             )}
           </p>
         )}
-        {sub?.read_only && (
+        {/* L3-L-3 (pass#12): the generic "Subscribe to restore full access"
+            contradicts the specific 'incomplete'/'past_due' alerts below
+            (the path there is completing the payment, not a new
+            subscription) — suppress it when a specific alert renders. */}
+        {sub?.read_only && sub?.status !== 'incomplete' && sub?.status !== 'past_due' && (
           <p className="bx-alert-err mt-3" role="alert">
             Your account is read-only. Subscribe to restore full access.
           </p>
