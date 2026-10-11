@@ -4,7 +4,15 @@ import { useEffect, useState } from 'react';
 import { auditsApi, type Audit, type AuditIssue } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import ScoreGauge from '../ScoreGauge';
-import AuditV2Panel from './AuditV2Panel';
+import JobProgress from '../JobProgress';
+import { useJobStream } from '@/lib/useJobStream';
+import { auditPoll } from '@/lib/jobPoll';
+import { PageHeaderSkeleton, TableSkeleton } from '../Skeleton';
+import dynamic from 'next/dynamic';
+const AuditV2Panel = dynamic(() => import('./AuditV2Panel').then((m) => m.default), {
+  loading: () => <div role="status" aria-label="Loading advanced panel" className="bx-panel"><div className="bx-shimmer h-24 rounded-md bg-white/5" aria-hidden="true" /></div>,
+  ssr: false,
+});
 
 const SEVERITY_COLOR: Record<string, string> = {
   error: 'bx-pill-err',
@@ -64,14 +72,17 @@ export default function AuditTab({ siteId }: { siteId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, severity, statusFilter]);
 
-  // Refresh while an audit is queued/running
-  useEffect(() => {
-    if (selected && (selected.status === 'queued' || selected.status === 'running')) {
-      const t = setInterval(loadAudits, 5000);
-      return () => clearInterval(t);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.status]);
+  // W-05: live progress while an audit is queued/running — prefers the
+  // SSE stream, falls back to polling the audits list.
+  const watchActive = selected !== null && (selected.status === 'queued' || selected.status === 'running');
+  const { event: jobEvent, mode: jobMode } = useJobStream({
+    siteId,
+    enabled: watchActive,
+    poll: () => auditPoll(siteId),
+    onTerminal: () => {
+      loadAudits();
+    },
+  });
 
   const startAudit = async () => {
     setStarting(true);
@@ -86,16 +97,27 @@ export default function AuditTab({ siteId }: { siteId: string }) {
     }
   };
 
+  // W-05: optimistic UI — the select updates immediately (cheap,
+  // reversible mutation) and rolls back to the previous value on error.
   const setIssueStatus = async (issueId: string, status: 'open' | 'ignored' | 'resolved' | 'wont-fix') => {
+    const prev = issues;
+    setIssues((cur) => cur.map((i) => (i.id === issueId ? { ...i, status } : i)));
     try {
       const updated = await auditsApi.setIssueStatus(issueId, status);
-      setIssues((prev) => prev.map((i) => (i.id === issueId ? updated : i)));
+      setIssues((cur) => cur.map((i) => (i.id === issueId ? updated : i)));
     } catch (e) {
+      setIssues(prev); // rollback
       report(e);
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading audits…</p>;
+  if (loading)
+    return (
+      <div className="space-y-4">
+        <PageHeaderSkeleton />
+        <TableSkeleton rows={6} cols={5} />
+      </div>
+    );
 
   return (
     <div className="space-y-6">
@@ -107,6 +129,7 @@ export default function AuditTab({ siteId }: { siteId: string }) {
               setSelected(audits.find((a) => a.id === e.target.value) ?? null)
             }
             className="bx-input !w-auto"
+            aria-label="Choose audit"
           >
             {audits.map((a) => (
               <option key={a.id} value={a.id}>
@@ -126,12 +149,14 @@ export default function AuditTab({ siteId }: { siteId: string }) {
           </button>
         </div>
         {selected && (
-          <span className="font-mono text-xs text-white/40">
+          <span className="font-mono text-xs text-white/55">
             status: <strong className="text-teal-300">{selected.status}</strong> · pages crawled:{' '}
             {selected.pages_crawled} · issues: {selected.issues_count}
           </span>
         )}
       </div>
+
+      {watchActive && jobEvent && <JobProgress event={jobEvent} mode={jobMode} />}
 
       {selected && (
         <div className="bx-card bx-glow">
@@ -147,6 +172,7 @@ export default function AuditTab({ siteId }: { siteId: string }) {
           value={severity}
           onChange={(e) => setSeverity(e.target.value)}
           className="bx-input !w-auto"
+          aria-label="Filter by severity"
         >
           <option value="">All severities</option>
           <option value="error">Error</option>
@@ -157,6 +183,7 @@ export default function AuditTab({ siteId }: { siteId: string }) {
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           className="bx-input !w-auto"
+          aria-label="Filter by status"
         >
           <option value="">All statuses</option>
           <option value="open">Open</option>
@@ -188,9 +215,9 @@ export default function AuditTab({ siteId }: { siteId: string }) {
                 </td>
                 <td className="px-4 py-3">
                   <p className="text-sm font-medium text-white">{i.type}</p>
-                  <p className="text-xs text-white/40">{i.detail}</p>
+                  <p className="text-xs text-white/55">{i.detail}</p>
                 </td>
-                <td className="max-w-[220px] truncate px-4 py-3 font-mono text-xs text-white/40">{i.url}</td>
+                <td className="max-w-[220px] truncate px-4 py-3 font-mono text-xs text-white/55">{i.url}</td>
                 <td className="max-w-[260px] px-4 py-3 text-xs text-white/60">{i.fix_suggestion}</td>
                 <td className="px-4 py-3">
                   <select
@@ -199,6 +226,7 @@ export default function AuditTab({ siteId }: { siteId: string }) {
                       setIssueStatus(i.id, e.target.value as 'open' | 'ignored' | 'resolved' | 'wont-fix')
                     }
                     className="bx-input !w-auto !px-2 !py-1 !text-xs"
+                    aria-label={`Status for issue ${i.type}`}
                   >
                     <option value="open">Open</option>
                     <option value="resolved">Resolved</option>
@@ -210,7 +238,7 @@ export default function AuditTab({ siteId }: { siteId: string }) {
             ))}
             {issues.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/40">
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/55">
                   {selected ? 'No issues match the filters.' : 'Run an audit to see issues.'}
                 </td>
               </tr>

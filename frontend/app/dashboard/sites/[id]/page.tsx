@@ -8,6 +8,10 @@ import { useErrorReporter } from '@/components/ErrorBanner';
 import TabNav from '@/components/TabNav';
 import StatCard from '@/components/StatCard';
 import ScoreGauge from '@/components/ScoreGauge';
+import JobProgress from '@/components/JobProgress';
+import { useJobStream } from '@/lib/useJobStream';
+import { auditPoll } from '@/lib/jobPoll';
+import { PageHeaderSkeleton, StatRowSkeleton, GaugeSkeleton } from '@/components/Skeleton';
 import OnboardingChecklist from '@/components/OnboardingChecklist';
 
 // MUST match the backend allowlist in routes/sites.ts (SERP_LOCATIONS).
@@ -53,7 +57,7 @@ function LocationPicker({ site, onSaved }: { site: Site; onSaved: (s: Site) => v
     <div className="bx-card flex flex-wrap items-center gap-3">
       <div className="flex-1">
         <p className="text-sm font-semibold text-white">Rank tracking location</p>
-        <p className="text-xs text-white/40">
+        <p className="text-xs text-white/55">
           Google results differ by country — choose where your customers are so ranks match what they see.
         </p>
       </div>
@@ -61,6 +65,7 @@ function LocationPicker({ site, onSaved }: { site: Site; onSaved: (s: Site) => v
         value={code}
         onChange={(e) => setCode(Number(e.target.value))}
         className="bx-input !w-auto"
+        aria-label="Rank tracking location"
       >
         {SERP_LOCATIONS.map((l) => (
           <option key={l.code} value={l.code}>
@@ -163,7 +168,7 @@ function Ga4Card({ site, onSaved }: { site: Site; onSaved: (s: Site) => void }) 
         <div>
           <p className="bx-micro mb-1">~/ analytics</p>
           <p className="text-sm font-semibold text-white">Google Analytics traffic</p>
-          <p className="font-mono text-xs text-white/40">
+          <p className="font-mono text-xs text-white/55">
             {site.ga4_connected
               ? `connected — last 28 days${site.ga4_property_id ? ` · property ${site.ga4_property_id}` : ''}`
               : 'see real visitor traffic, top pages and top referrers'}
@@ -191,7 +196,7 @@ function Ga4Card({ site, onSaved }: { site: Site; onSaved: (s: Site) => void }) 
       {!site.ga4_connected && (
         <div className="mt-3">
           {properties === null ? (
-            <p className="text-xs text-white/40">
+            <p className="text-xs text-white/55">
               After connecting,{' '}
               <button onClick={loadProperties} disabled={busy} className="bx-link">
                 load your Analytics properties
@@ -208,6 +213,7 @@ function Ga4Card({ site, onSaved }: { site: Site; onSaved: (s: Site) => void }) 
                 value={selected}
                 onChange={(e) => setSelected(e.target.value)}
                 className="bx-input !w-auto"
+                aria-label="Choose Analytics property"
               >
                 {properties.map((pr) => (
                   <option key={pr.id} value={pr.id}>
@@ -252,7 +258,7 @@ function Ga4Card({ site, onSaved }: { site: Site; onSaved: (s: Site) => void }) 
                     <span className="font-mono font-medium text-white">{pg.sessions.toLocaleString()}</span>
                   </li>
                 ))}
-                {overview.topPages.length === 0 && <li className="text-xs text-white/40">No page data yet.</li>}
+                {overview.topPages.length === 0 && <li className="text-xs text-white/55">No page data yet.</li>}
               </ul>
             </div>
             <div>
@@ -264,7 +270,7 @@ function Ga4Card({ site, onSaved }: { site: Site; onSaved: (s: Site) => void }) 
                     <span className="font-mono font-medium text-white">{rf.sessions.toLocaleString()}</span>
                   </li>
                 ))}
-                {overview.topReferrers.length === 0 && <li className="text-xs text-white/40">No referrer data yet.</li>}
+                {overview.topReferrers.length === 0 && <li className="text-xs text-white/55">No referrer data yet.</li>}
               </ul>
             </div>
           </div>
@@ -291,22 +297,19 @@ function SitePageInner({ siteId }: { siteId: string }) {
     return o;
   };
 
-  const pollUntilDone = async () => {
-    setAuditRunning(true);
-    try {
-      for (let i = 0; i < 40; i++) {
-        await new Promise((r) => setTimeout(r, 5000));
-        const audits = await auditsApi.list(siteId);
-        const active = (audits.data ?? []).some((a) => a.status === 'queued' || a.status === 'running');
-        if (!active) break;
-      }
-      await loadOverview();
-    } catch (e) {
-      report(e);
-    } finally {
+  // W-05: live audit progress — prefers the SSE job stream
+  // (GET /api/v1/sites/:id/jobs/stream), polling fallback included.
+  const [streamOn, setStreamOn] = useState(false);
+  const { event: jobEvent, mode: jobMode } = useJobStream({
+    siteId,
+    enabled: streamOn,
+    poll: () => auditPoll(siteId),
+    onTerminal: () => {
       setAuditRunning(false);
-    }
-  };
+      setStreamOn(false);
+      loadOverview().catch(report);
+    },
+  });
 
   useEffect(() => {
     if (searchParams.get('gsc') === '1') {
@@ -326,7 +329,10 @@ function SitePageInner({ siteId }: { siteId: string }) {
         // If an audit is already queued/running when we land, reflect it.
         const audits = await auditsApi.list(siteId);
         const active = (audits.data ?? []).some((a) => a.status === 'queued' || a.status === 'running');
-        if (active) pollUntilDone();
+        if (active) {
+          setAuditRunning(true);
+          setStreamOn(true);
+        }
       } catch (e) {
         report(e);
       } finally {
@@ -340,13 +346,21 @@ function SitePageInner({ siteId }: { siteId: string }) {
     if (auditRunning) return;
     try {
       await auditsApi.start(siteId);
-      pollUntilDone();
+      setAuditRunning(true);
+      setStreamOn(true);
     } catch (e) {
       report(e);
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading site…</p>;
+  if (loading)
+    return (
+      <div className="space-y-6">
+        <PageHeaderSkeleton />
+        <GaugeSkeleton />
+        <StatRowSkeleton />
+      </div>
+    );
   if (!site) return <p className="bx-alert-err">Site not found.</p>;
 
   const o = (overview ?? {}) as Record<string, unknown>;
@@ -409,7 +423,8 @@ function SitePageInner({ siteId }: { siteId: string }) {
         </button>
       </div>
 
-      {auditRunning && (
+      {auditRunning && jobEvent && <JobProgress event={jobEvent} mode={jobMode} />}
+      {auditRunning && !jobEvent && (
         <p className="bx-alert-info">
           $ audit in progress — this page will refresh automatically when it finishes.
         </p>
@@ -418,6 +433,20 @@ function SitePageInner({ siteId }: { siteId: string }) {
       <TabNav siteId={siteId} />
 
       <OnboardingChecklist siteId={siteId} />
+
+      <Link
+        href={`/dashboard/sites/${siteId}/insights`}
+        className="bx-card group flex items-center justify-between gap-3 transition hover:border-teal-400/30"
+      >
+        <div>
+          <p className="bx-micro mb-1">~/ do this next</p>
+          <p className="text-sm font-semibold text-white">Prioritized actions</p>
+          <p className="text-xs text-white/55">
+            Ranked fixes and opportunities for this site, with evidence and deep links.
+          </p>
+        </div>
+        <span className="bx-link shrink-0 text-sm transition group-hover:translate-x-0.5">Open →</span>
+      </Link>
 
       <LocationPicker site={site} onSaved={setSite} />
 
@@ -466,7 +495,7 @@ function SitePageInner({ siteId }: { siteId: string }) {
                     {issue.severity}
                   </span>
                   <span className="font-medium text-white/90">{issue.type}</span>
-                  <span className="truncate font-mono text-xs text-white/40">{issue.url}</span>
+                  <span className="truncate font-mono text-xs text-white/55">{issue.url}</span>
                 </li>
               );
             })}
@@ -475,7 +504,7 @@ function SitePageInner({ siteId }: { siteId: string }) {
       )}
 
       {lastAudit?.finished_at && (
-        <p className="font-mono text-xs text-white/30">
+        <p className="font-mono text-xs text-white/50">
           last audit: {new Date(lastAudit.finished_at).toLocaleString()}
         </p>
       )}
@@ -485,7 +514,7 @@ function SitePageInner({ siteId }: { siteId: string }) {
 
 export default function SitePage({ params }: { params: { id: string } }) {
   return (
-    <Suspense fallback={<p className="font-mono text-sm text-white/40">$ loading site…</p>}>
+    <Suspense fallback={<p className="font-mono text-sm text-white/55">$ loading site…</p>}>
       <SitePageInner siteId={params.id} />
     </Suspense>
   );

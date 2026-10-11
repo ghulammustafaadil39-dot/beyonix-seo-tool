@@ -161,19 +161,19 @@ export default function KeywordsV2Panel({ siteId }: { siteId: string }) {
           <a href={keywordsV2Api.exportUrl(siteId)} className="bx-btn-secondary !text-xs">Export CSV</a>
         </div>
         {clusters === null ? (
-          <p className="mt-4 font-mono text-sm text-white/40">$ loading clusters…</p>
+          <p className="mt-4 font-mono text-sm text-white/55">$ loading clusters…</p>
         ) : clusters.length === 0 ? (
-          <p className="mt-4 text-sm text-white/40">No keywords yet — research or import some first.</p>
+          <p className="mt-4 text-sm text-white/55">No keywords yet — research or import some first.</p>
         ) : (
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {clusters.map((c) => (
               <div key={c.group_key} className="bx-panel">
                 <p className="text-sm font-semibold text-white">{c.group_key}</p>
-                <p className="mt-1 font-mono text-xs text-white/40">
+                <p className="mt-1 font-mono text-xs text-white/55">
                   {c.keywords.length} keywords · {c.total_volume.toLocaleString()} vol/mo
                   {c.avg_difficulty != null ? ` · avg difficulty ${c.avg_difficulty}` : ''}
                 </p>
-                <p className="mt-1 font-mono text-xs text-white/40">
+                <p className="mt-1 font-mono text-xs text-white/55">
                   {Object.entries(c.intents).map(([k, v]) => `${k}: ${v}`).join(' · ')}
                 </p>
                 <ul className="mt-2 max-h-32 space-y-1 overflow-auto">
@@ -194,9 +194,9 @@ export default function KeywordsV2Panel({ siteId }: { siteId: string }) {
           <h3 className="text-base font-bold text-white">Cannibalization watch</h3>
           <div className="mt-3 space-y-3">
             {cannib === null ? (
-              <p className="font-mono text-sm text-white/40">$ loading…</p>
+              <p className="font-mono text-sm text-white/55">$ loading…</p>
             ) : cannib.length === 0 ? (
-              <p className="text-sm text-white/40">No cannibalization detected.</p>
+              <p className="text-sm text-white/55">No cannibalization detected.</p>
             ) : (
               cannib.map((c, i) => (
                 <div key={i} className="bx-panel">
@@ -238,11 +238,11 @@ export default function KeywordsV2Panel({ siteId }: { siteId: string }) {
                   treat positions as illustrative, fetched {new Date(gap.fetchedAt).toLocaleDateString()}.
                 </p>
               )}
-              {gap.gaps.length === 0 && <p className="text-sm text-white/40">No gap keywords found.</p>}
+              {gap.gaps.length === 0 && <p className="text-sm text-white/55">No gap keywords found.</p>}
               {gap.gaps.map((g) => (
                 <div key={g.keyword} className="bx-panel">
                   <p className="font-mono text-sm font-medium text-white">{g.keyword}</p>
-                  <p className="break-all font-mono text-xs text-white/40">
+                  <p className="break-all font-mono text-xs text-white/55">
                     competitor #{g.competitor_position} · {g.volume != null ? `${g.volume.toLocaleString()} vol/mo` : 'volume n/a'}
                     {g.difficulty != null ? ` · difficulty ${g.difficulty}` : ''} · {g.competitor_url}
                   </p>
@@ -268,7 +268,7 @@ export default function KeywordsV2Panel({ siteId }: { siteId: string }) {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="text-sm font-medium text-white">{l.name}</p>
-                  <p className="font-mono text-xs text-white/40">
+                  <p className="font-mono text-xs text-white/55">
                     {l.members ?? 0} members{l.tags.length ? ` · ${l.tags.map((t) => `#${t}`).join(' ')}` : ''}
                   </p>
                 </div>
@@ -295,12 +295,12 @@ export default function KeywordsV2Panel({ siteId }: { siteId: string }) {
                       </button>
                     </li>
                   ))}
-                  {members[l.id].length === 0 && <li className="font-mono text-xs text-white/40">No members yet.</li>}
+                  {members[l.id].length === 0 && <li className="font-mono text-xs text-white/55">No members yet.</li>}
                 </ul>
               )}
             </li>
           ))}
-          {lists.length === 0 && <li className="text-sm text-white/40">No lists yet.</li>}
+          {lists.length === 0 && <li className="text-sm text-white/55">No lists yet.</li>}
         </ul>
       </div>
 

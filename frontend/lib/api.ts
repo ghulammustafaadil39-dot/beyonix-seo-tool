@@ -1526,3 +1526,155 @@ export const reportsV2Api = {
   deleteSchedule: (siteId: string) =>
     api<null>(`/api/v1/sites/${siteId}/reports/schedule`, { method: 'DELETE' }),
 };
+
+// ===========================================================================
+// Wave 3 — W-04 Insights engine UI + W-05 SSE job-progress stream
+// (frontend slice; backend contracts land in parallel — assumptions noted)
+// ===========================================================================
+
+// ---------- W-05: SSE job-progress stream ----------
+
+/**
+ * W-05: Backend builds `GET /api/v1/sites/:id/jobs/stream` (SSE) in
+ * parallel. Exact event payload lands with their branch; the consumer
+ * (lib/useJobStream.ts) normalizes defensively. The path goes through the
+ * same-origin /api proxy, so the API URL is never baked into the bundle.
+ * encodeURIComponent guards the site id (path-injection hygiene).
+ */
+export const jobsApi = {
+  streamUrl: (siteId: string) =>
+    `${BASE_URL}/api/v1/sites/${encodeURIComponent(siteId)}/jobs/stream`,
+};
+
+// ---------- W-04: Insights engine UI ----------
+
+/**
+ * W-04: site-level "do this next" actions from the Insights engine.
+ * Backend contract (lands in parallel): GET /api/v1/sites/:id/insights
+ * returns ranked actions shaped as:
+ *   { type, priority, title, detail, evidence, target }
+ * `priority` may be a number (higher = more important) or a string
+ * ('critical' | 'high' | 'medium' | 'low'). `target` may be a tab slug
+ * ('audit', 'keywords', …), a path ('/dashboard/sites/…'), or
+ * { tab, url } — resolveInsightHref() normalizes to a deep link.
+ */
+export interface SiteInsight {
+  id?: string;
+  type: string;
+  /** Number (higher = more important) or 'critical'|'high'|'medium'|'low'. */
+  priority: number | string;
+  title: string;
+  detail?: string | null;
+  /** Evidence: string, string[], or a record of label→value pairs. */
+  evidence?: unknown;
+  /** Tab slug, path, or { tab?, url? }. */
+  target?: string | { tab?: string; url?: string } | null;
+  impact?: number | null;
+  created_at?: string | null;
+}
+
+const PRIORITY_RANK: Record<string, number> = {
+  critical: 100,
+  high: 80,
+  medium: 50,
+  low: 20,
+};
+
+/** Sort key for an insight's priority: bigger = do it first. */
+export function insightPriorityRank(priority: SiteInsight['priority']): number {
+  if (typeof priority === 'number' && Number.isFinite(priority)) return priority;
+  const p = String(priority ?? '').toLowerCase();
+  return PRIORITY_RANK[p] ?? 0;
+}
+
+export function insightPriorityLabel(priority: SiteInsight['priority']): string {
+  if (typeof priority === 'number') {
+    if (priority >= 90) return 'Critical';
+    if (priority >= 70) return 'High';
+    if (priority >= 40) return 'Medium';
+    return 'Low';
+  }
+  const p = String(priority ?? '').toLowerCase();
+  return p ? p[0].toUpperCase() + p.slice(1) : 'Low';
+}
+
+/** The deep-link slugs this frontend knows how to render for a site. */
+const INSIGHT_TAB_SLUGS = new Set([
+  'audit',
+  'keywords',
+  'rankings',
+  'content',
+  'onpage',
+  'backlinks',
+  'geo',
+  'competitors',
+  'reports',
+  'insights',
+]);
+
+/**
+ * Normalize a backend insight's `target` to an app deep link. Accepts a tab
+ * slug, an absolute path, or { tab, url }. Falls back to the site overview
+ * for anything unrecognized — never renders a broken or external link.
+ */
+export function resolveInsightHref(siteId: string, target: SiteInsight['target'], type?: string): string {
+  const base = `/dashboard/sites/${siteId}`;
+  if (target && typeof target === 'object') {
+    if (target.url) return target.url.startsWith('/') ? target.url : base;
+    if (target.tab) return resolveInsightHref(siteId, target.tab, type);
+  }
+  if (typeof target === 'string') {
+    const t = target.trim();
+    if (t.startsWith('/')) return t;
+    const slug = t.replace(/^#/, '').toLowerCase();
+    if (INSIGHT_TAB_SLUGS.has(slug)) return slug === 'insights' ? base : `${base}/${slug}`;
+  }
+  // Fallback: map the insight type to a tab when target is absent.
+  const ty = (type ?? '').toLowerCase();
+  if (ty.includes('keyword')) return `${base}/keywords`;
+  if (ty.includes('backlink') || ty.includes('link')) return `${base}/backlinks`;
+  if (ty.includes('content')) return `${base}/content`;
+  if (ty.includes('rank')) return `${base}/rankings`;
+  if (ty.includes('geo') || ty.includes('ai_visibility')) return `${base}/geo`;
+  if (ty.includes('audit') || ty.includes('crawl') || ty.includes('technical')) return `${base}/audit`;
+  if (ty.includes('competitor')) return `${base}/competitors`;
+  return base;
+}
+
+/**
+ * Normalize the backend response into a priority-sorted insight list.
+ * Accepts a bare array, { data: [] }, { insights: [] }, or Paged<>.
+ */
+export function normalizeInsightList(raw: unknown): SiteInsight[] {
+  let arr: unknown[] = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    if (Array.isArray(r.data)) arr = r.data;
+    else if (Array.isArray(r.insights)) arr = r.insights;
+  }
+  const list: SiteInsight[] = arr
+    .filter((i): i is Record<string, unknown> => !!i && typeof i === 'object')
+    .map((i) => ({
+      id: typeof i.id === 'string' ? i.id : undefined,
+      type: typeof i.type === 'string' ? i.type : 'general',
+      priority: (typeof i.priority === 'number' || typeof i.priority === 'string'
+        ? i.priority
+        : 'low') as SiteInsight['priority'],
+      title: typeof i.title === 'string' ? i.title : 'Action',
+      detail: typeof i.detail === 'string' ? i.detail : null,
+      evidence: (i as Record<string, unknown>).evidence,
+      target: (i.target as SiteInsight['target']) ?? null,
+      impact: typeof i.impact === 'number' ? i.impact : null,
+      created_at: typeof i.created_at === 'string' ? i.created_at : null,
+    }));
+  return list.sort((a, b) => insightPriorityRank(b.priority) - insightPriorityRank(a.priority));
+}
+
+export const insightsApi = {
+  /** Real endpoint — adapter pattern: normalizeInsightList handles all shapes. */
+  list: async (siteId: string): Promise<SiteInsight[]> => {
+    const raw = await api<unknown>(`/api/v1/sites/${encodeURIComponent(siteId)}/insights`);
+    return normalizeInsightList(raw);
+  },
+};

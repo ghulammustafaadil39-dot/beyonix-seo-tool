@@ -169,7 +169,7 @@ export default function ReportsV2Panel({ siteId }: { siteId: string }) {
 
   const delta = (label: string, v: number | null, invert = false) =>
     v === null ? (
-      <div key={label} className="flex justify-between text-sm"><dt className="text-white/60">{label}</dt><dd className="font-mono text-white/40">n/a</dd></div>
+      <div key={label} className="flex justify-between text-sm"><dt className="text-white/60">{label}</dt><dd className="font-mono text-white/55">n/a</dd></div>
     ) : (
       <div key={label} className="flex justify-between text-sm">
         <dt className="text-white/60">{label}</dt>
@@ -216,7 +216,7 @@ export default function ReportsV2Panel({ siteId }: { siteId: string }) {
             </span>
             <div>
               <p className="text-sm font-bold text-white">{branding.company_name || 'Your company'}</p>
-              <p className="font-mono text-xs text-white/40">Weekly SEO report</p>
+              <p className="font-mono text-xs text-white/55">Weekly SEO report</p>
             </div>
           </div>
           <p className="mt-3 text-xs text-white/60">Executive summary, score trends, and top actions — in plain language.</p>
@@ -275,7 +275,7 @@ export default function ReportsV2Panel({ siteId }: { siteId: string }) {
             {delta('Open errors (reduction is good)', compare.deltas.openErrors, true)}
             {delta('Keywords improved', compare.deltas.keywordsImproved)}
             {delta('AI visibility (simulated)', compare.deltas.geoScore)}
-            {!compare.previous && <p className="text-xs text-white/40">No previous report — deltas need two reports.</p>}
+            {!compare.previous && <p className="text-xs text-white/55">No previous report — deltas need two reports.</p>}
           </dl>
         )}
 
@@ -309,7 +309,7 @@ export default function ReportsV2Panel({ siteId }: { siteId: string }) {
           <div className="bx-panel mt-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm font-medium capitalize text-white">{schedule.frequency} report</p>
-              <p className="font-mono text-xs text-white/40">
+              <p className="font-mono text-xs text-white/55">
                 to {schedule.recipients.length ? schedule.recipients.join(', ') : '—'}
                 {schedule.sections?.length ? ` · sections: ${schedule.sections.join(', ')}` : ''}
               </p>
@@ -322,7 +322,7 @@ export default function ReportsV2Panel({ siteId }: { siteId: string }) {
             </div>
           </div>
         ) : (
-          <p className="mt-3 text-sm text-white/40">No schedule for this site yet — create one below.</p>
+          <p className="mt-3 text-sm text-white/55">No schedule for this site yet — create one below.</p>
         )}
         <div className="mt-3 flex flex-wrap gap-2">
           <select value={schedFreq} onChange={(e) => setSchedFreq(e.target.value as 'weekly' | 'monthly')} className="bx-input !w-auto" aria-label="Schedule frequency">

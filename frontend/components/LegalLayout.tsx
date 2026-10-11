@@ -17,7 +17,7 @@ export function LegalLayout({
       <main className="mx-auto max-w-3xl px-4 py-16">
         <p className="bx-micro mb-3">~/ legal</p>
         <h1 className="text-3xl font-extrabold tracking-tight">{title}</h1>
-        <p className="mt-2 font-mono text-xs text-white/40">last updated {updated}</p>
+        <p className="mt-2 font-mono text-xs text-white/55">last updated {updated}</p>
         <article className="mt-8 space-y-6">{children}</article>
       </main>
       <Footer />

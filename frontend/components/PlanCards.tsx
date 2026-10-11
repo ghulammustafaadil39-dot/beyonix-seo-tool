@@ -136,7 +136,7 @@ export default function PlanCards({
                   {planPrice(plan, annual)}
                 </span>
               </p>
-              <p className="mt-1 font-mono text-xs text-white/40">
+              <p className="mt-1 font-mono text-xs text-white/55">
                 {annual ? 'billed annually' : 'billed monthly'} · cancel anytime
               </p>
               <p className="mt-3 text-sm text-white/60">{PLAN_DESCRIPTIONS[plan]}</p>
@@ -153,7 +153,7 @@ export default function PlanCards({
           );
         })}
       </div>
-      <p className="mt-4 text-center font-mono text-xs text-white/30">
+      <p className="mt-4 text-center font-mono text-xs text-white/50">
         Final price is confirmed securely at Stripe checkout.
       </p>
     </div>

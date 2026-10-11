@@ -122,8 +122,8 @@ function NewSiteForm() {
                 step === n
                   ? 'border-teal-400/40 bg-teal-400/10 text-teal-200'
                   : step > n
-                    ? 'border-white/10 bg-white/[0.02] text-white/30'
-                    : 'border-white/10 text-white/40'
+                    ? 'border-white/10 bg-white/[0.02] text-white/50'
+                    : 'border-white/10 text-white/55'
               }`}
             >
               {label}
@@ -215,7 +215,7 @@ function NewSiteForm() {
               )}
               <button
                 onClick={() => setStep(3)}
-                className="text-sm font-medium text-white/40 hover:text-white/70 hover:underline"
+                className="text-sm font-medium text-white/55 hover:text-white/70 hover:underline"
               >
                 Skip for now →
               </button>
@@ -232,7 +232,7 @@ function NewSiteForm() {
           <div className="space-y-4">
             <div className="bx-panel">
               <p className="text-sm font-medium text-white">Google Search Console</p>
-              <p className="mt-1 text-xs text-white/40">
+              <p className="mt-1 text-xs text-white/55">
                 Brings in real click/impression data and backlink info for your site.
               </p>
               {gscUrl ? (
@@ -257,7 +257,7 @@ function NewSiteForm() {
                 Skip to dashboard
               </button>
             </div>
-            <Link href="/dashboard" className="block text-sm text-white/40 hover:text-white/70 hover:underline">
+            <Link href="/dashboard" className="block text-sm text-white/55 hover:text-white/70 hover:underline">
               ← Back to sites
             </Link>
           </div>
@@ -269,7 +269,7 @@ function NewSiteForm() {
 
 export default function NewSitePage() {
   return (
-    <Suspense fallback={<p className="font-mono text-sm text-white/40">$ loading…</p>}>
+    <Suspense fallback={<p className="font-mono text-sm text-white/55">$ loading…</p>}>
       <NewSiteForm />
     </Suspense>
   );

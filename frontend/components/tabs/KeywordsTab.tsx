@@ -3,7 +3,12 @@
 import { useEffect, useState } from 'react';
 import { keywordsApi, sitesApi, type Keyword } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
-import KeywordsV2Panel from './KeywordsV2Panel';
+import { TableSkeleton } from '../Skeleton';
+import dynamic from 'next/dynamic';
+const KeywordsV2Panel = dynamic(() => import('./KeywordsV2Panel').then((m) => m.default), {
+  loading: () => <div role="status" aria-label="Loading advanced panel" className="bx-panel"><div className="bx-shimmer h-24 rounded-md bg-white/5" aria-hidden="true" /></div>,
+  ssr: false,
+});
 
 interface GscQuery {
   query: string;
@@ -36,7 +41,7 @@ function GscQueriesCard({ siteId }: { siteId: string }) {
       <h3 className="mb-1 text-sm font-semibold text-white">
         Top Google Search Console queries
       </h3>
-      <p className="mb-3 text-xs text-white/40">
+      <p className="mb-3 text-xs text-white/55">
         Real searches that showed your site on Google in the last 28 days — great seeds for tracking.
       </p>
       <div className="bx-table-wrap !rounded-lg">
@@ -106,22 +111,32 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
     }
   };
 
+  // W-05: optimistic UI for track/untrack (cheap, reversible) —
+  // the row flips instantly and rolls back on error.
   const track = async (kw: Keyword) => {
+    const prev = keywords;
+    setKeywords((cur) => cur.map((k) => (k.id === kw.id ? { ...k, tracked: true } : k)));
     try {
       const updated = await keywordsApi.track(kw.id);
-      setKeywords((prev) => prev.map((k) => (k.id === kw.id ? updated : k)));
+      setKeywords((cur) => cur.map((k) => (k.id === kw.id ? updated : k)));
     } catch (err) {
+      setKeywords(prev);
       report(err);
     }
   };
 
   const untrack = async (kw: Keyword) => {
+    const prev = keywords;
+    setKeywords((cur) =>
+      trackedOnly ? cur.filter((k) => k.id !== kw.id) : cur.map((k) => (k.id === kw.id ? { ...k, tracked: false } : k)),
+    );
     try {
       const updated = await keywordsApi.untrack(kw.id);
-      setKeywords((prev) =>
-        trackedOnly ? prev.filter((k) => k.id !== kw.id) : prev.map((k) => (k.id === kw.id ? updated : k)),
+      setKeywords((cur) =>
+        trackedOnly ? cur.filter((k) => k.id !== kw.id) : cur.map((k) => (k.id === kw.id ? updated : k)),
       );
     } catch (err) {
+      setKeywords(prev);
       report(err);
     }
   };
@@ -171,9 +186,12 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
           />
           Show tracked only
         </label>
-        <span className="font-mono text-xs text-white/30">{keywords.length} keywords</span>
+        <span className="font-mono text-xs text-white/50">{keywords.length} keywords</span>
       </div>
 
+      {loading ? (
+        <TableSkeleton rows={6} cols={7} />
+      ) : (
       <div className="bx-table-wrap">
         <table className="min-w-full">
           <thead className="border-b border-white/10 bg-white/[0.03]">
@@ -184,7 +202,7 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
               <th className="bx-th">Difficulty</th>
               <th className="bx-th">Intent</th>
               <th className="bx-th" title="Priority score (0–100): higher volume and lower difficulty score higher. Start with the highest.">
-                Priority <span className="normal-case text-white/30" title="Higher volume + lower difficulty = higher priority. Start with the highest numbers.">ⓘ</span>
+                Priority <span className="normal-case text-white/50" title="Higher volume + lower difficulty = higher priority. Start with the highest numbers.">ⓘ</span>
               </th>
               <th className="bx-th">Actions</th>
             </tr>
@@ -200,7 +218,7 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
                 </td>
                 <td className="px-4 py-3 font-mono text-sm text-white/70">{k.volume ?? '—'}</td>
                 <td className="px-4 py-3 font-mono text-sm text-white/70">{k.difficulty ?? '—'}</td>
-                <td className="px-4 py-3 text-xs text-white/40">{k.intent ?? '—'}</td>
+                <td className="px-4 py-3 text-xs text-white/55">{k.intent ?? '—'}</td>
                 <td className="px-4 py-3 font-mono text-sm text-teal-300">
                   {k.priority_score !== null ? k.priority_score.toFixed(1) : '—'}
                 </td>
@@ -233,7 +251,7 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
             ))}
             {keywords.length === 0 && !loading && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-white/40">
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-white/55">
                   No keywords yet — run research above to discover some.
                 </td>
               </tr>
@@ -241,6 +259,7 @@ export default function KeywordsTab({ siteId }: { siteId: string }) {
           </tbody>
         </table>
       </div>
+      )}
 
       <KeywordsV2Panel siteId={siteId} />
     </div>

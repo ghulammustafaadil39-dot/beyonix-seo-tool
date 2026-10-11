@@ -180,7 +180,7 @@ export default function AdminPage() {
   };
 
   if (gate === 'loading') {
-    return <p className="px-4 py-8 font-mono text-sm text-white/40">$ loading…</p>;
+    return <p className="px-4 py-8 font-mono text-sm text-white/55">$ loading…</p>;
   }
   if (gate === 'notfound') {
     // Same surface as any missing page — the back-office must not be
@@ -221,7 +221,7 @@ export default function AdminPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-8">
-      <a href="/dashboard" className="text-sm text-white/40 hover:text-white/70 hover:underline">
+      <a href="/dashboard" className="text-sm text-white/55 hover:text-white/70 hover:underline">
         ← Back to dashboard
       </a>
       <div>
@@ -235,7 +235,7 @@ export default function AdminPage() {
         <div className="bx-card">
           <p className="bx-micro">Tenants</p>
           <p className="mt-1 font-mono text-2xl font-bold text-white">{tenantTotal}</p>
-          <p className="font-mono text-[11px] text-white/40">{suspendedCount} suspended (this page)</p>
+          <p className="font-mono text-[11px] text-white/55">{suspendedCount} suspended (this page)</p>
         </div>
         <div className="bx-card">
           <p className="bx-micro">Failed jobs pending</p>
@@ -271,7 +271,7 @@ export default function AdminPage() {
           </form>
         </div>
         {tenants.length === 0 ? (
-          <p className="text-sm text-white/40">No tenants match.</p>
+          <p className="text-sm text-white/55">No tenants match.</p>
         ) : (
           <div className="bx-table-wrap">
             <table className="w-full min-w-[680px] text-sm">
@@ -294,7 +294,7 @@ export default function AdminPage() {
                         <button onClick={() => showDetail(t)} className="text-left">
                           <span className="font-medium text-white hover:underline">{t.name}</span>
                         </button>
-                        <p className="font-mono text-[11px] text-white/30">
+                        <p className="font-mono text-[11px] text-white/50">
                           {t.id.slice(0, 8)}… · since {new Date(t.created_at).toLocaleDateString()}
                           {t.read_only ? ' · read-only' : ''}
                         </p>
@@ -380,14 +380,14 @@ export default function AdminPage() {
                     </span>
                   )}
                 </div>
-                <p className="mt-1 font-mono text-xs text-white/40">
+                <p className="mt-1 font-mono text-xs text-white/55">
                   {j.tenant_name ?? j.tenant_id ?? '—'} · attempts {j.attempts} ·{' '}
                   {new Date(j.failed_at).toLocaleString()}
                 </p>
                 {j.error && <p className="mt-1 text-xs text-red-300/80">{j.error}</p>}
               </li>
             ))}
-            {jobs.length === 0 && <p className="text-sm text-white/40">No failed jobs.</p>}
+            {jobs.length === 0 && <p className="text-sm text-white/55">No failed jobs.</p>}
           </ul>
         </div>
 
@@ -396,7 +396,7 @@ export default function AdminPage() {
           <p className="bx-micro mb-3">~/ spend</p>
           <h2 className="text-base font-bold text-white">Provider spend (all tenants)</h2>
           {spendTotals.length === 0 ? (
-            <p className="mt-3 text-sm text-white/40">No provider spend recorded yet.</p>
+            <p className="mt-3 text-sm text-white/55">No provider spend recorded yet.</p>
           ) : (
             <ul className="mt-3 space-y-2">
               {spendTotals.map((s) => (
@@ -404,7 +404,7 @@ export default function AdminPage() {
                   <span className="text-sm text-white/80">{s.provider}</span>
                   <span className="font-mono text-sm text-teal-300">
                     {formatMoney(s.cost_cents)}
-                    <span className="ml-2 text-[11px] text-white/40">{s.units} units</span>
+                    <span className="ml-2 text-[11px] text-white/55">{s.units} units</span>
                   </span>
                 </li>
               ))}
@@ -422,7 +422,7 @@ export default function AdminPage() {
           <p className="bx-micro mb-3">~/ flags</p>
           <h2 className="text-base font-bold text-white">Feature flags</h2>
           {flags.length === 0 ? (
-            <p className="mt-3 text-sm text-white/40">No feature flags defined.</p>
+            <p className="mt-3 text-sm text-white/55">No feature flags defined.</p>
           ) : (
             <ul className="mt-3 space-y-2">
               {flags.map((f) => (
@@ -455,7 +455,7 @@ export default function AdminPage() {
           <p className="bx-micro mb-3">~/ audit log</p>
           <h2 className="text-base font-bold text-white">Admin actions</h2>
           {audit.length === 0 ? (
-            <p className="mt-3 text-sm text-white/40">No admin actions recorded.</p>
+            <p className="mt-3 text-sm text-white/55">No admin actions recorded.</p>
           ) : (
             <ul className="mt-3 space-y-2">
               {audit.map((a) => (
@@ -463,7 +463,7 @@ export default function AdminPage() {
                   <p className="text-sm text-white/85">
                     <span className="font-mono">{a.action}</span>
                   </p>
-                  <p className="font-mono text-[11px] text-white/40">
+                  <p className="font-mono text-[11px] text-white/55">
                     {a.actor_email ?? '—'}
                     {a.target_tenant_id ? ` → ${a.target_tenant_id.slice(0, 8)}…` : ''} ·{' '}
                     {new Date(a.created_at).toLocaleString()}

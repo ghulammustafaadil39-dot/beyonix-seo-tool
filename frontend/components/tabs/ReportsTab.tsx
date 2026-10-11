@@ -1,9 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { reportsApi, type Report } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
-import ReportsV2Panel from './ReportsV2Panel';
+import JobProgress from '../JobProgress';
+import { useJobStream } from '@/lib/useJobStream';
+import { reportPoll } from '@/lib/jobPoll';
+import { SkeletonLines } from '../Skeleton';
+import dynamic from 'next/dynamic';
+const ReportsV2Panel = dynamic(() => import('./ReportsV2Panel').then((m) => m.default), {
+  loading: () => <div role="status" aria-label="Loading advanced panel" className="bx-panel"><div className="bx-shimmer h-24 rounded-md bg-white/5" aria-hidden="true" /></div>,
+  ssr: false,
+});
 
 interface Highlights {
   auditScore?: number | null;
@@ -84,24 +92,64 @@ export default function ReportsTab({ siteId }: { siteId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteId]);
 
+  const [watchReports, setWatchReports] = useState(false);
+  const [reportBaseline, setReportBaseline] = useState(0);
+  const reportSettled = useRef(false);
+
+  // W-05: live progress for report generation — SSE stream first,
+  // polling fallback watches for a new report to land.
+  const { event: jobEvent, mode: jobMode, reset: resetJob } = useJobStream({
+    siteId,
+    enabled: watchReports,
+    poll: reportPoll(siteId, reportBaseline),
+    onTerminal: () => {
+      reportSettled.current = true;
+      setWatchReports(false);
+      setGenerating(false);
+      load();
+    },
+  });
+
   const generate = async () => {
     setGenerating(true);
     try {
+      const before = reports.length;
+      setReportBaseline(before);
       await reportsApi.generate(siteId);
-      await load();
+      reportSettled.current = false;
+      setWatchReports(true);
+      resetJob();
+      // Safety net: if no stream event arrives within 60s, reload anyway.
+      setTimeout(() => {
+        if (!reportSettled.current) {
+          reportSettled.current = true;
+          setWatchReports(false);
+          setGenerating(false);
+          load();
+        }
+      }, 60000);
     } catch (e) {
       report(e);
-    } finally {
+      setWatchReports(false);
       setGenerating(false);
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading reports…</p>;
+  if (loading)
+    return (
+      <div className="space-y-3" role="status" aria-label="Loading reports">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="bx-card">
+            <SkeletonLines rows={2} />
+          </div>
+        ))}
+      </div>
+    );
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="font-mono text-sm text-white/40">{reports.length} reports</p>
+        <p className="font-mono text-sm text-white/55">{reports.length} reports</p>
         <button
           onClick={generate}
           disabled={generating}
@@ -110,6 +158,13 @@ export default function ReportsTab({ siteId }: { siteId: string }) {
           {generating ? 'Generating…' : 'Generate report'}
         </button>
       </div>
+
+      {watchReports && jobEvent && <JobProgress event={jobEvent} mode={jobMode} compact />}
+      {watchReports && !jobEvent && (
+        <p className="font-mono text-xs text-white/55" role="status">
+          $ building report — this list will refresh automatically…
+        </p>
+      )}
 
       <div className="space-y-3">
         {reports.map((r) => (
@@ -120,7 +175,7 @@ export default function ReportsTab({ siteId }: { siteId: string }) {
                   {new Date(r.period_start).toLocaleDateString()} —{' '}
                   {new Date(r.period_end).toLocaleDateString()}
                 </p>
-                <p className="font-mono text-xs text-white/30">
+                <p className="font-mono text-xs text-white/50">
                   created {new Date(r.created_at).toLocaleString()}
                 </p>
               </div>
@@ -141,7 +196,7 @@ export default function ReportsTab({ siteId }: { siteId: string }) {
         ))}
         {reports.length === 0 && (
           <div className="bx-empty">
-            <p className="text-sm text-white/40">No reports yet — generate your first one above.</p>
+            <p className="text-sm text-white/55">No reports yet — generate your first one above.</p>
           </div>
         )}
       </div>

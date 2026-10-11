@@ -17,7 +17,7 @@ const FEATURE_LABELS: Record<string, string> = {
 
 function FeatureBadges({ features }: { features?: string[] }) {
   const list = (features ?? []).filter((f) => f && f !== 'organic');
-  if (list.length === 0) return <span className="text-xs text-white/30">—</span>;
+  if (list.length === 0) return <span className="text-xs text-white/50">—</span>;
   return (
     <span className="flex flex-wrap gap-1">
       {list.map((f) => (
@@ -91,12 +91,12 @@ export default function RankingsTab({ siteId }: { siteId: string }) {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading rankings…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">$ loading rankings…</p>;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="font-mono text-sm text-white/40">{ranks.length} tracked keywords</p>
+        <p className="font-mono text-sm text-white/55">{ranks.length} tracked keywords</p>
         <button
           onClick={refresh}
           disabled={refreshing}
@@ -142,10 +142,10 @@ export default function RankingsTab({ siteId }: { siteId: string }) {
                 <td className="px-4 py-3">
                   <FeatureBadges features={r.serp_features} />
                 </td>
-                <td className="max-w-[240px] truncate px-4 py-3 font-mono text-xs text-white/40">
+                <td className="max-w-[240px] truncate px-4 py-3 font-mono text-xs text-white/55">
                   {r.url ?? '—'}
                 </td>
-                <td className="px-4 py-3 font-mono text-xs text-white/40">
+                <td className="px-4 py-3 font-mono text-xs text-white/55">
                   {r.checked_at ? new Date(r.checked_at).toLocaleString() : '—'}
                 </td>
                 <td className="px-4 py-3">
@@ -163,7 +163,7 @@ export default function RankingsTab({ siteId }: { siteId: string }) {
             ))}
             {ranks.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-white/40">
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-white/55">
                   No tracked keywords yet. Track keywords from the Keywords tab.
                 </td>
               </tr>

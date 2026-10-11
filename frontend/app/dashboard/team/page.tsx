@@ -201,9 +201,9 @@ export default function TeamPage() {
         <p className="bx-micro mb-1">~/ members</p>
         <h2 className="text-base font-bold text-white">Team members</h2>
         {members === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading members…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading members…</p>
         ) : members.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No members found.</p>
+          <p className="mt-3 text-sm text-white/55">No members found.</p>
         ) : (
           <div className="bx-table-wrap mt-3">
             <table className="w-full min-w-[560px] text-sm">
@@ -242,7 +242,7 @@ export default function TeamPage() {
                         </select>
                       )}
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-white/40">
+                    <td className="px-4 py-3 font-mono text-xs text-white/55">
                       {new Date(m.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3">
@@ -260,7 +260,7 @@ export default function TeamPage() {
         )}
         <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {(Object.keys(ROLE_DESCRIPTIONS) as TeamRole[]).map((r) => (
-            <p key={r} className="font-mono text-[11px] text-white/40">
+            <p key={r} className="font-mono text-[11px] text-white/55">
               <span className="font-semibold text-white/60">{r}</span> — {ROLE_DESCRIPTIONS[r]}
             </p>
           ))}
@@ -312,7 +312,7 @@ export default function TeamPage() {
         )}
 
         {invitations === null ? (
-          <p className="mt-4 font-mono text-sm text-white/40">$ loading invitations…</p>
+          <p className="mt-4 font-mono text-sm text-white/55">$ loading invitations…</p>
         ) : pendingInvites.length > 0 ? (
           <div className="mt-4">
             <p className="bx-label">Pending invitations</p>
@@ -321,7 +321,7 @@ export default function TeamPage() {
                 <li key={inv.id} className="bx-panel flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="font-mono text-sm text-white/80">{inv.email}</p>
-                    <p className="font-mono text-[11px] text-white/40">
+                    <p className="font-mono text-[11px] text-white/55">
                       {inv.role} · expires {new Date(inv.expires_at).toLocaleDateString()}
                     </p>
                   </div>
@@ -333,7 +333,7 @@ export default function TeamPage() {
             </ul>
           </div>
         ) : (
-          <p className="mt-4 text-sm text-white/40">No pending invitations.</p>
+          <p className="mt-4 text-sm text-white/55">No pending invitations.</p>
         )}
       </div>
 
@@ -345,9 +345,9 @@ export default function TeamPage() {
           One agency account, separate workspaces per client — each with its own sites, limits, and reports.
         </p>
         {workspaces === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading workspaces…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading workspaces…</p>
         ) : workspaces.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">
+          <p className="mt-3 text-sm text-white/55">
             No client workspaces yet — create one below.
           </p>
         ) : (
@@ -372,7 +372,7 @@ export default function TeamPage() {
                 ) : (
                   <p className="text-sm font-semibold text-white">{w.name}</p>
                 )}
-                <p className="mt-1 font-mono text-xs text-white/40">
+                <p className="mt-1 font-mono text-xs text-white/55">
                   {w.sites ?? 0} sites
                   {w.limits?.max_sites ? ` · limit ${w.limits.max_sites} sites` : ''}
                 </p>
@@ -412,9 +412,9 @@ export default function TeamPage() {
         <p className="bx-micro mb-1">~/ audit trail</p>
         <h2 className="text-base font-bold text-white">Activity log</h2>
         {activity === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading activity…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading activity…</p>
         ) : activity.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No activity recorded yet.</p>
+          <p className="mt-3 text-sm text-white/55">No activity recorded yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {activity.map((a) => (
@@ -424,12 +424,12 @@ export default function TeamPage() {
                     <span className="font-semibold">{a.user_email ?? 'system'}</span>{' '}
                     {humanAction(a)}
                   </p>
-                  <p className="font-mono text-xs text-white/40">
+                  <p className="font-mono text-xs text-white/55">
                     {a.entity_type ?? ''}
                     {a.workspace_name ? ` · ${a.workspace_name}` : ''}
                   </p>
                 </div>
-                <span className="shrink-0 font-mono text-[11px] text-white/30">
+                <span className="shrink-0 font-mono text-[11px] text-white/50">
                   {new Date(a.created_at).toLocaleString()}
                 </span>
               </li>

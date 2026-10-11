@@ -136,7 +136,7 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
             <li key={p.id} className="bx-panel flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="font-mono text-sm text-white">{p.prompt}</p>
-                <p className="font-mono text-xs text-white/40">added {new Date(p.created_at).toLocaleDateString()}</p>
+                <p className="font-mono text-xs text-white/55">added {new Date(p.created_at).toLocaleDateString()}</p>
               </div>
               <button onClick={() => removePrompt(p.id)} className="text-xs text-red-300/80 hover:text-red-300 hover:underline" aria-label={`Delete prompt ${p.prompt}`}>
                 Delete
@@ -144,9 +144,9 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
             </li>
           ))}
           {prompts !== null && prompts.length === 0 && (
-            <li className="text-sm text-white/40">No prompts yet — add your first one above.</li>
+            <li className="text-sm text-white/55">No prompts yet — add your first one above.</li>
           )}
-          {prompts === null && <li className="font-mono text-sm text-white/40">$ loading prompts…</li>}
+          {prompts === null && <li className="font-mono text-sm text-white/55">$ loading prompts…</li>}
         </ul>
       </div>
 
@@ -155,16 +155,16 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ share of voice</p>
         <h3 className="text-base font-bold text-white">AI mention share of voice (simulated)</h3>
         {sov === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
         ) : sov.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No simulated checks yet — run the prompt set to build share-of-voice data.</p>
+          <p className="mt-3 text-sm text-white/55">No simulated checks yet — run the prompt set to build share-of-voice data.</p>
         ) : (
           <div className="mt-4 space-y-4">
             {sov.map((s) => (
               <div key={s.domain}>
                 <div className="flex justify-between text-sm">
                   <span className="font-medium text-white/70">{s.domain}</span>
-                  <span className="font-mono text-xs text-white/40">
+                  <span className="font-mono text-xs text-white/55">
                     mentioned in {s.mentionRatePct}% ({s.mentions}/{s.checks} simulated checks)
                   </span>
                 </div>
@@ -182,9 +182,9 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ history</p>
         <h3 className="text-base font-bold text-white">Mention history (simulated, 30 days)</h3>
         {history === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
         ) : history.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No check history yet.</p>
+          <p className="mt-3 text-sm text-white/55">No check history yet.</p>
         ) : (
           <ul className="mt-3 space-y-1">
             {history.slice(-12).map((h, i) => (
@@ -214,7 +214,7 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
               </span>
             </div>
           ))}
-          {recs !== null && recs.length === 0 && <p className="text-sm text-white/40">No recommendations right now.</p>}
+          {recs !== null && recs.length === 0 && <p className="text-sm text-white/55">No recommendations right now.</p>}
         </div>
       </div>
     </div>

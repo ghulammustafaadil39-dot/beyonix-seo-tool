@@ -78,14 +78,14 @@ export default function ContentDetailPage({
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">$ loading…</p>;
   if (!piece) return <p className="bx-alert-err">Content not found.</p>;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <Link
         href={`/dashboard/sites/${params.id}/content`}
-        className="text-sm text-white/40 hover:text-white/70 hover:underline"
+        className="text-sm text-white/55 hover:text-white/70 hover:underline"
       >
         ← Back to content
       </Link>

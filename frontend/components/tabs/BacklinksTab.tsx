@@ -3,7 +3,11 @@
 import { useEffect, useState } from 'react';
 import { backlinksApi, type Backlink } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
-import BacklinksV2Panel from './BacklinksV2Panel';
+import dynamic from 'next/dynamic';
+const BacklinksV2Panel = dynamic(() => import('./BacklinksV2Panel').then((m) => m.default), {
+  loading: () => <div role="status" aria-label="Loading advanced panel" className="bx-panel"><div className="bx-shimmer h-24 rounded-md bg-white/5" aria-hidden="true" /></div>,
+  ssr: false,
+});
 
 export default function BacklinksTab({ siteId }: { siteId: string }) {
   const { report } = useErrorReporter();
@@ -58,7 +62,7 @@ export default function BacklinksTab({ siteId }: { siteId: string }) {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading backlinks…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">$ loading backlinks…</p>;
 
   return (
     <div className="space-y-4">
@@ -91,6 +95,7 @@ export default function BacklinksTab({ siteId }: { siteId: string }) {
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           className="bx-input !w-auto"
+          aria-label="Filter backlinks by status"
         >
           <option value="">All statuses</option>
           <option value="active">Active</option>
@@ -124,13 +129,13 @@ export default function BacklinksTab({ siteId }: { siteId: string }) {
                     {b.source_url}
                   </a>
                 </td>
-                <td className="max-w-[280px] truncate px-4 py-3 font-mono text-xs text-white/40">
+                <td className="max-w-[280px] truncate px-4 py-3 font-mono text-xs text-white/55">
                   {b.target_url}
                 </td>
-                <td className="px-4 py-3 font-mono text-xs text-white/40">
+                <td className="px-4 py-3 font-mono text-xs text-white/55">
                   {new Date(b.first_seen).toLocaleDateString()}
                 </td>
-                <td className="px-4 py-3 font-mono text-xs text-white/40">
+                <td className="px-4 py-3 font-mono text-xs text-white/55">
                   {new Date(b.last_seen).toLocaleDateString()}
                 </td>
                 <td className="px-4 py-3">
@@ -143,7 +148,7 @@ export default function BacklinksTab({ siteId }: { siteId: string }) {
             ))}
             {backlinks.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/40">
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/55">
                   No backlinks yet. Upload a CSV exported from Google Search Console
                   (Links → Top linking pages → Export) to start tracking.
                 </td>

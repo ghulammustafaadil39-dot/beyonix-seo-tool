@@ -74,7 +74,7 @@ export default function OnpageTab({ siteId }: { siteId: string }) {
                 <p className="text-sm font-semibold text-white">
                   Page quality score: <span className="font-mono">{result.quality.score}/100</span>
                 </p>
-                <p className="text-xs text-white/40">
+                <p className="text-xs text-white/55">
                   A simple grade for how well this page is optimized — fix the items below to raise it.
                 </p>
               </div>
@@ -84,7 +84,7 @@ export default function OnpageTab({ siteId }: { siteId: string }) {
                 <div key={i} className="bx-panel flex items-start justify-between gap-3">
                   <div>
                     <p className="text-xs font-semibold text-white/80">{b.label}</p>
-                    <p className="text-xs text-white/40">{b.note}</p>
+                    <p className="text-xs text-white/55">{b.note}</p>
                   </div>
                   <span className="shrink-0 font-mono text-xs font-bold text-teal-300">
                     {b.points}/{b.max}
@@ -97,14 +97,14 @@ export default function OnpageTab({ siteId }: { siteId: string }) {
           <div className="bx-card">
             <p className="bx-micro mb-3">~/ suggestions</p>
             <h3 className="mb-3 text-sm font-semibold text-white">
-              Suggestions for <span className="font-mono font-normal text-white/40">{result.url}</span>
+              Suggestions for <span className="font-mono font-normal text-white/55">{result.url}</span>
             </h3>
             <div className="space-y-4">
               {result.suggestions.map((s, i) => (
                 <div key={i} className="bx-panel">
                   <p className="text-sm font-semibold text-teal-300">{s.area}</p>
                   {s.current && (
-                    <p className="mt-1 text-xs text-white/40">
+                    <p className="mt-1 text-xs text-white/55">
                       <strong className="text-white/60">Current:</strong> {s.current}
                     </p>
                   )}
@@ -117,7 +117,7 @@ export default function OnpageTab({ siteId }: { siteId: string }) {
                 </div>
               ))}
               {result.suggestions.length === 0 && (
-                <p className="text-sm text-white/40">No suggestions — this page looks good.</p>
+                <p className="text-sm text-white/55">No suggestions — this page looks good.</p>
               )}
             </div>
           </div>
