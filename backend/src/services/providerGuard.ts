@@ -113,41 +113,58 @@ export async function reserveGlobalProviderBudget(
   const { capCents, capUnits } = globalCapsFromEnv();
   const u = Math.max(0, Math.round(units));
   const cents = priceProviderUnits(provider, feature, u);
-  // E2-M-1: serialize with an xact-scoped advisory lock (same pattern as
-  // metering.ts). The lock is held for the check+insert transaction only.
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    try {
-      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['global_provider_guard']);
-      const today = await client.query(
-        `SELECT COALESCE(SUM(cost_cents), 0)::int AS cost, COALESCE(SUM(units), 0)::int AS units
-         FROM provider_spend
-         WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
-      );
-      const cost = Number(today.rows[0]?.cost ?? 0);
-      const unitTotal = Number(today.rows[0]?.units ?? 0);
-      if ((capCents > 0 && cost + cents >= capCents) || (capUnits > 0 && unitTotal + u >= capUnits)) {
-        await client.query('ROLLBACK');
-        const spend = await getGlobalDailySpend();
-        throw new ApiError(503, 'PROVIDER_BUDGET_EXCEEDED',
-          'Global daily provider budget reached — paid data calls are paused until tomorrow (UTC). Cached data remains available.',
-          { ...spend, capCents, capUnits });
-      }
-      const r = await client.query(
-        `INSERT INTO provider_spend (id, tenant_id, provider, feature, units, cost_cents)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5) RETURNING id`,
-        [tenantId, provider, feature, u, cents],
-      );
-      await client.query('COMMIT');
-      return { reservationId: r.rows[0].id as string };
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
+  // E2-M-1: serialize the cap-check + insert with an xact-scoped advisory
+  // lock. The lock, the check, and the insert MUST all run on the same
+  // connection/transaction, otherwise concurrent reserves can overshoot the
+  // cap (the old FOR UPDATE approach was empirically broken on PG16).
+  // LA fix (pass#6): the E2-M-1 rewrite ignored the injected `_q` and always
+  // used pool.connect() — that broke unit tests injecting a stub QueryFn
+  // AND production callers passing a request-scoped `q` (their reserve ran
+  // outside their transaction). Honor `_q` again: dedicated client only for
+  // the default pool path; otherwise run lock+check+insert through `_q`.
+  const checkAndInsert = async (q: QueryFn): Promise<string> => {
+    const today = await q(
+      `SELECT COALESCE(SUM(cost_cents), 0)::int AS cost, COALESCE(SUM(units), 0)::int AS units
+       FROM provider_spend
+       WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+    );
+    const cost = Number(today.rows[0]?.cost ?? 0);
+    const unitTotal = Number(today.rows[0]?.units ?? 0);
+    if ((capCents > 0 && cost + cents >= capCents) || (capUnits > 0 && unitTotal + u >= capUnits)) {
+      const spend = await getGlobalDailySpend();
+      throw new ApiError(503, 'PROVIDER_BUDGET_EXCEEDED',
+        'Global daily provider budget reached — paid data calls are paused until tomorrow (UTC). Cached data remains available.',
+        { ...spend, capCents, capUnits });
     }
-  } finally {
-    client.release();
+    const r = await q(
+      `INSERT INTO provider_spend (id, tenant_id, provider, feature, units, cost_cents)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5) RETURNING id`,
+      [tenantId, provider, feature, u, cents],
+    );
+    return r.rows[0].id as string;
+  };
+  if (_q === defaultQuery) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      try {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['global_provider_guard']);
+        const reservationId = await checkAndInsert(client.query.bind(client) as QueryFn);
+        await client.query('COMMIT');
+        return { reservationId };
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      }
+    } finally {
+      client.release();
+    }
   }
+  // Injected query fn: best-effort advisory lock through the same fn (a
+  // no-op on test stubs that return canned rows; effective when _q is
+  // transaction-scoped), then check+insert through it.
+  await _q('SELECT pg_advisory_xact_lock(hashtext($1))', ['global_provider_guard']).catch(() => undefined);
+  return { reservationId: await checkAndInsert(_q) };
 }
 
 /**
