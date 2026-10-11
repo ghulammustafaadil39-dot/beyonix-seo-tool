@@ -1,5 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # C-06: database restore script.
+#
+# D4-H-1: pure POSIX sh — runs on postgres:16-alpine, which has NO bash
+# (busybox sh only).
 #
 # Usage:
 #   DATABASE_URL=<target> ./scripts/restore.sh <backup-file> [extra restore args...]
@@ -11,18 +14,18 @@
 # Examples:
 #   DATABASE_URL=postgres://bseo@/bseo_restore ./scripts/restore.sh /backups/bseo-2026-10-11.dump
 #   DATABASE_URL=... ./scripts/restore.sh /tmp/probe.sql -t restore_probe
-set -euo pipefail
+set -eu
 
 IN="${1:?usage: restore.sh <backup-file> [extra restore args...]}"
 shift
 
 : "${DATABASE_URL:?DATABASE_URL must be set — refusing to guess the restore target}"
-[[ -f "$IN" ]] || { echo "restore: file not found: $IN" >&2; exit 1; }
+[ -f "$IN" ] || { echo "restore: file not found: $IN" >&2; exit 1; }
 
 # B2-L3: split DATABASE_URL into PG* env vars — the password must never
 # appear as a command-line argument (visible via `ps`).
 # shellcheck source=_pg_env.sh
-source "$(dirname "$0")/_pg_env.sh"
+. "$(dirname "$0")/_pg_env.sh"
 
 if head -c 5 "$IN" | grep -q "PGDMP"; then
   # Custom format: drop-and-recreate objects from the archive. --if-exists

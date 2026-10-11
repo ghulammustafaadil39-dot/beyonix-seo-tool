@@ -1,5 +1,4 @@
 import { ApiError } from '../errors.js';
-import { decrypt } from '../crypto.js';
 import { query as defaultQuery, type QueryFn } from '../db.js';
 import { DEFAULT_LOCATION_CODE, getKeywordMetrics } from './keywordCache.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
@@ -146,8 +145,13 @@ export async function seedFromGsc(
   const site = await requireSite(tenantId, siteId, q);
   if (!site.gsc_connected) return 0;
   if (!site.gsc_refresh_token_enc) return 0;
-  const token = decrypt(site.gsc_refresh_token_enc);
-  const queries = await getGoogle().searchQueries(token, siteUrl(site.domain));
+  // D2-H-1: pass the ENCRYPTED column through UNCHANGED. The Google
+  // provider's authed() decrypts the token itself; decrypting here first
+  // double-decrypted and threw on every call ("Unknown encrypted format"),
+  // so GSC keyword seeding silently never worked (the route only logs a
+  // warning). The other call sites (routes/gsc.ts, routes/ga4.ts) already
+  // pass the encrypted value — this was the odd one out.
+  const queries = await getGoogle().searchQueries(site.gsc_refresh_token_enc, siteUrl(site.domain));
   const top = [...queries]
     .filter((r) => String(r.query ?? '').trim())
     .sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))
