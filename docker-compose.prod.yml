@@ -166,8 +166,24 @@ services:
 
   # Reverse proxy with automatic TLS. Caddy obtains and renews certificates
   # for the configured hostnames on first boot (ports 80/443 must be open).
+  #
+  # B3-L3 / S-10 digest pinning: every other image in this file pins an
+  # explicit sha256 digest so deploys are immutable — a mutated tag or a
+  # compromised push cannot slip in silently. The caddy image could NOT be
+  # pinned at authoring time (no Docker registry access in this build
+  # environment; no digest is recorded anywhere else in this repo), so the
+  # digest MUST be pinned at deploy time, before the first production
+  # deploy:
+  #   docker pull caddy:2-alpine
+  #   docker inspect --format='{{index .RepoDigests 0}}' caddy:2-alpine
+  # then replace the image line below with the returned
+  # caddy:2-alpine@sha256:<digest> (verify it corresponds to a genuine
+  # Caddy release, e.g. the digest caddyserver/caddy published for that
+  # version) and commit it. Caddy is the internet-facing TLS terminator in
+  # front of all traffic — a floating tag here is the highest-value
+  # supply-chain target in the stack. Do not go live with a floating tag.
   caddy:
-    image: caddy:2-alpine  # TODO(prod): pin to a reviewed digest in CI before first deploy (Trivy job covers this)
+    image: caddy:2-alpine
     ports:
       - "80:80"
       - "443:443"

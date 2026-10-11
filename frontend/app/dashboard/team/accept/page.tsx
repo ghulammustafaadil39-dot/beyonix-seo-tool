@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { teamApi, ApiError } from '@/lib/api';
+import { useRouter } from 'next/navigation';
+import { teamApi, authApi, ApiError } from '@/lib/api';
 
 /**
  * F-09 — Invitation accept landing (the link emailed by
@@ -12,14 +13,20 @@ import { teamApi, ApiError } from '@/lib/api';
  * INVITE_WOULD_ORPHAN_DATA / INVITE_WOULD_ORPHAN_TENANT) when the move
  * would strand data or a workspace — surfaced verbatim below.
  *
- * NOTE: the accept endpoint returns a fresh session token in the body
- * but does not set the httpOnly session cookie, so after a successful
- * accept the user signs in once more to enter the new workspace
- * (flagged for LA — login-style cookie issuance would remove this step).
+ * B3-L1: the accept endpoint now issues the fresh session directly as an
+ * httpOnly cookie (F-09 fix, backend commit 345b563 — setAuthCookie +
+ * setCsrfCookie, forwarded to the browser by the same-origin proxy), so
+ * the browser session is already switched to the new workspace when the
+ * accept call resolves. We verify with /auth/me and navigate straight to
+ * /dashboard; the manual sign-in prompt only appears as a fallback if the
+ * session cookie did not actually switch (e.g. blocked third-party/
+ * partitioned cookie edge cases).
  */
 export default function AcceptInvitePage() {
+  const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   const [state, setState] = useState<'ready' | 'busy' | 'done' | 'error'>('ready');
+  const [sessionState, setSessionState] = useState<'checking' | 'fallback'>('checking');
   const [role, setRole] = useState('');
   const [error, setError] = useState('');
 
@@ -47,7 +54,17 @@ export default function AcceptInvitePage() {
       const res = await teamApi.acceptInvitation(token);
       window.sessionStorage.removeItem('bseo_invite_token');
       setRole(res.role);
+      setSessionState('checking');
       setState('done');
+      // The session cookie was already switched by the accept call. Verify
+      // with /auth/me before navigating; on any failure fall back to the
+      // manual sign-in prompt instead of bouncing to a broken dashboard.
+      try {
+        await authApi.me();
+        router.push('/dashboard');
+      } catch {
+        setSessionState('fallback');
+      }
     } catch (e) {
       setState('error');
       if (e instanceof ApiError) {
@@ -84,13 +101,21 @@ export default function AcceptInvitePage() {
           <p className="bx-alert-ok">
             You&rsquo;ve joined the workspace{role ? ` as ${role}` : ''}.
           </p>
-          <p className="bx-body mt-3">
-            Your session still points at your previous workspace — sign in once
-            more to enter the new one.
-          </p>
-          <Link href="/login" className="bx-btn-primary mt-4 inline-block">
-            Sign in to continue
-          </Link>
+          {sessionState === 'fallback' ? (
+            <>
+              <p className="bx-body mt-3">
+                Your browser session didn&rsquo;t pick up the new workspace —
+                sign in once to continue.
+              </p>
+              <Link href="/login" className="bx-btn-primary mt-4 inline-block">
+                Sign in to continue
+              </Link>
+            </>
+          ) : (
+            <p className="bx-body mt-3" role="status">
+              Taking you to your new workspace…
+            </p>
+          )}
         </div>
       ) : state === 'error' ? (
         <div className="bx-card">

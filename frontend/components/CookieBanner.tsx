@@ -6,8 +6,11 @@ import Link from 'next/link';
 const KEY = 'bseo_cookie_consent_v1';
 
 /**
- * Cookie consent banner (F-12). Essential cookies only until the user
- * chooses; choice is stored locally, nothing is sent anywhere.
+ * Cookie consent banner (F-12). B3-L2: the product loads NO analytics or
+ * tracking scripts, so the old "Accept all" option was theater — nothing
+ * optional ever existed. The banner now honestly states essential-only
+ * behavior; the stored choice just records the acknowledgement and
+ * dismisses the notice.
  */
 export default function CookieBanner() {
   const [visible, setVisible] = useState(false);
@@ -20,11 +23,11 @@ export default function CookieBanner() {
     }
   }, []);
 
-  const choose = (value: 'essential' | 'all') => {
+  const choose = () => {
     try {
       window.localStorage.setItem(
         KEY,
-        JSON.stringify({ value, at: new Date().toISOString() }),
+        JSON.stringify({ value: 'essential', at: new Date().toISOString() }),
       );
     } catch {
       // storage unavailable — banner just disappears for this session
@@ -42,18 +45,15 @@ export default function CookieBanner() {
     >
       <p className="text-sm font-semibold text-white">Cookies</p>
       <p className="mt-1 text-sm text-white/60">
-        We use essential cookies to keep you logged in. Optional analytics
-        cookies help us improve the product.{' '}
+        We use only essential cookies — to keep you logged in and remember
+        this choice. No analytics or tracking cookies.{' '}
         <Link href="/legal/privacy" className="bx-link">
           Privacy policy
         </Link>
       </p>
       <div className="mt-3 flex gap-2">
-        <button onClick={() => choose('essential')} className="bx-btn-secondary !text-xs">
-          Essential only
-        </button>
-        <button onClick={() => choose('all')} className="bx-btn-primary !text-xs">
-          Accept all
+        <button onClick={choose} className="bx-btn-primary !text-xs">
+          Got it
         </button>
       </div>
     </div>
