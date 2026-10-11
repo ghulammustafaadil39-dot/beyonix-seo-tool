@@ -165,3 +165,34 @@ A1-L1 backlink CSV 5000 sequential INSERTs in request handler; A1-L2 `GET /metri
 
 ### Explicitly clean slices (no finding)
 Tenant isolation in all sampled SQL; SSRF via safeFetch (except A1-M4); billing webhook (sig/idempotency/ordering/plan-from-price); share tokens; authN/session incl. OAuth PKCE; GDPR erase coverage; migration runner semantics + all 29 migrations; crypto (GCM/random IV/kid); config fail-closed; idempotency middleware; invite-accept race; all 111 frontend endpoint×method pairs match backend; zero dangerouslySetInnerHTML; zero client console.log; token hygiene in auth flows; honesty labels (GEO simulated, insights projection, competitor unavailable, toxic heuristic, CMS mock); README mock-vs-real table matches code; secret scan clean (except synthetic fixture key).
+
+## Final hostile audit loop (§9) — PASS #2 (2026-10-11, LA session 3)
+
+Three fresh auditors (B1: routes+services, B2: backend core, B3: frontend+docs), read-only. Raw: `.audit-pass2-b{1,2,3}.md`. Pass-#1 fixes adversarially re-verified as holding (not re-reported except 2 fix-regressions).
+
+**Totals (new): 0 critical · 1 HIGH · 9 MEDIUM · 21 LOW.**
+
+### HIGH
+| # | Finding | Location | Fix |
+|---|---|---|---|
+| B2-H1 | Prod image cannot build: `npm ci --omit=dev` skips `typescript`, but `npm run build` needs `tsc` → docker build dies before the A2-H2 prompts smoke test | `backend/Dockerfile:10,14` | `npm ci` (full) → build → `npm prune --omit=dev` |
+
+### MEDIUM
+| # | Finding |
+|---|---|
+| B2-M1 | 041 orphan-cleanup UPDATE runs AFTER the CREATE UNIQUE INDEX it was meant to enable → on DBs with pre-A1-H1 duplicate orphans the index create fails, migration rolls back, cleanup never runs. FIX: reorder UPDATE before CREATE INDEX **inside 041** (pre-production only; 041 never ran outside local dev DBs — documented, dev DBs reset + fresh-apply proven). |
+| B2-M3 | `commitUsage`: reservation flip + `usage_events` INSERT are two non-transactional statements → concurrent getUsage under-counts; crash loses the spend row. FIX: single transaction/CTE. |
+| B2-M4 | Fairness dead-slot leak: SET-level TTL refreshed on every acquire → crashed worker's slot never frees → tenant silently loses 1 of 2 heavy slots. |
+| B2-M5 | No fetch timeouts on LLM/DataForSEO/Telegram provider calls (only captcha has one) → hung provider call wedges workers/jobs. |
+| B2-M6 | Key-rotation script bricks legacy kid-less `enc:` rows (decrypts with the NEW primary instead of trying the old set). |
+| B1-M1 | API-key scope model not enforced on ~20 GET routes (competitors, ga4, gsc, sites, settings, billing, account) — any valid key reads them regardless of granted scopes. |
+| B1-M2 | `POST /billing/portal` has NO preHandler — any API key (even `sites:read`-only) can mint a Stripe portal URL and manage/cancel the subscription. Add `billing:write` scope (new catalog entry) or role gate. |
+| B1-M3 | Manual refresh routes (`ranks/refresh`, `backlinks/refresh`, `reports/generate`) silently no-op on repeat clicks (BullMQ dedupe, same class as A1-H1) — return deduped status honestly instead of `{ok:true, queued:true}`. |
+| B3-M1 | ReportsTab "Key numbers" presents the simulated GEO/AI-visibility score as measured fact (no "(simulated)" label) — same class as pass-1 M-1/M-2, missed surface. |
+
+### Fix-regressions from pass #1 (re-reported in pass #2, must fix)
+- B1-R1: A1-L5 root cause persists — `userId="apikey:<uuid>"` still interpolated into UUID columns → ~15 user-scoped endpoints 500 for API-key callers. Fix at the root (normalize in auth/session), not per call site.
+- B1-R2: S-09 prompt-injection fix missed `content-outline`/`content-draft` templates (raw `{{keyword}}`/`{{title}}` interpolation). Apply `delimitUntrusted`.
+
+### LOW (21 — fix or justify each)
+B1: getSerpSnapshot hardcodes providerIsMock:false on cache hits; no reaper for stuck `queued` audits; annual prices missing from Stripe price→plan reverse map; unbatched keyword import INSERTs; stale isoWeekKey local/UTC mix in audit.ts; reservation over-commit on partial provider results; tenant lock held across Stripe network call in checkout. (+2 more in file.) B2: 9 in file (incl. fairness TTL refresh, timeout coverage). B3: stale invite-accept re-login UX (backend already sets cookie — drop the forced re-login); cookie-consent theater (drop "Accept all" or reword privacy §3); caddy:2-alpine not digest-pinned in compose.prod.
