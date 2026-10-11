@@ -36,7 +36,7 @@
   "name": "beyonix-seo-backend",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp -r src/prompts dist/prompts",
     "dev": "tsx watch src/index.ts",
     "dev:worker": "tsx watch src/worker.ts",
     "lint": "tsc --noEmit",

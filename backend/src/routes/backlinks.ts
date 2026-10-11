@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { requireScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
@@ -120,7 +120,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/backlinks/refresh', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail, // S-01: provider-backed refresh
+      // A1-H2: refresh spends provider budget — editor+ / backlinks:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')], // S-01: provider-backed refresh
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -145,6 +146,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
           properties: { csv: { type: 'string', minLength: 1, maxLength: MAX_CSV_BYTES } },
         },
       },
+      // A1-H2: import writes data — editor+ / backlinks:write.
+      preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write'),
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -222,7 +225,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     // Re-score all active links (e.g. after the heuristic is improved).
     app.post('/sites/:id/backlinks/rescore', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail,
+      // A1-H2: rescore is a bulk mutation — editor+ / backlinks:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -244,7 +248,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/backlinks/opportunities/refresh', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail,
+      // A1-H2: refresh computes and stores data — editor+ / backlinks:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
