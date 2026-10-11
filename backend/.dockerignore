@@ -1,0 +1,12 @@
+# S-10: keep secrets, tests and build junk out of the image build context.
+node_modules
+dist
+coverage
+tests
+.git
+.env
+.env.*
+*.log
+*.tgz
+.vscode
+.idea
