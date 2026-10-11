@@ -561,7 +561,7 @@ export const contentApi = {
     api<{ ok: boolean }>(`/api/v1/content/${id}/generate`, { method: 'POST' }),
   approve: (id: string) => api<ContentPiece>(`/api/v1/content/${id}/approve`, { method: 'POST' }),
   exportUrl: (id: string, format: 'html' | 'markdown' | 'docx') =>
-    `${BASE_URL}/api/v1/content/${id}/export?format=${format}`,
+    `${BASE_URL}/api/v1/content/${encodeURIComponent(id)}/export?format=${format}`,
 };
 
 export const onpageApi = {
@@ -1171,7 +1171,7 @@ export const auditsV2Api = {
   revokeShare: (auditId: string, tokenId: string) =>
     api<null>(`/api/v1/audits/${auditId}/shares/${tokenId}`, { method: 'DELETE' }),
   exportUrl: (auditId: string, format: 'pdf' | 'csv') =>
-    `${BASE_URL}/api/v1/audits/${auditId}/export?format=${format}`,
+    `${BASE_URL}/api/v1/audits/${encodeURIComponent(auditId)}/export?format=${format}`,
 };
 
 // ---------- F-03: keywords v2 ----------
@@ -1237,7 +1237,7 @@ export const keywordsV2Api = {
       method: 'POST',
       body: { csv },
     }),
-  exportUrl: (siteId: string) => `${BASE_URL}/api/v1/sites/${siteId}/keywords/export`,
+  exportUrl: (siteId: string) => `${BASE_URL}/api/v1/sites/${encodeURIComponent(siteId)}/keywords/export`,
   lists: (siteId: string) => api<{ data: KeywordList[] }>(`/api/v1/sites/${siteId}/keyword-lists`),
   createList: (siteId: string, name: string, tags: string[]) =>
     api<{ list: KeywordList; existed?: boolean }>(`/api/v1/sites/${siteId}/keyword-lists`, {
@@ -1408,7 +1408,7 @@ export const geoV2Api = {
       simulated: true;
       recommendations: Array<{ priority: 'high' | 'medium' | 'low'; title: string; detail: string }>;
     }>(`/api/v1/sites/${siteId}/geo/recommendations`),
-  llmsTxtUrl: (siteId: string) => `${BASE_URL}/api/v1/sites/${siteId}/geo/llms-txt`,
+  llmsTxtUrl: (siteId: string) => `${BASE_URL}/api/v1/sites/${encodeURIComponent(siteId)}/geo/llms-txt`,
 };
 
 export const GEO_ENGINES = ['chatgpt', 'perplexity', 'gemini', 'claude', 'ai_overview'] as const;
@@ -1463,7 +1463,7 @@ export const backlinksV2Api = {
       { method: 'POST' },
     ),
   disavowUrl: (siteId: string, minScore?: number) =>
-    `${BASE_URL}/api/v1/sites/${siteId}/backlinks/disavow${minScore ? `?minScore=${minScore}` : ''}`,
+    `${BASE_URL}/api/v1/sites/${encodeURIComponent(siteId)}/backlinks/disavow${minScore ? `?minScore=${minScore}` : ''}`,
 };
 
 // ---------- F-07: competitors ----------

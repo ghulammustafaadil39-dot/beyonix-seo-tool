@@ -82,12 +82,12 @@ export default function SignupPage() {
                 id="signup-password"
                 type="password"
                 required
-                minLength={8}
+                minLength={12}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="bx-input"
               />
-              <p className="bx-hint">At least 8 characters.</p>
+              <p className="bx-hint">At least 12 characters.</p>
             </div>
             <button type="submit" disabled={loading} className="bx-btn-primary w-full py-2.5">
               {loading ? 'Creating account…' : 'Sign up'}
