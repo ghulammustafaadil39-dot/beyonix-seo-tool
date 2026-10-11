@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { geoApi, type GeoScore } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import ScoreGauge from '../ScoreGauge';
+import GeoV2Panel from './GeoV2Panel';
 
 // Must match the backend allowlist in routes/geo.ts (GEO_PLATFORMS_ALLOWED).
 const PLATFORMS = ['chatgpt', 'perplexity', 'gemini', 'ai_overview'];
@@ -158,6 +159,8 @@ export default function GeoTab({ siteId }: { siteId: string }) {
           </tbody>
         </table>
       </div>
+
+      <GeoV2Panel siteId={siteId} />
     </div>
   );
 }

@@ -11,6 +11,7 @@ export const SITE_TABS = [
   { slug: 'onpage', label: 'On-page' },
   { slug: 'backlinks', label: 'Backlinks' },
   { slug: 'geo', label: 'GEO' },
+  { slug: 'competitors', label: 'Competitors' },
   { slug: 'reports', label: 'Reports' },
 ];
 

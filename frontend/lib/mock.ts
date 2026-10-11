@@ -46,3 +46,16 @@ export async function withMockFallback<T>(
     throw e;
   }
 }
+
+/**
+ * Placeholder for a real endpoint call that hasn't landed yet.
+ * Throws an ApiError(404) so withMockFallback switches to the mock.
+ * Delete the wrapper once the real endpoint exists.
+ */
+export async function notLandedYet<T>(): Promise<T> {
+  throw new ApiError({
+    code: 'ENDPOINT_NOT_LANDED',
+    message: 'Backend endpoint not implemented yet',
+    status: 404,
+  });
+}
