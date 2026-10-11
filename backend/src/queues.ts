@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { config } from './config.js';
 import { ApiError } from './errors.js';
 import { query } from './db.js';
+import { incrWithTtl, redisKeyPrefix } from './redis.js';
 
 let _connection: Redis | null = null;
 
@@ -126,11 +127,11 @@ const RL_MAX = 10;
 const RL_WINDOW = 60;
 
 export async function checkTenantRateLimit(tenantId: string, queue: string, max = RL_MAX): Promise<boolean> {
-  const key = `rl:${tenantId}:${queue}`;
-  const redis = getConnection();
-  // simple fixed-window counter
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, RL_WINDOW);
+  // A2-M5: namespaced key + atomic INCR-with-TTL (Lua) — a crash between
+  // INCR and EXPIRE used to leave a TTL-less key that 429'd the tenant
+  // forever.
+  const key = `${redisKeyPrefix()}rl:${tenantId}:${queue}`;
+  const count = await incrWithTtl(getConnection(), key, RL_WINDOW);
   return count <= max;
 }
 

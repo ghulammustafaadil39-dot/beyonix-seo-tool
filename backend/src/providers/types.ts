@@ -72,6 +72,17 @@ export interface PaymentsProvider {
   }): Promise<{ url: string; sessionId: string }>;
   createPortalSession(customerId: string, returnUrl: string): Promise<{ url: string }>;
   constructWebhookEvent(rawBody: Buffer | string, signature: string): Promise<{ type: string; data: any }>;
+  /**
+   * A2-L5: ensures a Stripe coupon exists for a local coupon definition and
+   * returns the Stripe coupon ID. Implementations may create the coupon
+   * remotely on first use.
+   */
+  ensureCoupon(def: {
+    code: string;
+    percentOff?: number | null;
+    amountOffCents?: number | null;
+    duration: string;
+  }): Promise<string>;
 }
 
 // ---------- Google ----------

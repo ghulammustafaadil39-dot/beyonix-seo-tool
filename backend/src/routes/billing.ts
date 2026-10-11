@@ -11,7 +11,7 @@ import {
   mockBillingRoutesEnabled,
   priceIdForPlan,
 } from '../providers/stripe.js';
-import { isPlanId } from '../plans.js';
+import { getPlan, isPlanId } from '../plans.js';
 
 const checkoutSchema = {
   body: {
@@ -21,7 +21,9 @@ const checkoutSchema = {
       planId: { type: 'string' },
       interval: { type: 'string', enum: ['monthly', 'annual'] },
       couponCode: { type: 'string', maxLength: 64 },
-      trialDays: { type: 'integer', minimum: 1, maximum: 90 },
+      // A1-M6: trial length is server-side (plans.ts trial_days); the
+      // client must not control it. Unknown properties are rejected by
+      // additionalProperties: false.
     },
     additionalProperties: false,
   },
@@ -35,7 +37,6 @@ const mockConfirmSchema = {
       plan: { type: 'string' },
       customer: { type: 'string' },
       interval: { type: 'string' },
-      trial_days: { type: 'string' },
       coupon: { type: 'string' },
     },
   },
@@ -64,6 +65,53 @@ async function validateCoupon(code: string): Promise<void> {
   const row = r.rows[0];
   if (row.max_redemptions != null && Number(row.redeemed_count) >= Number(row.max_redemptions)) {
     throw new ApiError(400, 'COUPON_EXHAUSTED', 'This coupon has reached its redemption limit');
+  }
+}
+
+/**
+ * A2-L5: maps a local coupon code to the real Stripe coupon id. The row is
+ * locked (FOR UPDATE) so concurrent checkouts can't create duplicate
+ * Stripe coupons for the same code; the id is stored back on the row for
+ * reuse. In mock mode the local code passes through (no Stripe involved).
+ */
+async function resolveStripeCoupon(code: string): Promise<string> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      const r = await client.query(
+        `SELECT percent_off, amount_off_cents, duration, stripe_coupon_id
+         FROM billing_coupons WHERE code = $1 FOR UPDATE`,
+        [code.toUpperCase()],
+      );
+      if (r.rows.length === 0) throw new ApiError(400, 'INVALID_COUPON', `Unknown coupon code: ${code}`);
+      const row = r.rows[0];
+      if (row.stripe_coupon_id) {
+        await client.query('COMMIT');
+        return row.stripe_coupon_id as string;
+      }
+      const stripeId = await getPayments().ensureCoupon({
+        code: code.toUpperCase(),
+        percentOff: row.percent_off as number | null,
+        amountOffCents: row.amount_off_cents as number | null,
+        duration: row.duration as string,
+      });
+      await client.query(`UPDATE billing_coupons SET stripe_coupon_id = $2 WHERE code = $1`, [
+        code.toUpperCase(),
+        stripeId,
+      ]);
+      await client.query('COMMIT');
+      return stripeId;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* already rolled back */
+      }
+      throw err;
+    }
+  } finally {
+    client.release();
   }
 }
 
@@ -110,12 +158,14 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
       '/billing/checkout',
       { schema: checkoutSchema, preHandler: requireVerifiedEmail },
       withIdempotency('billing:checkout', async (req) => {
-        const { planId, interval, couponCode, trialDays } = req.body as {
+        const { planId, interval, couponCode } = req.body as {
           planId: string;
           interval?: 'monthly' | 'annual';
           couponCode?: string;
-          trialDays?: number;
         };
+        // A1-M6: trial length comes from the server-side plan config, never
+        // from the request body.
+        const trialDays = getPlan(planId).trial_days;
         if (!isPlanId(planId)) throw new ApiError(400, 'INVALID_PLAN', `Unknown plan: ${planId}`);
         const billingInterval = interval === 'annual' ? 'annual' : 'monthly';
         // Real Stripe checkouts need a configured price; the mock provider
@@ -133,6 +183,9 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
           );
         }
         if (couponCode) await validateCoupon(couponCode);
+        // A2-L5: resolve the local code to the Stripe coupon id up-front —
+        // the raw local code is never sent to Stripe as a coupon id.
+        const stripeCouponId = couponCode ? await resolveStripeCoupon(couponCode) : null;
 
         // Block double checkout when already subscribed (C-01): plan changes
         // go through the customer portal. The tenant row is locked
@@ -195,6 +248,7 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
             interval: billingInterval,
             ...(trialDays ? { trialDays: String(trialDays) } : {}),
             ...(couponCode ? { couponCode: couponCode.toUpperCase() } : {}),
+            ...(stripeCouponId ? { stripeCouponId } : {}),
           },
         });
         return { url: s.url };
@@ -259,14 +313,16 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
 
     authed.get('/billing/mock-confirm', { schema: mockConfirmSchema }, async (req, reply) => {
       if (!getPayments().isMock) throw new ApiError(404, 'NOT_FOUND', 'Not found');
-      const { plan, customer, interval, trial_days, coupon } = req.query as {
+      const { plan, customer, interval, coupon } = req.query as {
         session_id?: string;
         plan?: string;
         customer?: string;
         interval?: string;
-        trial_days?: string;
         coupon?: string;
       };
+      // A1-M6: the trial length is server-side (plan config). The old code
+      // read trial_days from the (user-tamperable) mock-confirm querystring.
+      const trial_days = String(getPlan(plan as string).trial_days || '');
       if (!plan || !isPlanId(plan)) throw new ApiError(400, 'INVALID_PLAN', `Unknown plan: ${plan}`);
       const t = await query('SELECT id FROM tenants WHERE id = $1 AND stripe_customer_id = $2', [
         (req as any).tenant.tenantId,

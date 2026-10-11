@@ -10,11 +10,14 @@
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
 import { renderPrompt } from './prompt.js';
+import { delimitUntrusted } from './promptSafety.js';
 import { generateMetered } from './llmMetered.js';
-import { recordUsage } from '../metering.js';
+import { withUsageReservation } from '../metering.js';
 import { requireSite } from './sites.js';
 
 export const GEO_ENGINES = ['chatgpt', 'perplexity', 'gemini', 'claude', 'ai_overview'] as const;
+// AUDIT (A1-L4): GeoEngine is a type-only export (zero runtime code);
+// kept as the public domain type for GEO engine identifiers.
 export type GeoEngine = (typeof GEO_ENGINES)[number];
 
 export const SIMULATED_DISCLAIMER =
@@ -95,29 +98,46 @@ export async function runGeoCheck(
 
   const results: GeoCheckResult[] = [];
   for (const platform of platforms) {
-    const prompt = await renderPrompt('geo-answer', { platform, query: queryText });
-    // SEC-FIX (Wave-3): metered path — enforces llm_cost_cap_words (402 when
-    // tripped), records ai_words, and honors the tenant's BYOK key.
-    const res = await generateMetered(tenantId, { prompt, maxWords: 220, siteId }, q);
-    const engineVersion = res.provider.replace(/Provider$/, '').toLowerCase();
-    const mentioned = detectMention(res.text, site.domain);
-    const snippet = res.text.slice(0, 500);
-    const sentiment = analyzeSentiment(snippet);
-    const citations = extractCitations(res.text);
-    const brandMentions: Record<string, boolean> = {};
-    for (const b of brands) brandMentions[b] = detectMention(res.text, b);
-    await q(
-      `INSERT INTO geo_checks (id, tenant_id, site_id, query, platform, mentioned, context_snippet,
-                               sentiment, citations, simulated, engine_version)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8::jsonb, TRUE, $9)`,
-      [tenantId, siteId, queryText, platform, mentioned, snippet, sentiment,
-       JSON.stringify({ sources: citations, brands: brandMentions }), engineVersion],
-    );
-    await recordUsage(tenantId, 'geo_check', 1, siteId, undefined, q);
-    results.push({ platform, mentioned, snippet, sentiment, citations, simulated: true, engineVersion });
+    // A1-M1: atomic geo_checks reservation per platform check — the old
+    // checkLimit pre-flight + recordUsage pair was check-then-act.
+    await withUsageReservation(tenantId, 'geo_checks', 1, async () => {
+      const prompt = await buildGeoAnswerPrompt(platform, queryText);
+      // SEC-FIX (Wave-3): metered path — enforces llm_cost_cap_words (402 when
+      // tripped), records ai_words, and honors the tenant's BYOK key.
+      const res = await generateMetered(tenantId, { prompt, maxWords: 220, siteId }, q);
+      const engineVersion = res.provider.replace(/Provider$/, '').toLowerCase();
+      const mentioned = detectMention(res.text, site.domain);
+      const snippet = res.text.slice(0, 500);
+      const sentiment = analyzeSentiment(snippet);
+      const citations = extractCitations(res.text);
+      const brandMentions: Record<string, boolean> = {};
+      for (const b of brands) brandMentions[b] = detectMention(res.text, b);
+      await q(
+        `INSERT INTO geo_checks (id, tenant_id, site_id, query, platform, mentioned, context_snippet,
+                                 sentiment, citations, simulated, engine_version)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8::jsonb, TRUE, $9)`,
+        [tenantId, siteId, queryText, platform, mentioned, snippet, sentiment,
+         JSON.stringify({ sources: citations, brands: brandMentions }), engineVersion],
+      );
+      results.push({ platform, mentioned, snippet, sentiment, citations, simulated: true, engineVersion });
+      return { value: undefined as void };
+    }, { siteId });
   }
   return results;
 }
+
+/**
+ * A2-M7: builds the geo-answer prompt with the user's query text wrapped
+ * in delimitUntrusted() — the raw query must never be interpolated
+ * directly into the prompt (prompt-injection → stored artifacts).
+ * Exported for regression tests.
+ */
+export async function buildGeoAnswerPrompt(platform: string, queryText: string): Promise<string> {
+  return renderPrompt('geo-answer', {
+    platform,
+    query: delimitUntrusted(queryText, { label: 'user-query', maxChars: 500 }),
+  });
+};
 
 /** % of AI answers mentioning the brand in the last 30 days. 0 when no checks. */
 export async function geoScore(

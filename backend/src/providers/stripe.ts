@@ -67,7 +67,9 @@ export function buildCheckoutSessionParams(p: {
     );
   }
   const trialDays = p.metadata?.trialDays ? parseInt(p.metadata.trialDays, 10) : 0;
-  const couponCode = p.metadata?.couponCode;
+  // A2-L5: discounts reference the RESOLVED Stripe coupon id
+  // (metadata.stripeCouponId), never the raw local code.
+  const stripeCouponId = p.metadata?.stripeCouponId;
   return {
     customer: p.customerId,
     mode: 'subscription' as const,
@@ -78,7 +80,7 @@ export function buildCheckoutSessionParams(p: {
     subscription_data: {
       metadata: { tenantId: p.metadata?.tenantId ?? '', planId: p.planId },
       ...(trialDays > 0 ? { trial_period_days: trialDays } : {}),
-      ...(couponCode ? { discounts: [{ coupon: couponCode }] } : {}),
+      ...(stripeCouponId ? { discounts: [{ coupon: stripeCouponId }] } : {}),
     },
   };
 }
@@ -168,6 +170,30 @@ class RealStripeProvider implements PaymentsProvider {
     return { url: s.url };
   }
 
+  /**
+   * A2-L5: creates the Stripe coupon for a local coupon definition.
+   * The Stripe coupon id is namespaced (bseo_<CODE>) so a local code is
+   * never passed to Stripe as-is; creation is idempotent — a second call
+   * with the same code returns the existing coupon.
+   */
+  async ensureCoupon(def: { code: string; percentOff?: number | null; amountOffCents?: number | null; duration: string }): Promise<string> {
+    const stripeId = `bseo_${def.code.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+    try {
+      const existing = await this.stripe.coupons.retrieve(stripeId);
+      if (!existing.deleted) return existing.id;
+    } catch {
+      /* not found — create below */
+    }
+    const duration = def.duration === 'repeating' || def.duration === 'forever' ? def.duration : 'once';
+    const params: { id: string; duration: 'once' | 'repeating' | 'forever'; percent_off?: number; amount_off?: number; duration_in_months?: number } = { id: stripeId, duration };
+    if (def.percentOff != null) params.percent_off = def.percentOff;
+    else if (def.amountOffCents != null) params.amount_off = def.amountOffCents;
+    else throw new Error(`coupon ${def.code}: needs percent_off or amount_off_cents`);
+    if (duration === 'repeating') params.duration_in_months = 12;
+    const created = await this.stripe.coupons.create(params);
+    return created.id;
+  }
+
   async constructWebhookEvent(rawBody: Buffer | string, signature: string) {
     if (!config.stripeWebhookSecret) throw new Error('STRIPE_WEBHOOK_SECRET not configured');
     const evt = this.stripe.webhooks.constructEvent(rawBody, signature, config.stripeWebhookSecret);
@@ -206,6 +232,11 @@ class MockStripeProvider implements PaymentsProvider {
 
   async createPortalSession(_customerId: string, returnUrl: string) {
     return { url: returnUrl };
+  }
+
+  /** A2-L5: mock mode has no Stripe — the local code passes through. */
+  async ensureCoupon(def: { code: string }): Promise<string> {
+    return `mock_${def.code.toUpperCase()}`;
   }
 
   async constructWebhookEvent(rawBody: Buffer | string, signature: string) {
@@ -460,16 +491,10 @@ export async function applyPaymentEvent(
         [tenantId, subId, effectivePlan, status, periodStart, periodEnd, trialEndsAt, cancelAtPeriodEnd],
       );
       // Clear read-only when the (re)activated plan covers current usage.
-      const { getPlan } = await import('../plans.js');
-      const p = getPlan(effectivePlan);
-      const sites = Number(
-        (await q('SELECT COUNT(*)::int c FROM sites WHERE tenant_id=$1 AND deleted_at IS NULL', [tenantId])).rows[0].c,
-      );
-      const kws = Number(
-        (await q('SELECT COUNT(*)::int c FROM keywords WHERE tenant_id=$1 AND tracked=TRUE', [tenantId])).rows[0].c,
-      );
-      const overLimit = sites > p.max_sites || kws > p.max_keywords_tracked;
-      await q(`UPDATE tenants SET plan_id = $2, read_only = $3 WHERE id = $1`, [tenantId, effectivePlan, overLimit]);
+      // A1-M5: shared helper — the admin plan override uses the same check.
+      const { recomputeReadOnly } = await import('../services/billing.js');
+      await q(`UPDATE tenants SET plan_id = $2 WHERE id = $1`, [tenantId, effectivePlan]);
+      await recomputeReadOnly(tenantId, effectivePlan, q);
     }
   } else if (type === 'customer.subscription.deleted') {
     const subId: string | undefined = data.id;
@@ -601,6 +626,9 @@ class DisabledPaymentsProvider implements PaymentsProvider {
     throw this.err();
   }
   async constructWebhookEvent(): Promise<{ type: string; data: any }> {
+    throw this.err();
+  }
+  async ensureCoupon(): Promise<string> {
     throw this.err();
   }
 }

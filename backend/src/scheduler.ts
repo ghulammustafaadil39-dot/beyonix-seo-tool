@@ -29,7 +29,22 @@ const leader = createLeaderElection('scheduler:leader', 30_000);
 
 async function onlyLeader<T>(work: () => Promise<T>): Promise<T | null> {
   if (!(await leader.tryAcquire())) return null;
-  return work();
+  // A2-M4: a tick that runs longer than the 30s lock TTL (large digest /
+  // webhook-retry batches, slow enqueue loops) must not lose leadership
+  // mid-tick and let a second worker run the same schedule. Heartbeat
+  // until the work settles. (The consumers below ALSO claim-then-work
+  // atomically, so even a lost lock can't double-execute.)
+  const hb = setInterval(() => {
+    void leader.heartbeat().then((ok) => {
+      if (!ok) console.warn('[scheduler] leader lock lost mid-tick');
+    });
+  }, 10_000);
+  hb.unref?.();
+  try {
+    return await work();
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 async function enqueueForVerifiedSites(

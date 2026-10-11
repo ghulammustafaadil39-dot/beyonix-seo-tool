@@ -95,7 +95,13 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
       if (body.notify_email !== undefined) push('notify_email', body.notify_email);
       if (body.telegram_chat_id !== undefined) push('telegram_chat_id', body.telegram_chat_id);
       if (body.llm_provider !== undefined) push('llm_provider', body.llm_provider);
-      if (body.llm_api_key !== undefined) push('llm_api_key_enc', encrypt(body.llm_api_key));
+      // A1-L6: an empty string clears the key (sets NULL) instead of
+      // encrypting nothing and flipping llm_key_set to true with no usable
+      // key. This also gives users the previously-missing "remove BYOK key"
+      // affordance.
+      if (body.llm_api_key !== undefined) {
+        push('llm_api_key_enc', body.llm_api_key === '' ? null : encrypt(body.llm_api_key));
+      }
       if (body.llm_cost_cap_words !== undefined) push('llm_cost_cap_words', body.llm_cost_cap_words);
       if (sets.length > 0) {
         params.push(req.tenant.tenantId);

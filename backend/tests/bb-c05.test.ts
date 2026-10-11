@@ -1,7 +1,7 @@
 // Backend-B Wave 2 — C-05 rank tracking v2 tests.
 // Pure logic + snapshot cache against a stub QueryFn (no real DB).
 // Redis coalescing degrades gracefully when Redis is unreachable.
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../src/queues.js', () => ({
   QUEUES: { rankCheck: 'rank-check' },
@@ -9,6 +9,32 @@ vi.mock('../src/queues.js', () => ({
   enqueue: vi.fn(async () => ({ id: 'mock-job' })),
   checkTenantRateLimit: vi.fn(async () => true),
 }));
+
+const { meteredCalls } = vi.hoisted(() => ({
+  meteredCalls: [] as Array<{ tenantId: string; kind: string; units: number }>,
+}));
+
+vi.mock('../src/metering.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../src/metering.js')>();
+  return {
+    ...orig,
+    // A1-M1: the real withUsageReservation needs Postgres (plan lookup +
+    // transactional reservation). These stub-DB unit tests assert service
+    // logic + that metering is invoked; the double runs the work and
+    // records the commit. The real machinery is covered by integration
+    // tests (tests/wave4/w4-medium-1.test.ts).
+    withUsageReservation: async (
+      tenantId: string,
+      kind: string,
+      units: number,
+      work: () => Promise<{ value: unknown; actualUnits?: number }>,
+    ) => {
+      const { value, actualUnits } = await work();
+      meteredCalls.push({ tenantId, kind, units: actualUnits ?? units });
+      return value;
+    },
+  };
+});
 
 import { detectSerpFeatures, MockDataForSEO } from '../src/providers/dataforseo.js';
 import {
@@ -82,6 +108,9 @@ describe('snapshotCacheKey', () => {
 });
 
 describe('getSerpSnapshot', () => {
+  beforeEach(() => {
+    meteredCalls.length = 0;
+  });
   it('fetches on miss, meters the tenant, then serves cross-tenant hits free', async () => {
     const { q, calls } = stubQuery();
     const fetchSpy = vi.spyOn(mockProvider, 'serpFull');
@@ -89,14 +118,13 @@ describe('getSerpSnapshot', () => {
     const a = await getSerpSnapshot('tenant-a', 'seo audit', 'mine.com', {}, q, mockProvider);
     expect(a.cached).toBe(false);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const usageCalls = calls.filter((c) => c.sql.includes('INSERT INTO usage_events'));
-    expect(usageCalls).toHaveLength(1);
-    expect(usageCalls[0].params[0]).toBe('tenant-a');
+    expect(meteredCalls).toHaveLength(1);
+    expect(meteredCalls[0]).toMatchObject({ tenantId: 'tenant-a', kind: 'serp_checks' });
     // Tenant B, same keyword/location: HIT -> no provider call, no usage.
     const b = await getSerpSnapshot('tenant-b', 'seo audit', 'other.com', {}, q, mockProvider);
     expect(b.cached).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(calls.filter((c) => c.sql.includes('INSERT INTO usage_events'))).toHaveLength(1);
+    expect(meteredCalls).toHaveLength(1); // cache hit is not metered
     // Same own-domain position logic works for tenant B's domain.
     expect(typeof b.notRanked).toBe('boolean');
   });

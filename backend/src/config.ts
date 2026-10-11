@@ -94,6 +94,10 @@ export const config = {
   // (Fastify logger) + GET /metrics and GET /status.
   sentryDsn: opt('SENTRY_DSN', ''),
   otelEndpoint: opt('OTEL_EXPORTER_OTLP_ENDPOINT', ''),
+  // A1-L2: gate for GET /metrics and GET /status. Format "user:password";
+  // unset = unauthenticated (scraper-friendly default; set it in production
+  // so aggregate spend / queue-depth intel isn't public).
+  metricsBasicAuth: opt('METRICS_BASIC_AUTH', ''),
 };
 
 export const hasStripe = () => !!config.stripeSecretKey;

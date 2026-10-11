@@ -4,7 +4,7 @@ import { query as defaultQuery, type QueryFn } from '../db.js';
 import { DEFAULT_LOCATION_CODE, getKeywordMetrics } from './keywordCache.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 import { expandSeed, parseKeywordBulkImport } from './keywordText.js';
-import { recordProviderSpend, assertDataBudget } from '../metering.js';
+import { recordProviderSpend, withUsageReservation } from '../metering.js';
 import { assertGlobalProviderBudget } from './providerGuard.js';
 import { getGoogle } from '../providers/google.js';
 import { requireSite, siteUrl } from './sites.js';
@@ -419,18 +419,20 @@ export async function keywordGap(
 
   const provider = getKeywordSerpProvider();
   const dataSource = provider.isMock ? 'mock' : 'real';
-  if (provider.competitorKeywords) {
-    // SEC-FIX (Wave-3 W-01): same budget guards as the other paid miss
-    // paths (keywordCache/serpSnapshots) before the billable call.
-    await assertDataBudget(tenantId, 'keyword_metrics', 1, q);
-    await assertGlobalProviderBudget(q); // W-01: global daily circuit
-  }
+  // A1-M1: atomic reserve → billable call → commit(actual). The old
+  // assertDataBudget gate was check-then-act and never recorded the spend
+  // against the tenant's keyword_metrics budget at all — this call spends
+  // real DataForSEO money, so it now counts (1 unit).
   const compKws = provider.competitorKeywords
-    ? await provider.competitorKeywords(comp)
+    ? await withUsageReservation(tenantId, 'keyword_metrics', 1, async () => {
+        await assertGlobalProviderBudget(q); // W-01: global daily circuit
+        const kws = await provider.competitorKeywords!(comp);
+        if (!provider.isMock) {
+          await recordProviderSpend(tenantId, 'dataforseo', 'keyword_gap', 1, 0);
+        }
+        return { value: kws, actualUnits: 1 };
+      })
     : [];
-  if (!provider.isMock && provider.competitorKeywords) {
-    await recordProviderSpend(tenantId, 'dataforseo', 'keyword_gap', 1, 0);
-  }
   const ours = new Set(
     (
       await q(`SELECT keyword FROM keywords WHERE site_id = $1 AND tenant_id = $2`, [siteId, tenantId])

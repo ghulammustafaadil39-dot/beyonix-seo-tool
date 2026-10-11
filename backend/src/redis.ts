@@ -38,3 +38,24 @@ export async function closeRedis(): Promise<void> {
 export function redisKeyPrefix(): string {
   return process.env.BSEO_REDIS_PREFIX ?? 'bseo:';
 }
+
+// A2-M5: atomic fixed-window increment. The naive INCR-then-EXPIRE pair is
+// not atomic: a crash (or dropped connection) between the two leaves a key
+// with NO TTL whose counter grows forever — permanently 429-ing that tenant
+// or API key until manual Redis surgery. This Lua script runs server-side
+// so the increment and the expiry are one atomic step.
+const INCR_WITH_TTL_LUA = `
+local c = redis.call('INCR', KEYS[1])
+if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return c
+`;
+
+/**
+ * Atomically increments a fixed-window counter and sets its TTL on first
+ * hit (A2-M5). Returns the new count. The caller must include
+ * redisKeyPrefix() in the key.
+ */
+export async function incrWithTtl(client: Redis, key: string, ttlSeconds: number): Promise<number> {
+  const res = await client.eval(INCR_WITH_TTL_LUA, 1, key, String(ttlSeconds));
+  return Number(res);
+}

@@ -77,16 +77,28 @@ export async function backlinkProcessor(job: Job): Promise<unknown> {
 
   const gained: Array<{ sourceUrl: string; targetUrl: string }> = [];
   if (links.length > 0 || provider.isMock) {
-    for (const link of links) {
+    // A1-L1: batch the upserts — one statement per 500 links. The
+    // `xmax = 0` trick still identifies freshly-inserted rows per row.
+    for (let i = 0; i < links.length; i += 500) {
+      const batch = links.slice(i, i + 500);
+      const values: string[] = [];
+      const params: unknown[] = [];
+      batch.forEach((link, j) => {
+        const o = j * 4;
+        values.push(`(gen_random_uuid(), $${o + 1}, $${o + 2}, $${o + 3}, $${o + 4})`);
+        params.push(tenantId, siteId, link.sourceUrl, link.targetUrl);
+      });
       const r = await q(
         `INSERT INTO backlinks (id, tenant_id, site_id, source_url, target_url)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4)
+         VALUES ${values.join(', ')}
          ON CONFLICT (site_id, source_url, target_url)
          DO UPDATE SET last_seen = CURRENT_DATE, status = 'active'
-         RETURNING (xmax = 0) AS inserted`,
-        [tenantId, siteId, link.sourceUrl, link.targetUrl],
+         RETURNING (xmax = 0) AS inserted, source_url, target_url`,
+        params,
       );
-      if (r.rows[0]?.inserted) gained.push({ sourceUrl: link.sourceUrl, targetUrl: link.targetUrl });
+      for (const row of r.rows) {
+        if (row.inserted) gained.push({ sourceUrl: row.source_url as string, targetUrl: row.target_url as string });
+      }
     }
   }
 

@@ -48,9 +48,11 @@ export async function getBillingWindow(tenantId: string, q: QueryFn = defaultQue
 }
 
 /**
- * Total usage in the tenant's billing window (C-02): committed usage_events
- * plus committed reservations plus unexpired reservations (a reservation is
- * a hold — it must count, otherwise concurrent callers overspend).
+ * Total usage in the tenant's billing window (C-02): usage_events
+ * (committed spend, written by commitUsage) plus unexpired 'reserved' holds
+ * (a reservation is a hold — it must count, otherwise concurrent callers
+ * overspend). Committed reservations are NOT counted separately: their
+ * units were folded into usage_events at commit time.
  */
 export async function getUsage(
   tenantId: string,
@@ -65,7 +67,7 @@ export async function getUsage(
        +
        (SELECT COALESCE(SUM(units), 0) FROM usage_reservations
         WHERE tenant_id = $1 AND event_type = $2 AND created_at >= $3
-          AND (status = 'committed' OR (status = 'reserved' AND expires_at > now())))
+          AND status = 'reserved' AND expires_at > now())
      )::int AS total`,
     [tenantId, eventType, start.toISOString()],
   );
@@ -128,11 +130,14 @@ export async function checkLimit(
   let used = 0;
   switch (kind) {
     case 'sites':
-      used = Number((await q('SELECT COUNT(*)::int c FROM sites WHERE tenant_id=$1', [tenantId])).rows[0].c);
+      // A1-M3/A2-M2: soft-deleted sites must not burn the plan slot —
+      // every other count path (listings, downgrade logic) uses deleted_at IS NULL.
+      used = Number((await q('SELECT COUNT(*)::int c FROM sites WHERE tenant_id=$1 AND deleted_at IS NULL', [tenantId])).rows[0].c);
       break;
     case 'keywords_tracked':
       used = Number(
-        (await q('SELECT COUNT(*)::int c FROM keywords WHERE tenant_id=$1 AND tracked=TRUE', [tenantId])).rows[0].c,
+        // A1-M3: keywords on soft-deleted sites must not burn quota either.
+        (await q('SELECT COUNT(*)::int c FROM keywords k WHERE k.tenant_id=$1 AND k.tracked=TRUE AND NOT EXISTS (SELECT 1 FROM sites s WHERE s.id = k.site_id AND s.deleted_at IS NOT NULL)', [tenantId])).rows[0].c,
       );
       break;
     default: {
@@ -258,13 +263,37 @@ export async function reserveUsage(
       if (event) {
         used = await getUsage(tenantId, event, client.query.bind(client) as QueryFn);
       } else if (kind === 'sites') {
+        // A1-M3/A2-M2: see checkLimit — soft-deleted sites don't count.
+        // A1-M1: unexpired 'reserved' holds count too — the site row itself
+        // is inserted AFTER the reservation commits, so without this two
+        // concurrent creators would both pass the check.
         used = Number(
-          (await client.query('SELECT COUNT(*)::int c FROM sites WHERE tenant_id=$1', [tenantId])).rows[0].c,
+          (
+            await client.query(
+              `SELECT (COUNT(*)::int + COALESCE(
+                 (SELECT SUM(units)::int FROM usage_reservations
+                  WHERE tenant_id = $1 AND event_type = 'sites'
+                    AND status = 'reserved' AND expires_at > now()), 0)) AS c
+               FROM sites WHERE tenant_id = $1 AND deleted_at IS NULL`,
+              [tenantId],
+            )
+          ).rows[0].c,
         );
       } else if (kind === 'keywords_tracked') {
+        // A1-M3: keywords on soft-deleted sites don't count.
+        // A1-M1: same reservation-hold accounting as 'sites' above.
         used = Number(
-          (await client.query('SELECT COUNT(*)::int c FROM keywords WHERE tenant_id=$1 AND tracked=TRUE', [tenantId]))
-            .rows[0].c,
+          (
+            await client.query(
+              `SELECT (COUNT(*)::int + COALESCE(
+                 (SELECT SUM(units)::int FROM usage_reservations
+                  WHERE tenant_id = $1 AND event_type = 'keywords_tracked'
+                    AND status = 'reserved' AND expires_at > now()), 0)) AS c
+               FROM keywords k WHERE k.tenant_id = $1 AND k.tracked = TRUE
+                 AND NOT EXISTS (SELECT 1 FROM sites s WHERE s.id = k.site_id AND s.deleted_at IS NOT NULL)`,
+              [tenantId],
+            )
+          ).rows[0].c,
         );
       }
       if (used + take > limit) {
@@ -306,15 +335,64 @@ export async function commitUsage(
   const units = actualUnits === undefined ? undefined : Math.max(0, Math.round(actualUnits));
   const r = await q(
     `UPDATE usage_reservations SET status = 'committed', units = COALESCE($2, units)
-     WHERE id = $1 AND status = 'reserved'`,
+     WHERE id = $1 AND status = 'reserved'
+     RETURNING tenant_id, site_id, event_type, units, meta`,
     [reservationId, units ?? null],
   );
-  if ((r.rowCount ?? 0) === 0) throw new ApiError(404, 'NOT_FOUND', 'Reservation not found or already finalized');
+  if (r.rows.length === 0) throw new ApiError(404, 'NOT_FOUND', 'Reservation not found or already finalized');
+  // A1-M1: committing must also record the usage_events row. The old
+  // checkLimit + recordUsage flow wrote usage_events, and dashboards,
+  // billing evidence, and getUsage all read it — without this, metered
+  // spend was invisible everywhere except the reservations table.
+  // 'sites' / 'keywords_tracked' are pure counts (no usage_events row);
+  // every other kind's event_type IS the UsageEventType (see KIND_EVENT).
+  const row = r.rows[0];
+  const isCountKind = row.event_type === 'sites' || row.event_type === 'keywords_tracked';
+  if (!isCountKind) {
+    await q(
+      `INSERT INTO usage_events (id, tenant_id, site_id, event_type, units, meta)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)`,
+      [row.tenant_id, row.site_id, row.event_type, row.units, row.meta],
+    );
+  }
 }
 
 /** Releases a reservation without consuming budget. */
 export async function cancelUsage(reservationId: string, q: QueryFn = defaultQuery): Promise<void> {
   await q(`UPDATE usage_reservations SET status = 'cancelled' WHERE id = $1 AND status = 'reserved'`, [reservationId]);
+}
+
+/**
+ * A1-M1: atomic reserve → work → commit(actual)/cancel primitive for paid
+ * choke points. The old checkLimit/assertDataBudget + recordUsage pairs
+ * were check-then-act: N concurrent callers could collectively overspend
+ * the plan limit (or real DataForSEO money) because every one of them saw
+ * `used < limit` before anyone recorded usage. The reservation serializes
+ * on a per-tenant advisory xact lock, so the limit is enforced atomically.
+ *
+ * Pass the caller’s best estimate as `units`; the reservation is committed
+ * with the actual units consumed (<= estimate) once work succeeds, or
+ * cancelled when work throws. Reservations expire after 15 minutes, so a
+ * crashed worker can’t hold budget forever.
+ */
+export async function withUsageReservation<T>(
+  tenantId: string,
+  kind: LimitKind,
+  units: number,
+  work: () => Promise<{ value: T; actualUnits?: number }>,
+  opts: ReserveOpts = {},
+): Promise<T> {
+  const estimate = Math.max(1, Math.round(units));
+  const planId = await getTenantPlanId(tenantId);
+  const reservation = await reserveUsage(tenantId, planId, kind, estimate, opts);
+  try {
+    const { value, actualUnits } = await work();
+    await commitUsage(reservation.reservationId, actualUnits ?? estimate);
+    return value;
+  } catch (err) {
+    await cancelUsage(reservation.reservationId).catch(() => {});
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

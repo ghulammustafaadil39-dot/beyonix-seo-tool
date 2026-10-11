@@ -1,4 +1,4 @@
-import { Worker, type Job } from 'bullmq';
+import { Worker, DelayedError, type Job } from 'bullmq';
 import { captureDeadLetter, getConnection, jitteredBackoffStrategy, QUEUES, QUEUE_TIMEOUTS_MS, Jobs } from './queues.js';
 import { pool, runMigrations } from './db.js';
 import { startScheduler, stopScheduler } from './scheduler.js';
@@ -6,7 +6,7 @@ import { closeRedis } from './redis.js';
 import { installGracefulShutdown } from './shutdown.js';
 import { registerDefaultBillingHooks } from './services/billing.js';
 import { wireDefaultUsageAlerts } from './services/notifications.js';
-import { acquireHeavySlot, releaseHeavySlot, QUEUE_CLASS } from './services/fairness.js';
+import { acquireHeavySlot, heartbeatHeavySlot, releaseHeavySlot, QUEUE_CLASS } from './services/fairness.js';
 import { registerDefaultPlugins } from './services/plugins.js';
 import { crawlProcessor } from './services/crawlJobs.js';
 import { backlinkProcessor } from './services/backlinkJobs.js';
@@ -74,14 +74,32 @@ async function withFairness(queueName: string, job: Job, fn: (job: Job) => Promi
   const slot = await acquireHeavySlot(tenantId);
   if (!slot) {
     await job.moveToDelayed(Date.now() + 60_000);
-    return { deferredForFairness: true, tenantId };
+    // A2-M6: NEVER return normally after moveToDelayed — BullMQ would call
+    // moveToCompleted on a job that is no longer active (spurious 'failed'
+    // event, a retry, and a dead-letter entry for a job that never ran;
+    // the retry chain and the delayed copy could both execute the heavy
+    // job). BullMQ's native DelayedError is the dedicated non-retryable
+    // signal for exactly this: the worker's handleFailed recognizes it and
+    // skips moveToFailed/moveToCompleted entirely — no retry, no 'failed'
+    // event, no DLQ. The delayed copy runs the job once, 60s later.
+    throw new DelayedError(`deferredForFairness:${tenantId}`);
   }
+  // A2-L7: heartbeat the slot while the job runs — a job at the 15-min
+  // queue timeout would otherwise lose its slot at the 900s TTL boundary.
+  const hb = setInterval(() => {
+    void heartbeatHeavySlot(tenantId, slot).catch(() => {});
+  }, 450_000);
+  hb.unref?.();
   try {
     return await fn(job);
   } finally {
+    clearInterval(hb);
     await releaseHeavySlot(tenantId, slot);
   }
 }
+
+/** Exported for regression tests (A2-M6/A2-L7). */
+export { withFairness };
 
 function workerFor(queueName: string, processor: (job: Job) => Promise<unknown>, concurrency: number): Worker {
   return new Worker(
@@ -127,6 +145,10 @@ async function main() {
 
   for (const w of workers) {
     w.on('failed', (job, err) => {
+      // A2-M6 defense-in-depth: a fairness deferral must never be treated
+      // as a failure (BullMQ's own handleFailed already swallows
+      // DelayedError before this listener fires — no retry, no DLQ).
+      if (err instanceof DelayedError) return;
       recordJobOutcome(w.name, 'failed');
       console.error(`[worker] job ${job?.id} failed:`, err.message);
       // C-03: terminal failures go to the dead-letter table (replayable

@@ -5,7 +5,7 @@ import { query } from '../db.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireRoleOrScope } from '../middleware/access.js';
-import { assertLimit, checkLimit } from '../metering.js';
+import { withUsageReservation } from '../metering.js';
 import { requireSite, toPublicSite } from '../services/sites.js';
 import { softDeleteSite, restoreSite } from '../services/retention.js';
 import {
@@ -123,16 +123,20 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       async (req, reply) => {
       const { domain } = req.body as { domain: string };
       const clean = normalizeDomain(domain);
-      assertLimit(await checkLimit(req.tenant.tenantId, req.tenant.plan, 'sites'));
-      const r = await query(
-        `INSERT INTO sites (id, tenant_id, domain)
-         VALUES (gen_random_uuid(), $1, $2)
-         ON CONFLICT (tenant_id, domain) DO NOTHING
-         RETURNING *`,
-        [req.tenant.tenantId, clean],
-      );
-      if (r.rowCount === 0 || r.rows.length === 0) throw conflict('SITE_EXISTS', 'This domain is already added');
-      return reply.status(201).send(toPublicSite(r.rows[0]));
+      // A1-M1: atomic reservation instead of check-then-act — concurrent
+      // POST /sites at the plan limit can no longer both pass the check.
+      const site = await withUsageReservation(req.tenant.tenantId, 'sites', 1, async () => {
+        const r = await query(
+          `INSERT INTO sites (id, tenant_id, domain)
+           VALUES (gen_random_uuid(), $1, $2)
+           ON CONFLICT (tenant_id, domain) DO NOTHING
+           RETURNING *`,
+          [req.tenant.tenantId, clean],
+        );
+        if (r.rowCount === 0 || r.rows.length === 0) throw conflict('SITE_EXISTS', 'This domain is already added');
+        return { value: toPublicSite(r.rows[0]) };
+      });
+      return reply.status(201).send(site);
       },
     );
 

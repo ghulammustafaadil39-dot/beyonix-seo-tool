@@ -124,26 +124,9 @@ async function reapStaleClaim(tenantId: string, key: string, hash: string): Prom
   return (r.rowCount ?? 0) > 0;
 }
 
-/**
- * Completes a previously-claimed (or fresh) idempotency record. Kept for
- * API compatibility; `withIdempotency` is the primary path.
- */
-export async function storeIdempotentResponse(
-  tenantId: string,
-  key: string,
-  scope: string,
-  req: FastifyRequest,
-  statusCode: number,
-  body: unknown,
-): Promise<void> {
-  await query(
-    `INSERT INTO idempotency_keys (key, tenant_id, scope, request_hash, response, status_code)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (tenant_id, key) DO UPDATE SET
-       response = EXCLUDED.response, status_code = EXCLUDED.status_code`,
-    [key, tenantId, scope, requestHash(req), JSON.stringify(body ?? null), statusCode],
-  );
-}
+// AUDIT (A2-L3): `storeIdempotentResponse` was removed — it had no
+// callers (the "API compatibility" comment referenced no actual consumer).
+// `withIdempotency` is the supported path. Restorable from git history.
 
 function replayOrConflict(
   req: FastifyRequest,

@@ -14,6 +14,12 @@ import { getRedis, redisKeyPrefix } from '../redis.js';
 export interface LeaderElection {
   /** Attempts to become (or stay) leader. Resolves true for exactly one caller per tick. */
   tryAcquire(): Promise<boolean>;
+  /**
+   * A2-M4: extends the lock TTL while a long tick is still running.
+   * Resolves false when the lock is no longer ours (another process took
+   * over) — the caller should stop trusting its leadership.
+   */
+  heartbeat(): Promise<boolean>;
   release(): Promise<void>;
 }
 
@@ -40,6 +46,21 @@ export function createLeaderElection(key: string, ttlMs = 30_000, redis?: Redis)
         token = null;
       }
       return false;
+    },
+    async heartbeat(): Promise<boolean> {
+      // A2-M4: extend the TTL only if the lock is still ours (Lua
+      // compare-and-pexpire) — a tick that runs past the 30s TTL must not
+      // silently lose leadership to a second worker mid-tick.
+      if (!token) return false;
+      const res = await client.eval(
+        `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end`,
+        1,
+        fullKey,
+        token,
+        String(ttlMs),
+      );
+      if (Number(res) !== 1) token = null;
+      return Number(res) === 1;
     },
     async release(): Promise<void> {
       if (!token) return;

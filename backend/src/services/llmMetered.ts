@@ -1,5 +1,5 @@
 import { getLLMForTenant } from '../providers/llm.js';
-import { getUsage, recordUsage } from '../metering.js';
+import { getUsage, withUsageReservation } from '../metering.js';
 import { ApiError } from '../errors.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -32,6 +32,11 @@ export async function assertLlmCap(tenantId: string, q: QueryFn = defaultQuery):
 /**
  * LLM generation that always meters ai_words usage for the tenant.
  * Honors tenant-level BYOK (tenants.llm_api_key_enc) and the 'mock' override.
+ *
+ * A1-M1: the spend is enforced with an atomic reservation (reserve the
+ * maxWords estimate → generate → commit actual words / cancel on failure)
+ * instead of the old check-then-act + recordUsage pair, so concurrent
+ * generations can't collectively overspend the plan's ai_words budget.
  */
 export async function generateMetered(
   tenantId: string,
@@ -39,8 +44,15 @@ export async function generateMetered(
   q: QueryFn = defaultQuery,
 ): Promise<{ text: string; words: number; provider: string }> {
   await assertLlmCap(tenantId, q); // W-03: cost cap enforced before generation
-  const llm = await getLLMForTenant(tenantId);
-  const res = await llm.generate({ prompt: opts.prompt, maxWords: opts.maxWords, temperature: opts.temperature });
-  await recordUsage(tenantId, 'ai_words', res.words, opts.siteId, { provider: llm.name }, q);
-  return { ...res, provider: llm.name };
+  return withUsageReservation(
+    tenantId,
+    'ai_words',
+    opts.maxWords ?? 2000,
+    async () => {
+      const llm = await getLLMForTenant(tenantId);
+      const res = await llm.generate({ prompt: opts.prompt, maxWords: opts.maxWords, temperature: opts.temperature });
+      return { value: { ...res, provider: llm.name }, actualUnits: res.words };
+    },
+    { siteId: opts.siteId },
+  );
 }

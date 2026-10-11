@@ -9,7 +9,7 @@
 // - 7-day TTL. "Not in top 100" = own domain absent from the 100 items.
 
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
-import { assertDataBudget, recordUsage, recordProviderSpend } from '../metering.js';
+import { recordProviderSpend, withUsageReservation } from '../metering.js';
 import { assertGlobalProviderBudget } from './providerGuard.js';
 import type { SerpItem, SerpSnapshotResult, KeywordSerpProvider } from '../providers/types.js';
 import type { QueryFn } from '../db.js';
@@ -172,31 +172,37 @@ export async function getSerpSnapshot(
   }
 
   try {
-    await assertDataBudget(tenantId, 'serp_checks', 1, q);
-    await assertGlobalProviderBudget(q); // W-01: global daily circuit
-    const provider = providerOverride ?? getKeywordSerpProvider();
-    const snap = await fetchFreshSnapshot(tenantId, keyword, domain, locationCode, device, provider);
-    const ins = await q(
-      `INSERT INTO serp_snapshots (id, cache_key, keyword, location_code, device, language, fetched_at, items, features, source_provider)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), $6, $7, $8)
-       ON CONFLICT (cache_key) DO UPDATE SET
-         fetched_at = now(), items = EXCLUDED.items, features = EXCLUDED.features, source_provider = EXCLUDED.source_provider
-       RETURNING id`,
-      [key, keyword.trim().toLowerCase(), locationCode, device, language, JSON.stringify(snap.items), JSON.stringify(snap.features), provider.name],
-    );
-    await recordUsage(tenantId, 'serp_check', 1, undefined, { cache: 'miss', shared: true, snapshot: true }, q);
-    const own = findOwnPosition(snap.items, domain);
-    return {
-      snapshotId: ins.rows[0].id as string,
-      items: snap.items,
-      features: snap.features,
-      position: own.position,
-      url: own.url,
-      pixelRank: own.position,
-      notRanked: own.position === null,
-      cached: false,
-      providerIsMock: provider.isMock,
-    };
+    // A1-M1: atomic reserve → billable call → commit(actual). The old
+    // assertDataBudget + recordUsage pair was check-then-act.
+    const snap = await withUsageReservation(tenantId, 'serp_checks', 1, async () => {
+      await assertGlobalProviderBudget(q); // W-01: global daily circuit
+      const provider = providerOverride ?? getKeywordSerpProvider();
+      const fresh = await fetchFreshSnapshot(tenantId, keyword, domain, locationCode, device, provider);
+      const ins = await q(
+        `INSERT INTO serp_snapshots (id, cache_key, keyword, location_code, device, language, fetched_at, items, features, source_provider)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), $6, $7, $8)
+         ON CONFLICT (cache_key) DO UPDATE SET
+           fetched_at = now(), items = EXCLUDED.items, features = EXCLUDED.features, source_provider = EXCLUDED.source_provider
+         RETURNING id`,
+        [key, keyword.trim().toLowerCase(), locationCode, device, language, JSON.stringify(fresh.items), JSON.stringify(fresh.features), provider.name],
+      );
+      const own = findOwnPosition(fresh.items, domain);
+      return {
+        value: {
+          snapshotId: ins.rows[0].id as string,
+          items: fresh.items,
+          features: fresh.features,
+          position: own.position,
+          url: own.url,
+          pixelRank: own.position,
+          notRanked: own.position === null,
+          cached: false,
+          providerIsMock: provider.isMock,
+        },
+        actualUnits: 1,
+      };
+    });
+    return snap;
   } finally {
     if (won) await releaseFlightLock(key);
   }

@@ -8,6 +8,8 @@
  * route pattern (req.routeOptions.url) so cardinality stays bounded.
  */
 import type { FastifyInstance } from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
+import { config } from '../config.js';
 import { pool, query } from '../db.js';
 import { getRedis } from '../redis.js';
 import { getQueue, QUEUES } from '../queues.js';
@@ -54,6 +56,41 @@ async function liveMetrics(): Promise<LiveMetrics> {
   return { queueDepth, providerSpendCents30d, deadLettersPending };
 }
 
+/**
+ * A1-L2: /metrics exposes aggregate provider spend, queue depths and
+ * dead-letter counts — operational intel that shouldn't be public. When
+ * METRICS_BASIC_AUTH="user:password" is set, /metrics and /status require
+ * HTTP Basic auth (constant-time credential compare). Unset = open
+ * (documented scraper-friendly default; set it in production).
+ */
+function metricsGuard(req: any, reply: any): boolean {
+  const gate = config.metricsBasicAuth;
+  if (!gate || !gate.includes(':')) return true;
+  // Decode "Basic <base64(user:password)>" and compare the credentials
+  // in constant time.
+  const header = String(req.headers.authorization ?? '');
+  const m = /^Basic (.+)$/i.exec(header);
+  let got = '';
+  if (m) {
+    try {
+      got = Buffer.from(m[1], 'base64').toString('utf8');
+    } catch {
+      got = '';
+    }
+  }
+  const want = Buffer.from(gate, 'utf8');
+  const g = Buffer.from(got, 'utf8');
+  const ok = g.length === want.length && g.length > 0 && timingSafeEqual(g, want);
+  if (!ok) {
+    reply
+      .code(401)
+      .header('WWW-Authenticate', 'Basic realm="metrics"')
+      .send({ error: 'METRICS_AUTH_REQUIRED', message: 'Metrics require HTTP Basic auth.' });
+    return false;
+  }
+  return true;
+}
+
 export async function registerMetricsRoutes(app: FastifyInstance): Promise<void> {
   // HTTP latency/count instrumentation: one hook for the whole app.
   app.addHook('onResponse', async (req, reply) => {
@@ -69,12 +106,14 @@ export async function registerMetricsRoutes(app: FastifyInstance): Promise<void>
     }
   });
 
-  app.get('/metrics', async (_req, reply) => {
+  app.get('/metrics', async (req, reply) => {
+    if (!metricsGuard(req, reply)) return;
     const live = await liveMetrics();
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderPrometheus(live));
   });
 
-  app.get('/status', async (_req, reply) => {
+  app.get('/status', async (req, reply) => {
+    if (!metricsGuard(req, reply)) return;
     let db = false;
     let redis = false;
     try {

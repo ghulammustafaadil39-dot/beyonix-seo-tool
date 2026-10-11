@@ -1,4 +1,9 @@
 // Plan definitions — single source of truth for limits.
+//
+// A1-M6: trial length is a SERVER-SIDE pricing decision (trial_days per
+// plan). It is never accepted from the client — the old checkout schema
+// let any verified user request up to 90 free days on any plan.
+// Default 0 (no trial); raise per plan when the business wants trials.
 export const PLANS = {
   starter: {
     name: 'Starter',
@@ -11,6 +16,7 @@ export const PLANS = {
     geo_checks_month: 20,
     serp_checks_month: 500,
     keyword_metrics_month: 500,
+    trial_days: 0,
   },
   growth: {
     name: 'Growth',
@@ -23,6 +29,7 @@ export const PLANS = {
     geo_checks_month: 100,
     serp_checks_month: 2000,
     keyword_metrics_month: 2000,
+    trial_days: 0,
   },
   pro: {
     name: 'Pro',
@@ -35,6 +42,7 @@ export const PLANS = {
     geo_checks_month: 500,
     serp_checks_month: 6000,
     keyword_metrics_month: 6000,
+    trial_days: 0,
   },
 } as const;
 

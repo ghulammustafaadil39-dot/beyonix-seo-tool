@@ -104,8 +104,15 @@ export async function registerAdminRoutes(fastify: FastifyInstance) {
 
     admin.get('/admin/tenants/:id', async (req) => {
       const id = assertUuid((req.params as any).id, 'tenant id');
+      // A1-M7: explicit column list — NEVER return llm_api_key_enc (the
+      // encrypted BYOK key). Encrypted secrets must not leave the API
+      // (mirrors toSettings' llm_key_set boolean in routes/settings.ts).
       const t = await query(
-        `SELECT t.*, s.stripe_sub_id, s.status AS sub_status, s.current_period_start,
+        `SELECT t.id, t.name, t.plan_id, t.stripe_customer_id, t.llm_provider,
+                (t.llm_api_key_enc IS NOT NULL) AS llm_key_set,
+                t.notify_email, t.telegram_chat_id, t.created_at, t.read_only,
+                t.suspended_at, t.suspended_reason, t.llm_cost_cap_words,
+                s.stripe_sub_id, s.status AS sub_status, s.current_period_start,
                 s.current_period_end, s.trial_ends_at, s.grace_until, s.billing_interval, s.coupon_code
          FROM tenants t LEFT JOIN subscriptions s ON s.tenant_id = t.id WHERE t.id = $1`,
         [id],
@@ -147,10 +154,30 @@ export async function registerAdminRoutes(fastify: FastifyInstance) {
       const { planId, reason } = req.body as { planId: string; reason: string };
       if (!isPlanId(planId)) throw validationError(`Unknown plan: ${planId}`);
       // Manual override: changes OUR plan record without touching Stripe
-      // (for comps, migrations, support). The next real Stripe event will
-      // re-sync from Stripe's truth.
+      // (for comps, migrations, support).
+      // A1-M5: the old code only updated tenants.plan_id — a tenant stuck in
+      // read_only (from a past downgrade) stayed read-only, and the
+      // subscriptions row lingered 'canceled' (which getBillingWindow then
+      // read as the usage window). Recompute read_only against the new
+      // plan's limits (same check as the Stripe re-activation path) and sync
+      // the subscriptions row so it reflects the override instead of a
+      // stale canceled subscription. A future real Stripe event upserts ON
+      // CONFLICT (tenant_id) and cleanly supersedes this manual row.
       await query(`UPDATE tenants SET plan_id = $2 WHERE id = $1`, [id, planId satisfies PlanId]);
-      await logAdminAction(req, 'tenant.plan_override', id, { planId, reason });
+      const { recomputeReadOnly } = await import('../services/billing.js');
+      const overLimit = await recomputeReadOnly(id, planId, query);
+      await query(
+        `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, plan_id, status,
+                                    current_period_start, current_period_end)
+         VALUES (gen_random_uuid(), $1, NULL, $2, 'active', now(), now() + interval '30 days')
+         ON CONFLICT (tenant_id) DO UPDATE SET
+           plan_id = EXCLUDED.plan_id, status = 'active', stripe_sub_id = NULL,
+           current_period_start = EXCLUDED.current_period_start,
+           current_period_end = EXCLUDED.current_period_end,
+           grace_until = NULL, trial_ends_at = NULL`,
+        [id, planId satisfies PlanId],
+      );
+      await logAdminAction(req, 'tenant.plan_override', id, { planId, reason, readOnly: overLimit });
       await logActivity(id, {
         userId: (req as any).tenant.apiKeyId ? null : (req as any).tenant.userId,
         action: 'plan.overridden',

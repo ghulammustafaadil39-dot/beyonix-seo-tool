@@ -486,7 +486,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       const { totpToken, code } = req.body as { totpToken?: string; code?: string };
       let payload: any;
       try {
-        payload = jwt.verify(totpToken ?? '', config.jwtSecret);
+        payload = jwt.verify(totpToken ?? '', config.jwtSecret, { algorithms: ['HS256'] });
       } catch {
         throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired 2FA challenge');
       }
@@ -524,7 +524,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
         ? h.slice(7)
         : (req as any).cookies?.['bseo_token'];
       if (token) {
-        const payload = jwt.verify(token, config.jwtSecret) as any;
+        const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as any;
         if (payload?.uid) {
           await revokeAllSessions(payload.uid as string);
         }

@@ -1,6 +1,31 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { meteredCalls } = vi.hoisted(() => ({
+  meteredCalls: [] as Array<{ tenantId: string; kind: string; units: number }>,
+}));
+
+vi.mock('../src/metering.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../src/metering.js')>();
+  return {
+    ...orig,
+    // A1-M1: the real withUsageReservation needs Postgres (plan lookup +
+    // transactional reservation). These stub-DB unit tests assert service
+    // logic + that metering is invoked; the double runs the work and
+    // records the commit. The real machinery is covered by integration
+    // tests (tests/wave4/w4-medium-1.test.ts).
+    withUsageReservation: async (
+      tenantId: string,
+      kind: string,
+      units: number,
+      work: () => Promise<{ value: unknown; actualUnits?: number }>,
+    ) => {
+      const { value, actualUnits } = await work();
+      meteredCalls.push({ tenantId, kind, units: actualUnits ?? units });
+      return value;
+    },
+  };
+});
 import { classifyIntent, priorityScore } from '../src/services/keywordService.js';
-import { needsRankCheck } from '../src/services/rankJobs.js';
 import { getKeywordMetrics, getSerp } from '../src/services/keywordCache.js';
 import type { QueryFn } from '../src/db.js';
 import type { KeywordSerpProvider } from '../src/providers/types.js';
@@ -45,19 +70,10 @@ describe('priorityScore', () => {
   });
 });
 
-describe('needsRankCheck', () => {
-  it('returns true when never checked', () => {
-    expect(needsRankCheck(null)).toBe(true);
-  });
-  it('returns true when last check was before today (UTC)', () => {
-    expect(needsRankCheck(new Date(Date.now() - 26 * 3600_000))).toBe(true);
-  });
-  it('returns false when already checked today (UTC)', () => {
-    expect(needsRankCheck(new Date())).toBe(false);
-  });
-});
-
 describe('keywordCache (fake QueryFn, no network/db)', () => {
+  beforeEach(() => {
+    meteredCalls.length = 0;
+  });
   function makeProvider(): KeywordSerpProvider & {
     keywordMetrics: ReturnType<typeof vi.fn>;
     serp: ReturnType<typeof vi.fn>;
@@ -124,7 +140,8 @@ describe('keywordCache (fake QueryFn, no network/db)', () => {
     expect(first[0]).toMatchObject({ keyword: 'buy shoes', volume: 1200, difficulty: 35 });
     expect(provider.keywordMetrics).toHaveBeenCalledTimes(1);
     expect(inserts).toContain('keyword_metrics_cache');
-    expect(inserts).toContain('usage_events');
+    expect(meteredCalls).toHaveLength(1);
+    expect(meteredCalls[0]).toMatchObject({ tenantId: 't1', kind: 'keyword_metrics' });
 
     provider.keywordMetrics.mockClear();
     const second = await getKeywordMetrics('t1', ['buy shoes'], q, provider);

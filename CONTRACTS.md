@@ -236,7 +236,7 @@ export type PlanId = keyof typeof PLANS;
 
 - Base path `/api/v1`. Health: `GET /healthz` (no auth).
 - Success: JSON object. Lists: `{ data: [...], page, limit, total }`.
-- Errors: status + `{ error: { code: string, message: string, ...extra } }`.
+- Errors: status + `{ ok: false, error: { code, message, ...extra, requestId? } }` (frozen; see `backend/src/errors.ts errorEnvelope`). Validation failures → `400 VALIDATION_ERROR` with `error.details` array.
 - Validation: fastify schema on every route (no unvalidated bodies).
 
 ### Route map (each file exports `registerX(fastify)`)

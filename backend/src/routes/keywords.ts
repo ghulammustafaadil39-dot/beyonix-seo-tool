@@ -11,7 +11,7 @@ import {
   detectCannibalization, keywordGap, importKeywords,
 } from '../services/keywordService.js';
 import { isQuestionKeyword, keywordsToCsv } from '../services/keywordText.js';
-import { checkLimit, assertLimit } from '../metering.js';
+import { withUsageReservation } from '../metering.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 
 /** BUG-QA-W2-4: honest source label, same convention as the gap endpoint. */
@@ -109,19 +109,22 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
       '/keywords/:kwId/track',
       { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write'), schema: { params: kwParams } },
       async (req) => {
-        const { tenantId, plan } = req.tenant;
+        const { tenantId } = req.tenant;
         const kwId = req.params.kwId;
         const existing = await defaultQuery(
           `SELECT id FROM keywords WHERE id = $1 AND tenant_id = $2`,
           [kwId, tenantId],
         );
         if (existing.rows.length === 0) throw notFound('Keyword');
-        assertLimit(await checkLimit(tenantId, plan, 'keywords_tracked'));
-        const r = await defaultQuery(
-          `UPDATE keywords SET tracked = TRUE WHERE id = $1 AND tenant_id = $2 RETURNING *`,
-          [kwId, tenantId],
-        );
-        return { keyword: r.rows[0] };
+        // A1-M1: atomic reservation instead of check-then-act.
+        const r = await withUsageReservation(tenantId, 'keywords_tracked', 1, async () => {
+          const upd = await defaultQuery(
+            `UPDATE keywords SET tracked = TRUE WHERE id = $1 AND tenant_id = $2 RETURNING *`,
+            [kwId, tenantId],
+          );
+          return { value: { keyword: upd.rows[0] } };
+        });
+        return r;
       },
     );
 

@@ -90,11 +90,14 @@ describe.runIf(HAS_TEST_DB)('C-07 API quality', () => {
     expect(badWs.statusCode).toBe(400);
     expect(badWs.json().error.code).toBe('VALIDATION_ERROR');
 
+    // A1-M6: trialDays is no longer a client-controlled field (trial length
+    // is server-side per plan); a hostile value is ignored, not a
+    // validation error. A genuinely invalid checkout still 400s.
     const badCheckout = await app.inject({
       method: 'POST',
       url: '/api/v1/billing/checkout',
       headers: auth(u.token),
-      payload: { planId: 'growth', trialDays: 999 },
+      payload: { interval: 'monthly' }, // missing required planId
     });
     expect(badCheckout.statusCode).toBe(400);
     expect(badCheckout.json().error.code).toBe('VALIDATION_ERROR');

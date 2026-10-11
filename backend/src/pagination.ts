@@ -22,16 +22,8 @@ export interface PagedResult<T> {
   total: number;
 }
 
-/** Builds the { data, page, limit, total } envelope from a count query. */
-export async function paged<T>(
-  req: FastifyRequest,
-  total: number,
-  data: T[],
-  defaultLimit = 20,
-): Promise<PagedResult<T>> {
-  const { page, limit } = paginate(req, defaultLimit);
-  return { data, page, limit, total };
-}
+// AUDIT (A1-L4): the `paged` envelope helper was removed — it had zero
+// callers (only `paginate` is used). Restorable from git history if needed.
 
 /** Validates that a value is a UUID (C-07 input validation helper). */
 export function assertUuid(v: unknown, name = 'id'): string {
