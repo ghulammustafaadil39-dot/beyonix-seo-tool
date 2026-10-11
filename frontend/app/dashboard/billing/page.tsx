@@ -332,6 +332,24 @@ export default function BillingPage() {
             ` · trial ends ${new Date(sub.trial_ends_at).toLocaleDateString()}`}
           {sub?.coupon_code && ` · coupon ${sub.coupon_code}`}
         </p>
+        {/* E3-MED-1: server-side trial countdown (not just Stripe trialing). */}
+        {sub?.tenant_trial_ends_at && sub.status === 'none' && (
+          <p className="mt-3 rounded border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-sm text-cyan-200">
+            {new Date(sub.tenant_trial_ends_at) > new Date() ? (
+              <>
+                Free trial: {Math.ceil((new Date(sub.tenant_trial_ends_at).getTime() - Date.now()) / 86400000)} days left
+                (ends {new Date(sub.tenant_trial_ends_at).toLocaleDateString()}). Subscribe below to keep full access.
+              </>
+            ) : (
+              <>Your free trial has ended. Subscribe below to restore full access.</>
+            )}
+          </p>
+        )}
+        {sub?.read_only && (
+          <p className="bx-alert-err mt-3" role="alert">
+            Your account is read-only. Subscribe to restore full access.
+          </p>
+        )}
         {sub?.status === 'past_due' && (
           <p className="bx-alert-err mt-3" role="alert">
             Your last payment failed.

@@ -66,6 +66,8 @@ export default function AcceptInvitePage() {
         setSessionState('fallback');
       }
     } catch (e) {
+      // E3-LOW-1: clear the one-time token on failure too, not just success.
+      window.sessionStorage.removeItem('bseo_invite_token');
       setState('error');
       if (e instanceof ApiError) {
         if (e.status === 410 || e.code === 'INVITE_EXPIRED') {

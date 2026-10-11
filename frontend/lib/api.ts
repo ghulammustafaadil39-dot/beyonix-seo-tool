@@ -337,6 +337,8 @@ export interface Subscription {
   coupon_code?: string | null;
   grace_until?: string | null;
   read_only?: boolean;
+  /** E3-MED-1: server-side trial expiry (tenants.trial_ends_at), for the trial countdown. */
+  tenant_trial_ends_at?: string | null;
 }
 /**
  * F-11 (wired, Wave 2): real invoice ledger row from

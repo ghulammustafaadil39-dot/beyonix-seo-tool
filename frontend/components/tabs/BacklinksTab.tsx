@@ -125,9 +125,15 @@ export default function BacklinksTab({ siteId }: { siteId: string }) {
             {backlinks.map((b) => (
               <tr key={b.id} className="transition hover:bg-white/[0.02]">
                 <td className="max-w-[280px] truncate px-4 py-3 font-mono text-xs text-teal-300">
-                  <a href={b.source_url} target="_blank" rel="noreferrer" className="hover:underline">
-                    {b.source_url}
-                  </a>
+                  {/* E3-LOW-2: only http(s) URLs become links; anything else
+                      (e.g. javascript:) renders as plain text. */}
+                  {/^https?:\/\//i.test(b.source_url) ? (
+                    <a href={b.source_url} target="_blank" rel="noreferrer" className="hover:underline">
+                      {b.source_url}
+                    </a>
+                  ) : (
+                    <span>{b.source_url}</span>
+                  )}
                 </td>
                 <td className="max-w-[280px] truncate px-4 py-3 font-mono text-xs text-white/55">
                   {b.target_url}

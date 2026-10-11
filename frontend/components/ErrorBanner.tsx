@@ -25,15 +25,20 @@ const ErrorCtx = createContext<ErrorCtxValue>({ report: () => {}, clear: () => {
 export const useErrorReporter = () => useContext(ErrorCtx);
 
 /** Wraps a page subtree; any reported ApiError is shown as a banner.
- *  402 LIMIT_EXCEEDED shows the upgrade banner linking to /dashboard/billing. */
+ *  402 LIMIT_EXCEEDED shows the upgrade banner linking to /dashboard/billing.
+ *  E3-MED-1: 402 SUBSCRIPTION_REQUIRED (expired trial, no subscription) shows
+ *  a subscribe banner linking to /dashboard/billing instead of a dead-end. */
 export function ErrorBannerProvider({ children }: { children: ReactNode }) {
   const [err, setErr] = useState<BannerState | null>(null);
 
   const report = useCallback((e: unknown) => {
     if (e instanceof ApiError) {
+      const needsBilling = e.code === 'SUBSCRIPTION_REQUIRED';
       setErr({
-        message: e.message,
-        upgrade: e.code === 'LIMIT_EXCEEDED',
+        message: needsBilling
+          ? 'Your free trial has ended. Subscribe to continue using paid features.'
+          : e.message,
+        upgrade: e.code === 'LIMIT_EXCEEDED' || needsBilling,
       });
     } else if (e instanceof Error) {
       setErr({ message: e.message, upgrade: false });

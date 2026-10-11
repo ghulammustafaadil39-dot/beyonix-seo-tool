@@ -365,16 +365,19 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
          FROM subscriptions WHERE tenant_id = $1`,
         [(req as any).tenant.tenantId],
       );
-      const t = await query(`SELECT plan_id, read_only FROM tenants WHERE id = $1`, [
+      // E3-MED-1: include the server-side trial expiry so the frontend can
+      // show a trial countdown (not just Stripe's trialing status).
+      const t = await query(`SELECT plan_id, read_only, trial_ends_at AS tenant_trial_ends_at FROM tenants WHERE id = $1`, [
         (req as any).tenant.tenantId,
       ]);
       if (r.rows.length > 0) {
-        return { ...r.rows[0], read_only: t.rows[0]?.read_only ?? false };
+        return { ...r.rows[0], read_only: t.rows[0]?.read_only ?? false, tenant_trial_ends_at: t.rows[0]?.tenant_trial_ends_at ?? null };
       }
       return {
         plan_id: t.rows[0]?.plan_id ?? 'starter',
         status: 'none',
         read_only: t.rows[0]?.read_only ?? false,
+        tenant_trial_ends_at: t.rows[0]?.tenant_trial_ends_at ?? null,
       };
     });
 
