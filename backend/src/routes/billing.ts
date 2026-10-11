@@ -334,9 +334,10 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
               // paid) is stolen. A stale 'open' claim is a LIVE, payable
               // Stripe session (valid 24h) — stealing it and creating a
               // second session reopens the double-subscription shape via
-              // abandonment, so it keeps the 409/URL-reuse; only an 'open'
-              // claim older than 25h (session definitively expired, its
-              // expired webhook lost) is stolen.
+              // abandonment, so it keeps the 409/URL-reuse. K5-LOW-3
+              // (pass#11): an 'open' claim older than 24h is stolen — the
+              // Stripe session has expired by then, so reusing its URL
+              // would hand back a dead link.
               const cs = await client.query(
                 `SELECT stripe_session_id, checkout_url, plan_id, billing_interval, status, created_at
                  FROM checkout_sessions WHERE tenant_id = $1`,
@@ -356,7 +357,7 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
               const stealable =
                 !!claim &&
                 ((claim.status === 'creating' && claimAgeMs > 10 * 60_000) ||
-                  (claim.status === 'open' && claimAgeMs > 25 * 60 * 60_000));
+                  (claim.status === 'open' && claimAgeMs > 24 * 60 * 60_000));
               if (claim && !stealable) {
                 await client.query('ROLLBACK');
                 if (

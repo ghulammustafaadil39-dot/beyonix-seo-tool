@@ -241,7 +241,18 @@ export async function enqueueDeduped(
     const jobId = `${idempotencyKey.replaceAll(':', '-')}-${randomUUID()}`;
     await enqueue(queueName, jobName, data, { idempotencyKey: jobId });
     // The job exists — extend the claim to the full dedupe window.
-    await limiterRedis().expire(mapKey, ttlSec).catch(() => {});
+    // K2-1 (pass#11): extend atomically via Lua, only if the key still
+    // exists. A plain EXPIRE could extend a LAPSED claim another claimant
+    // already re-took; and a swallowed EXPIRE failure would leave the 60s
+    // short-claim (duplicates re-enqueue after 60s). If the key is gone,
+    // our claim lapsed mid-enqueue (a >60s Redis stall) — log it; the job
+    // was still enqueued and processors are idempotent.
+    const extended = await limiterRedis()
+      .eval(`if redis.call('exists', KEYS[1]) == 1 then return redis.call('expire', KEYS[1], ARGV[1]) else return 0 end`, 1, mapKey, ttlSec)
+      .catch(() => 0);
+    if (extended !== 1) {
+      console.warn(`[queues] dedupe claim for ${idempotencyKey} lapsed before extend (job still enqueued)`);
+    }
   } catch (err) {
     // Release the claim on the bounded client (best effort) so the next
     // click can retry — a failed enqueue must not burn the window.

@@ -194,7 +194,7 @@ migration that added a NOT NULL column** (RUNBOOK.md).
   rule (status-aware): a `'creating'` claim older than 10 min (creator
   crashed mid-flight) is stolen by the next attempt; a live `'open'` claim
   is never stolen (its Stripe session is payable for 24h); an `'open'`
-  claim older than 25h (session definitively expired, webhook lost) is
+  claim older than 24h (session expired, webhook lost) is
   stolen. No operator action; see RUNBOOK.md for the 409's meaning.
 
 Note: `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_SITE_URL` are **baked into the

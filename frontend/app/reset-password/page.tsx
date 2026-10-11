@@ -1,18 +1,27 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ApiError, authApi } from '@/lib/api';
 
 /**
  * G3-M-1: password-reset confirmation. The token arrives as ?token=… from
  * the email link; it is read once into state (never logged or stored) and
  * exchanged for the new password. All sessions are revoked server-side.
+ * K3-L-2 (pass#11): the token is scrubbed from the URL immediately after
+ * reading (router.replace), like the invite-token and TOTP-challenge
+ * flows — it must not linger in history/address bar.
  */
 function ResetForm() {
   const params = useSearchParams();
-  const token = params.get('token') ?? '';
+  const router = useRouter();
+  const [token, setToken] = useState('');
+  useEffect(() => {
+    setToken(params.get('token') ?? '');
+    router.replace('/reset-password');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);

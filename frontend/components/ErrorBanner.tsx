@@ -76,11 +76,17 @@ export function ErrorBannerProvider({ children }: { children: ReactNode }) {
             const hasLiveSub =
               !!sub && sub.status !== 'none' && sub.status !== 'canceled';
             const trialEnded = trialLapsed && !hasLiveSub;
+            // K3-L-1 (pass#11): 'incomplete' means the first payment never
+            // succeeded (fail-closed, G5-M#1) — not a plan limit. Point at
+            // the billing page where the recovery CTA lives.
+            const incomplete = sub?.status === 'incomplete';
             setErr({
-              message: trialEnded
-                ? 'Your trial has ended. Subscribe to keep making changes to your workspace.'
-                : e.message,
-              needsBilling: needsBilling || trialEnded,
+              message: incomplete
+                ? 'Your payment hasn\u2019t completed yet — your account is read-only until it succeeds. Complete the payment on the billing page.'
+                : trialEnded
+                  ? 'Your trial has ended. Subscribe to keep making changes to your workspace.'
+                  : e.message,
+              needsBilling: needsBilling || trialEnded || incomplete,
               noPlan: trialEnded,
             });
           })

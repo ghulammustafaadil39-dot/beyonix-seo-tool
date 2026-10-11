@@ -38,7 +38,10 @@ describe.runIf(HAS_TEST_DB)('C-07 API quality', () => {
     // Backend-A routes…
     expect(spec.paths['/api/v1/billing/checkout']?.post).toBeTruthy();
     expect(spec.paths['/api/v1/account/workspaces']?.post).toBeTruthy();
-    expect(spec.paths['/api/v1/admin/tenants']?.get).toBeTruthy();
+    // K1-LOW-1 (pass#11): the spec is public + unauthenticated — admin
+    // routes must NOT be enumerated (back-office obscurity control).
+    expect(spec.paths['/api/v1/admin/tenants']).toBeFalsy();
+    expect(Object.keys(spec.paths).some((p: string) => p.includes('/admin/'))).toBe(false);
     expect(spec.paths['/api/v1/apikeys']?.post).toBeTruthy();
     expect(spec.paths['/api/v1/webhooks']?.post).toBeTruthy();
     // …and Backend-B routes are picked up automatically (schema-driven).

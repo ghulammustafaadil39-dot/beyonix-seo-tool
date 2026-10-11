@@ -67,12 +67,18 @@ async function enqueueForVerifiedSites(
             OR sub.status IN ('active', 'trialing', 'past_due'))`,
   );
   for (const s of r.rows) {
-    await enqueue(
-      queue,
-      jobName,
-      { siteId: s.id, tenantId: s.tenant_id, ...extra(s.id, s.tenant_id) },
-      { idempotencyKey: keyPrefix(s.id), rateLimit: false },
-    );
+    // K2-2 (pass#11): per-site error isolation — a single failing enqueue
+    // (Redis blip, malformed row) must not orphan the rest of the tick.
+    try {
+      await enqueue(
+        queue,
+        jobName,
+        { siteId: s.id, tenantId: s.tenant_id, ...extra(s.id, s.tenant_id) },
+        { idempotencyKey: keyPrefix(s.id), rateLimit: false },
+      );
+    } catch (err) {
+      console.error(`[scheduler] enqueue failed for site ${s.id} (${jobName}):`, (err as Error)?.message ?? err);
+    }
   }
 }
 

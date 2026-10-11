@@ -162,9 +162,14 @@ export function registerDefaultBillingHooks(): void {
           `All of your data is intact — upgrade anytime to restore your limits.</p>`,
       );
     } else if (e.type === 'charge.refunded') {
+      // K5-LOW-2 (pass#11): the amount is in minor units (cents) — format
+      // it as money instead of printing raw cents ("A refund of 1000").
+      const cents = Number(e.detail?.amount ?? 0);
+      const cur = String(e.detail?.currency ?? 'usd').toUpperCase();
+      const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: cur }).format(cents / 100);
       await send(
         'Refund processed',
-        `<p>Hi ${name},</p><p>A refund of ${e.detail?.amount ?? ''} has been processed to your payment method.</p>`,
+        `<p>Hi ${name},</p><p>A refund of ${money} has been processed to your payment method.</p>`,
       );
     }
   });

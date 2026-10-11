@@ -69,6 +69,11 @@ function sanitizeSchema(node: any): any {
 export function buildOpenApiSpec(): Record<string, unknown> {
   const paths: Record<string, any> = {};
   for (const route of getDocumentedRoutes()) {
+    // K1-LOW-1 (pass#11): the spec is served on a PUBLIC, unauthenticated
+    // endpoint — never enumerate the back-office surface. Admin routes are
+    // deliberately obscured (404-not-403); publishing their paths +
+    // request schemas would nullify that control for reconnaissance.
+    if (/(^|\/)admin(\/|$)/.test(route.url)) continue;
     const methods = Array.isArray(route.method) ? route.method : [route.method];
     const openapiPath = fastifyPathToOpenApi(route.url);
     for (const method of methods) {

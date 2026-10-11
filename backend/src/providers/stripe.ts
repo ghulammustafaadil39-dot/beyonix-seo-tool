@@ -617,10 +617,25 @@ export async function applyPaymentEvent(
     // reopening the double-session shape. Mock-confirm carries no session
     // id, so NULL falls back to the tenant-wide delete (load-bearing there).
     const completedSessionId = (data.id as string | undefined) ?? null;
-    await q(
+    const released = await q(
       `DELETE FROM checkout_sessions WHERE tenant_id = $1 AND (stripe_session_id = $2 OR $2 IS NULL)`,
       [tenantId, completedSessionId],
-    ).catch(() => undefined);
+    ).catch(() => ({ rowCount: 0 as number | null }));
+    // K2-3 (pass#11): if the session-scoped DELETE matched nothing but we
+    // have a real session id, the claim may be a 'creating' row whose
+    // 'open' UPDATE was swallowed (or crashed) — NULL session id, so the
+    // scoped predicate can't match. The session just completed, so that
+    // claim is dead: release it (a 'creating' claim's URL was never
+    // delivered... except here it was, and the payment proves it — either
+    // way the claim served its purpose). Safe: a live 'open' claim is
+    // never 'creating', and a concurrent in-flight 'creating' claim can't
+    // coexist with a completed session for a different checkout (its URL
+    // was never delivered, so it can't have been paid).
+    if ((released.rowCount ?? 0) === 0 && completedSessionId) {
+      await q(`DELETE FROM checkout_sessions WHERE tenant_id = $1 AND status = 'creating'`, [tenantId]).catch(
+        () => undefined,
+      );
+    }
 
     // C-01: period comes FROM Stripe (the subscription object when the
     // session payload expands it). Mock checkouts have no Stripe object —
@@ -1129,7 +1144,13 @@ export async function applyPaymentEvent(
       } else if (
         curStatus === 'canceled' &&
         invSubId &&
-        invSubId === (curSub.rows[0]?.stripe_sub_id as string | undefined)
+        invSubId === (curSub.rows[0]?.stripe_sub_id as string | undefined) &&
+        // K5-LOW-1 (pass#11): like the past_due branch above (J5-LOW-1), a
+        // $0 invoice.paid (auto-paid final invoice, late redelivery) must
+        // not revive a dead subscription to paid 'active' — and unlike
+        // past_due there is no retry cycle to self-heal, so the guard
+        // matters more here.
+        paidInFull
       ) {
         const invPriceId: string | undefined = data.lines?.data?.[0]?.price?.id;
         const planFromEvent =
@@ -1302,7 +1323,12 @@ export async function applyPaymentEvent(
     // path via the serialized H5-L#1 statement, the mock path via the plain
     // guarded INSERT — so there is nothing left to do here.)
     const { emitBillingEvent } = await import('../services/billing.js');
-    await emitBillingEvent({ type: 'charge.refunded', tenantId, detail: { amount, invoiceId }, eventId });
+    await emitBillingEvent({
+      type: 'charge.refunded',
+      tenantId,
+      detail: { amount, invoiceId, currency: (data.currency as string | undefined) ?? 'usd' },
+      eventId,
+    });
   } else {
     console.warn(`[billing] unhandled webhook event type: ${type}`);
   }

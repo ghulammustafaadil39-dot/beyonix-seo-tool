@@ -10,7 +10,7 @@
 -- in mock mode falls back to tenant-wide) and by the route's failure path;
 -- a stale 'creating' claim (>10 min — the creator crashed mid-flight) is
 -- stolen by the next checkout attempt, as is an 'open' claim older than
--- 25h (its Stripe session definitively expired and the expired webhook
+-- 24h (its Stripe session expired and the expired webhook
 -- was lost). A live 'open' claim is NEVER stolen — it 409s
 -- (CHECKOUT_IN_PROGRESS) or reuses the session URL on plan/interval match.
 CREATE TABLE IF NOT EXISTS checkout_sessions (

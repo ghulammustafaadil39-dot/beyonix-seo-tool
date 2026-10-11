@@ -53,7 +53,7 @@ const INVOICE_PILL: Record<Invoice['status'], string> = {
  * retention steps, then hands off to the portal honestly instead of
  * pretending a cancellation was recorded here.
  */
-function CancelFlow({ onClose }: { onClose: () => void }) {
+function CancelFlow({ onClose, subStatus }: { onClose: () => void; subStatus?: string }) {
   const { report } = useErrorReporter();
   const [step, setStep] = useState<1 | 2>(1);
   const [reason, setReason] = useState('');
@@ -147,7 +147,11 @@ function CancelFlow({ onClose }: { onClose: () => void }) {
             </p>
           </div>
           <p className="mt-4 text-sm text-white/60">
-            Cancellation takes effect at the end of your current billing period.
+            {/* K3-L-3 (pass#11): 'incomplete' has no paid period — don't
+                promise end-of-period timing there. */}
+            {subStatus === 'incomplete'
+              ? 'Your payment hasn\u2019t completed, so there\u2019s no active billing period — cancelling now simply closes the incomplete subscription.'
+              : 'Cancellation takes effect at the end of your current billing period.'}
             You&rsquo;ll finish the cancellation in the secure Stripe billing
             portal — your data stays exportable, and nothing is deleted
             immediately.
@@ -602,7 +606,7 @@ export default function BillingPage() {
         </div>
       </div>
 
-      {cancelOpen && <CancelFlow onClose={() => setCancelOpen(false)} />}
+      {cancelOpen && <CancelFlow onClose={() => setCancelOpen(false)} subStatus={sub?.status} />}
     </div>
   );
 }
