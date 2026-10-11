@@ -63,7 +63,7 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| C-01 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: MEDIUM idempotency-key race (double checkout), MEDIUM no event-ordering guard, LOWs (past_due plan_id, coupon race) — fix session running |
+| C-01 | Backend-A | 2 | review | Backend-A branch; Security re-review APPROVED (idempotency race + event ordering verified fixed; 2 LOW residuals — orphan-claim reaping, refund watermark — in fix round 2); flips verified at merge |
 | C-02 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; reserve-then-commit, 20-way concurrency test, 80/100% once-per-period alerts, 402 payloads; suite green |
 | C-03 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; graceful shutdown (API+worker), Redis leader election, DLQ+replay, per-queue timeouts, tenant rate limit wired; suite green |
 | C-04 | Backend-B | 2 | review | Backend-B branch done (robots crawl-delay, Playwright mode, simhash dupes, bb-c04 28+4 tests); merge pending LA rebase+reconcile |
@@ -78,11 +78,11 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | F-06 | Backend-B | 2 | review | Backend-B branch done (backlinks v2: heuristic toxic scoring labeled, anchors, opportunities, disavow download, bb-f06 5); merge pending 
 | F-07 | Backend-B | 2 | review | Backend-B branch done (competitors CRUD, visibility compare, keyword/content gaps, backlink compare w/ honest unavailable, bb-f07 5); merge pending 
 | F-08 | Backend-B | 2 | review | Backend-B branch done (white-label branding, branded PDF/HTML, share links, schedules, bb-f08 6); share-token secret fix + Security review pending 
-| F-09 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: MEDIUM invite-endpoint user enumeration (409 USER_EXISTS), LOW invite-accept atomicity — fix session running 
-| F-10 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: HIGH SSRF via unvalidated redirects at delivery (PoC) + MEDIUM DNS-rebinding TOCTOU — fix: deliverOne must use safeFetch — fix session running 
+| F-09 | Backend-A | 2 | review | Backend-A branch; Security re-review CHANGES REQUESTED: NEW-1 MEDIUM dissolve guard incomplete (~20 cascade tables) + non-transactional accept; NEW-2 LOW enumeration residual (202-vs-200 oracle) — fix round 2 running 
+| F-10 | Backend-A | 2 | review | Backend-A branch; Security re-review APPROVED (SSRF HIGH fixed via safeFetch, regression-proven); LOW overall-deadline in fix round 2; flips verified at merge 
 | F-11 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend trials/coupons/annual + invoice/email/cancel endpoints pending → Backend-A C-01 |
 | F-12 | Frontend Lead | 2 | verified | Merged bd2358e (LA-reviewed): landing/docs/legal/cookies/sitemap+robots; next build green (28 routes), tsc clean |
-| F-13 | Backend-A | 2 | review | Backend-A branch done; Security CHANGES REQUESTED: HIGH admin-scoped API keys mintable → persistence — fix: reject admin scope + key mgmt requires human session — fix session running 
+| F-13 | Backend-A | 2 | review | Backend-A branch; Security re-review APPROVED (admin-scope HIGH fixed, no bypass found); flips verified at merge 
 | F-14 | Backend-A | 2 | review | Backend-A branch done; Security APPROVED (404-for-non-admin, impersonation audit, suspend semantics all verified); flips verified at branch merge 
 
 ## Wave 3 — Phase 4 (quality/ops) + Phase 5 (world-class)
@@ -149,3 +149,4 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 - 2026-10-11 ~09:02 PKT (LA): USER DECISION recorded — no pausing/delaying for Docker; Docker-dependent verifications stay deferred (compose smoke test, Trivy, image builds); if Docker access arrives later via the user's developer, it will be used at the Final Gate. Program continues natively meanwhile.
 - 2026-10-11 ~09:20 PKT (LA): Backend-A security fixes landed (9db6bb9): F-10 deliverOne→safeFetch (redirect-SSRF + TOCTOU), F-13 admin-scope rejection + human-session key mgmt, C-01 idempotency claim-before-execute + event ordering (migration 030), F-09 invite enumeration→202 generic, LOWs (past_due plan_id, atomic coupon redeem, atomic invite claim). Suite 404/9/0. Follow-up fix (d6ff4bf): shell-dissolve guard extended to billing footprint (subscriptions/invoices/tenant_credits) after fix agent proved cascade-delete data loss; accept aborts 409 INVITE_WOULD_ORPHAN_DATA, invitation not burned. Suite 405/9/0, tsc clean. LA clean verification of c-01/f-09/f-10/f-13/f-14: 50/50 (an earlier 1-failure run was LA's own concurrent-work interference, not code). Security re-review dispatched.
 - NOTE for future test work: tests/c-01.test.ts sits at 19 signups vs the S-03 rate limit of 20/window — new tests in that file must reuse tenants/sessions.
+- 2026-10-11 ~09:35 PKT (LA): Security re-review of Backend-A fixes — C-01/F-10/F-13/F-14 APPROVED (reviewer independently ran suites 50/50, tsc clean; probed F-10 redirect → 0 internal hits, F-13 legacy-key persistence closed, C-01 concurrency tests meaningful). F-09 still CHANGES REQUESTED: NEW-1 (MEDIUM) shell-dissolve guard covers only 3 of ~20 ON DELETE CASCADE tenant tables (probe: usage/workspace rows silently destroyed) + accept flow non-transactional; NEW-2 (LOW) invite response still distinguishes registration (202 generic vs 200+token). NEW-3/4/5 LOWs: idempotency orphan claims never reaped, charge.refunded advances event watermark, webhook delivery no overall deadline. Fix round 2 dispatched covering all five.
