@@ -54,11 +54,15 @@ const invoicesQuerySchema = {
   },
 } as const;
 
-const ACTIVE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due'];
+const ACTIVE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due', 'incomplete'];
 // D1-H-1: 'past_due' MUST stay in this list (and grace-expiry downgrades
 // must keep the local row 'past_due' — see downgradeTenant). A past_due
 // Stripe subscription is still alive and retrying; letting checkout through
 // would create a SECOND Stripe subscription = real double billing.
+// E4-H-2: 'incomplete' MUST stay too — an incomplete Stripe subscription is
+// alive (auto-retries / expires after 23h). The correct recovery for a failed
+// first payment is the billing portal's open-invoice payment, not a second
+// subscription (which webhook clobbering would then corrupt).
 
 async function validateCoupon(code: string): Promise<void> {
   const r = await query(

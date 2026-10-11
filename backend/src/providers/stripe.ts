@@ -630,6 +630,21 @@ export async function applyPaymentEvent(
     }
     tenantForLedger = tenantId;
 
+    // E4-H-2: never let a stale subscription's events clobber the current
+    // subscription's row. If the tenant already tracks a DIFFERENT
+    // subscription id, this event belongs to a superseded subscription —
+    // log and skip (the D1-H-1 incomplete/past_due double-subscription
+    // scenario).
+    const cur = await q(`SELECT stripe_sub_id FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+    const storedSubId = cur.rows[0]?.stripe_sub_id as string | null | undefined;
+    if (storedSubId && storedSubId !== subId) {
+      console.warn(
+        `[billing] ignoring ${evt} for superseded subscription ${subId} (tenant ${tenantId} tracks ${storedSubId})`,
+      );
+      await markProcessed();
+      return { deduplicated: false };
+    }
+
     // C5-M-2: a price id Stripe sent but we cannot map must NEVER silently
     // land a payer on Starter (portal upgrades carry no metadata planId, so
     // the old fallback chain ended at 'starter' while Stripe billed the
@@ -729,6 +744,17 @@ export async function applyPaymentEvent(
       return { deduplicated: false };
     }
     tenantForLedger = tenantId;
+    // E4-H-2: same superseded-subscription guard as above — a deleted event
+    // for an old subscription must not downgrade a tenant with a live one.
+    const curDel = await q(`SELECT stripe_sub_id FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+    const storedDelSubId = curDel.rows[0]?.stripe_sub_id as string | null | undefined;
+    if (storedDelSubId && storedDelSubId !== subId) {
+      console.warn(
+        `[billing] ignoring customer.subscription.deleted for superseded subscription ${subId} (tenant ${tenantId} tracks ${storedDelSubId})`,
+      );
+      await markProcessed();
+      return { deduplicated: false };
+    }
     const { downgradeTenant, emitBillingEvent } = await import('../services/billing.js');
     await downgradeTenant(tenantId, 'subscription_deleted');
     await emitBillingEvent({ type: 'subscription.deleted', tenantId });

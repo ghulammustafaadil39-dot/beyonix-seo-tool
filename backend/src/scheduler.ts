@@ -45,7 +45,20 @@ async function enqueueForVerifiedSites(
 ) {
   // Scheduler bulk-enqueues are system-initiated: they bypass the
   // per-tenant enqueue rate limiter (user-initiated API enqueues keep it).
-  const r = await query(`SELECT id, tenant_id FROM sites WHERE verified = TRUE AND deleted_at IS NULL`);
+  // E4-H-1: filter by billing liveness — trial-expired tenants with no live
+  // subscription, and suspended tenants, must NOT get scheduled spend jobs.
+  // (The route-layer trial gate can't cover system-initiated work.)
+  const r = await query(
+    `SELECT s.id, s.tenant_id FROM sites s
+     JOIN tenants t ON t.id = s.tenant_id
+     LEFT JOIN subscriptions sub ON sub.tenant_id = t.id
+     WHERE s.verified = TRUE AND s.deleted_at IS NULL
+       AND t.suspended_at IS NULL
+       AND t.read_only = FALSE
+       AND (t.trial_ends_at IS NULL
+            OR t.trial_ends_at > now()
+            OR sub.status IN ('active', 'trialing', 'past_due', 'incomplete'))`,
+  );
   for (const s of r.rows) {
     await enqueue(
       queue,
@@ -91,7 +104,13 @@ export const SCHEDULES: ScheduleDef[] = [
       const r = await query(
         `SELECT s.id AS site_id, s.tenant_id, t.plan_id
          FROM sites s JOIN tenants t ON t.id = s.tenant_id
-         WHERE s.verified = TRUE AND s.deleted_at IS NULL`,
+         LEFT JOIN subscriptions sub ON sub.tenant_id = t.id
+         WHERE s.verified = TRUE AND s.deleted_at IS NULL
+           AND t.suspended_at IS NULL
+           AND t.read_only = FALSE
+           AND (t.trial_ends_at IS NULL
+                OR t.trial_ends_at > now()
+                OR sub.status IN ('active', 'trialing', 'past_due', 'incomplete'))`,
       );
       for (const row of r.rows) {
         const freq = getPlan(row.plan_id).rankcheck_freq;
