@@ -1,36 +1,26 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { billingApi, settingsApi, PLAN_NAMES, type Subscription, type UsageInfo } from '@/lib/api';
+import {
+  billingApi,
+  settingsApi,
+  PLAN_NAMES,
+  type Subscription,
+  type UsageInfo,
+  type Invoice,
+  type CancellationResult,
+} from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
-
-const PLANS = ['starter', 'growth', 'pro'] as const;
-
-// Feature bullets mirror backend/src/plans.ts (the single source of truth).
-// Prices are set in Stripe; checkout shows the final price.
-const PLAN_FEATURES: Record<string, string[]> = {
-  starter: [
-    '1 site',
-    '50 keywords tracked',
-    '5,000 AI words / month',
-    'Weekly rank checks',
-    '20 AI visibility checks / month',
-  ],
-  growth: [
-    '3 sites',
-    '300 keywords tracked',
-    '30,000 AI words / month',
-    'Weekly rank checks',
-    '100 AI visibility checks / month',
-  ],
-  pro: [
-    '10 sites',
-    '1,000 keywords tracked',
-    '100,000 AI words / month',
-    'Daily rank checks',
-    '500 AI visibility checks / month',
-  ],
-};
+import { withMockFallback } from '@/lib/mock';
+import {
+  mockInvoices,
+  mockBillingEmail,
+  mockScheduleCancellation,
+} from '@/lib/mock/billing';
+import UsageMeter from '@/components/UsageMeter';
+import MockBanner from '@/components/MockBanner';
+import Modal from '@/components/Modal';
+import PlanCards, { type PlanId } from '@/components/PlanCards';
 
 // Plain-language names for usage meters (never show raw limit keys).
 const LIMIT_LABELS: Record<string, { label: string; hint?: string }> = {
@@ -38,7 +28,7 @@ const LIMIT_LABELS: Record<string, { label: string; hint?: string }> = {
   keywords_tracked: { label: 'Keywords tracked' },
   ai_words: {
     label: 'AI words',
-    hint: 'Total words the AI writer may generate this month across content drafts, GEO checks and report summaries.',
+    hint: 'Total words the AI writer may generate this billing period across content drafts, GEO checks and report summaries.',
   },
   audits_month: { label: 'Audits per month' },
   serp_checks: { label: 'Rank checks' },
@@ -47,20 +37,177 @@ const LIMIT_LABELS: Record<string, { label: string; hint?: string }> = {
   geo_checks: { label: 'AI visibility checks' },
 };
 
+function formatMoney(amount: number, currency: string): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  }).format(amount / 100);
+}
+
+const CANCEL_REASONS = [
+  'Too expensive',
+  'Not using it enough',
+  'Missing a feature I need',
+  'Switching to another tool',
+  'Technical issues',
+  'Other',
+];
+
+function CancelFlow({ onClose }: { onClose: () => void }) {
+  const { report } = useErrorReporter();
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [reason, setReason] = useState('');
+  const [other, setOther] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<(CancellationResult & { mock: boolean }) | null>(null);
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      const { data, mock } = await withMockFallback(
+        () => billingApi.cancelSubscription(reason === 'Other' ? other : reason),
+        () => mockScheduleCancellation(reason === 'Other' ? other : reason),
+      );
+      setResult({ ...data, mock });
+      setStep(3);
+    } catch (e) {
+      report(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Cancel subscription" onClose={onClose}>
+      {step === 1 && (
+        <div>
+          <p className="text-sm text-white/70">
+            We&rsquo;re sorry to see you go. What&rsquo;s the main reason?
+          </p>
+          <div className="mt-4 space-y-2" role="radiogroup" aria-label="Cancellation reason">
+            {CANCEL_REASONS.map((r) => (
+              <label
+                key={r}
+                className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition ${
+                  reason === r ? 'border-teal-400/40 bg-teal-400/10' : 'border-white/10 bg-white/5'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="cancel-reason"
+                  value={r}
+                  checked={reason === r}
+                  onChange={() => setReason(r)}
+                  className="accent-teal-400"
+                />
+                <span className="text-white/85">{r}</span>
+              </label>
+            ))}
+          </div>
+          {reason === 'Other' && (
+            <input
+              value={other}
+              onChange={(e) => setOther(e.target.value)}
+              placeholder="Tell us briefly…"
+              className="bx-input mt-3"
+              aria-label="Other reason"
+            />
+          )}
+          <div className="mt-5 flex justify-end gap-2">
+            <button onClick={onClose} className="bx-btn-secondary">
+              Keep my plan
+            </button>
+            <button
+              onClick={() => setStep(2)}
+              disabled={!reason || (reason === 'Other' && !other.trim())}
+              className="bx-btn-primary"
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div>
+          <p className="bx-micro mb-2">~/ before you go</p>
+          <div className="bx-panel space-y-2 text-sm text-white/70">
+            <p>
+              <strong className="text-white">Pause instead?</strong> Downgrading
+              to Starter keeps your data and history for a fraction of the cost.
+            </p>
+            <p>
+              <strong className="text-white">Need a feature?</strong> Tell us
+              what&rsquo;s missing — the roadmap is driven by customer requests.
+            </p>
+            <p>
+              <strong className="text-white">Annual billing</strong> saves two
+              months vs monthly.
+            </p>
+          </div>
+          <p className="mt-4 text-sm text-white/60">
+            Cancellation takes effect at the end of your current billing period.
+            Your data stays exportable, and nothing is deleted immediately.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button onClick={() => setStep(1)} className="bx-btn-secondary" disabled={busy}>
+              Back
+            </button>
+            <button
+              onClick={confirm}
+              disabled={busy}
+              className="bx-btn-xs-danger !px-4 !py-2 !text-sm"
+            >
+              {busy ? 'Working…' : 'Confirm cancellation'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && result && (
+        <div>
+          {result.mock && <MockBanner label="cancellation" />}
+          <div className="bx-alert-ok mt-3">
+            <p className="font-medium">
+              Cancellation scheduled for{' '}
+              {new Date(result.cancel_at).toLocaleDateString()}.
+            </p>
+            <p className="mt-1 text-xs">
+              You keep full access until then. Changed your mind? Just resubscribe
+              from this page.
+            </p>
+          </div>
+          <div className="mt-5 text-right">
+            <button onClick={onClose} className="bx-btn-primary">
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export default function BillingPage() {
   const { report } = useErrorReporter();
   const [sub, setSub] = useState<Subscription | null>(null);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [invoices, setInvoices] = useState<Invoice[] | null>(null);
+  const [invoicesMock, setInvoicesMock] = useState(false);
+  const [billingEmail, setBillingEmail] = useState<string | null>(null);
+  const [emailDraft, setEmailDraft] = useState('');
+  const [emailMock, setEmailMock] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [portalBusy, setPortalBusy] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [emailSaved, setEmailSaved] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'success' | 'info'; text: string } | null>(null);
 
   useEffect(() => {
-    // Stripe checkout redirects back with ?success=1 or ?canceled=1.
     const params = new URLSearchParams(window.location.search);
     if (params.get('success') === '1') {
-      setNotice({ kind: 'success', text: '✓ Payment successful — your plan is now active.' });
+      setNotice({ kind: 'success', text: 'Payment successful — your plan is now active.' });
     } else if (params.get('canceled') === '1') {
       setNotice({ kind: 'info', text: 'Checkout was canceled — no charge was made. You can retry anytime.' });
     }
@@ -70,6 +217,19 @@ export default function BillingPage() {
         const [s, u] = await Promise.all([billingApi.subscription(), settingsApi.usage()]);
         setSub(s);
         setUsage(u);
+        const inv = await withMockFallback(
+          () => billingApi.invoices().then((r) => r.data),
+          mockInvoices,
+        );
+        setInvoices(inv.data);
+        setInvoicesMock(inv.mock);
+        const em = await withMockFallback(
+          () => billingApi.billingEmail(),
+          mockBillingEmail,
+        );
+        setBillingEmail(em.data.billing_email);
+        setEmailDraft(em.data.billing_email ?? '');
+        setEmailMock(em.mock);
       } catch (e) {
         report(e);
       } finally {
@@ -102,10 +262,26 @@ export default function BillingPage() {
     }
   };
 
+  const saveBillingEmail = async () => {
+    try {
+      const { data, mock } = await withMockFallback(
+        () => billingApi.updateBillingEmail(emailDraft.trim() || null),
+        async () => ({ billing_email: emailDraft.trim() || null }),
+      );
+      setBillingEmail(data.billing_email);
+      setEmailMock(mock);
+      setEmailSaved(true);
+      setTimeout(() => setEmailSaved(false), 3000);
+    } catch (e) {
+      report(e);
+    }
+  };
+
   if (loading) return <p className="font-mono text-sm text-white/40">$ loading billing…</p>;
 
-  const currentPlan = sub?.plan_id ?? 'starter';
+  const currentPlan = (sub?.plan_id ?? null) as PlanId | null;
   const limits = usage?.limits ?? {};
+  const hasSubscription = Boolean(sub);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -138,52 +314,40 @@ export default function BillingPage() {
         </div>
       )}
 
+      {/* Current plan */}
       <div className="bx-card">
         <p className="bx-micro mb-2">~/ current plan</p>
         <p className="mt-1 bg-gradient-to-r from-cyan-300 to-teal-400 bg-clip-text text-lg font-bold text-transparent">
-          {PLAN_NAMES[currentPlan] ?? currentPlan}
+          {currentPlan ? (PLAN_NAMES[currentPlan] ?? currentPlan) : 'No subscription yet'}
         </p>
         <p className="mt-1 font-mono text-xs text-white/40">
-          status: {sub?.status ?? 'no subscription yet'}
+          status: {sub?.status ?? '—'}
           {sub?.current_period_end &&
             ` · renews ${new Date(sub.current_period_end).toLocaleDateString()}`}
         </p>
-        {sub && (
-          <button
-            onClick={openPortal}
-            disabled={portalBusy}
-            className="bx-btn-secondary mt-3"
-          >
-            {portalBusy ? 'Opening…' : 'Manage subscription'}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={openPortal} disabled={portalBusy} className="bx-btn-secondary">
+            {portalBusy ? 'Opening…' : 'Manage subscription (upgrade / downgrade)'}
           </button>
-        )}
+          {hasSubscription && (
+            <button onClick={() => setCancelOpen(true)} className="bx-btn-xs-danger !px-3 !py-2 !text-sm">
+              Cancel subscription
+            </button>
+          )}
+        </div>
+        <p className="bx-hint">
+          Plan changes and billing-cadence switches are handled in the secure Stripe customer portal.
+        </p>
       </div>
 
+      {/* Usage with 80/100% states */}
       <div className="bx-card">
-        <p className="bx-micro mb-4">~/ usage this month</p>
+        <p className="bx-micro mb-4">~/ usage this billing period</p>
         <div className="grid gap-4 sm:grid-cols-2">
           {Object.entries(limits).map(([key, v]) => {
-            const pct = v.limit > 0 ? Math.min(100, Math.round((v.used / v.limit) * 100)) : 0;
-            const over = v.used >= v.limit;
             const meta = LIMIT_LABELS[key] ?? { label: key.replace(/_/g, ' ') };
             return (
-              <div key={key}>
-                <div className="flex justify-between text-xs">
-                  <span className="font-medium text-white/60" title={meta.hint}>
-                    {meta.label}
-                    {meta.hint && <span className="text-white/30"> ⓘ</span>}
-                  </span>
-                  <span className={over ? 'font-mono font-semibold text-red-300' : 'font-mono text-white/40'}>
-                    {v.used} / {v.limit}
-                  </span>
-                </div>
-                <div className="bx-meter-track">
-                  <div
-                    className={over ? 'bx-meter-fill-over' : 'bx-meter-fill'}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-              </div>
+              <UsageMeter key={key} label={meta.label} hint={meta.hint} used={v.used} limit={v.limit} />
             );
           })}
           {Object.keys(limits).length === 0 && (
@@ -192,51 +356,116 @@ export default function BillingPage() {
         </div>
       </div>
 
+      {/* Plans */}
       <div>
         <p className="bx-micro mb-3">~/ plans</p>
-        <div className="grid gap-4 md:grid-cols-3">
-          {PLANS.map((plan) => (
-            <div
-              key={plan}
-              className={`rounded-xl border p-5 ${
-                currentPlan === plan
-                  ? 'bx-glow border-teal-400/40 bg-[#06141d]'
-                  : 'border-white/10 bg-[#06141d]'
-              }`}
-            >
-              <div className="relative">
-                <h3 className="text-base font-bold text-white">{PLAN_NAMES[plan]}</h3>
-                <p className="mt-1 text-xs text-white/40">
-                  {plan === 'starter' && 'For a single small business site.'}
-                  {plan === 'growth' && 'For growing businesses with multiple sites.'}
-                  {plan === 'pro' && 'For businesses that want daily tracking and more content.'}
-                </p>
-                <ul className="mt-3 space-y-1.5 font-mono text-xs text-white/60">
-                  {PLAN_FEATURES[plan].map((f) => (
-                    <li key={f} className="flex items-center gap-2">
-                      <span className="text-teal-300">✓</span> {f}
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-2 text-xs text-white/30">Price shown securely at checkout.</p>
-                {currentPlan === plan ? (
-                  <p className="bx-btn-primary mt-4 w-full cursor-default">
-                    Current plan
-                  </p>
-                ) : (
-                  <button
-                    onClick={() => checkout(plan)}
-                    disabled={busyPlan !== null}
-                    className="bx-btn-primary mt-4 w-full"
-                  >
-                    {busyPlan === plan ? 'Redirecting…' : `Upgrade to ${PLAN_NAMES[plan]}`}
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
+        <PlanCards
+          currentPlan={currentPlan}
+          annual={false}
+          onToggleAnnual={() => {}}
+          showToggle={false}
+          action={(plan, isCurrent) =>
+            isCurrent ? (
+              <p className="bx-btn-primary w-full cursor-default">Current plan</p>
+            ) : !hasSubscription ? (
+              <button
+                onClick={() => checkout(plan)}
+                disabled={busyPlan !== null}
+                className="bx-btn-primary w-full"
+              >
+                {busyPlan === plan ? 'Redirecting…' : `Subscribe to ${PLAN_NAMES[plan]}`}
+              </button>
+            ) : (
+              <button onClick={openPortal} disabled={portalBusy} className="bx-btn-secondary w-full">
+                {portalBusy ? 'Opening…' : `Switch to ${PLAN_NAMES[plan]} via portal`}
+              </button>
+            )
+          }
+        />
+        <p className="mt-3 text-center text-xs text-white/40">
+          Have a coupon code? Enter it on the Stripe checkout page — it&rsquo;s
+          applied before you pay.
+        </p>
+      </div>
+
+      {/* Invoices */}
+      <div className="bx-card">
+        <p className="bx-micro mb-4">~/ invoices</p>
+        {invoicesMock && <div className="mb-3"><MockBanner label="invoices" /></div>}
+        {invoices && invoices.length > 0 ? (
+          <div className="bx-table-wrap">
+            <table className="w-full min-w-[480px] text-sm">
+              <thead>
+                <tr className="border-b border-white/10">
+                  <th className="bx-th">Invoice</th>
+                  <th className="bx-th">Period</th>
+                  <th className="bx-th">Amount</th>
+                  <th className="bx-th">Status</th>
+                </tr>
+              </thead>
+              <tbody className="bx-tbody">
+                {invoices.map((inv) => (
+                  <tr key={inv.id}>
+                    <td className="px-4 py-3 font-mono text-white/80">{inv.number}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-white/50">
+                      {new Date(inv.period_start).toLocaleDateString()} →{' '}
+                      {new Date(inv.period_end).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-white/80">
+                      {formatMoney(inv.amount, inv.currency)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`bx-pill ${
+                          inv.status === 'paid' ? 'bx-pill-ok' : inv.status === 'open' ? 'bx-pill-warn' : 'bx-pill-info'
+                        }`}
+                      >
+                        <span className="bx-dot" />
+                        {inv.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-white/40">No invoices yet.</p>
+        )}
+      </div>
+
+      {/* Billing email */}
+      <div className="bx-card">
+        <p className="bx-micro mb-2">~/ billing email</p>
+        <p className="bx-body mb-3">
+          Receipts and payment alerts go here (defaults to your account email).
+        </p>
+        {emailMock && <div className="mb-3"><MockBanner label="billing email" /></div>}
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-[240px] flex-1">
+            <label htmlFor="billing-email" className="bx-label">
+              Billing email
+            </label>
+            <input
+              id="billing-email"
+              type="email"
+              value={emailDraft}
+              onChange={(e) => setEmailDraft(e.target.value)}
+              placeholder="billing@company.com"
+              className="bx-input"
+            />
+          </div>
+          <button
+            onClick={saveBillingEmail}
+            disabled={emailDraft === (billingEmail ?? '')}
+            className="bx-btn-primary"
+          >
+            {emailSaved ? 'Saved ✓' : 'Save'}
+          </button>
         </div>
       </div>
+
+      {cancelOpen && <CancelFlow onClose={() => setCancelOpen(false)} />}
     </div>
   );
 }

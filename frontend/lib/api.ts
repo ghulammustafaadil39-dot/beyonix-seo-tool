@@ -285,6 +285,28 @@ export interface Subscription {
   status: string;
   current_period_end: string | null;
 }
+/** F-11: invoice row. Real shape pending — GET /api/v1/billing/invoices (Backend Lead). */
+export interface Invoice {
+  id: string;
+  number: string;
+  amount: number; // minor units (cents)
+  currency: string;
+  status: 'paid' | 'open' | 'void' | 'uncollectible';
+  period_start: string;
+  period_end: string;
+  pdf_url: string | null;
+  created_at: string;
+}
+/** F-11: billing email state. Real shape pending (Backend Lead). */
+export interface BillingEmailState {
+  billing_email: string | null;
+}
+/** F-11: cancellation record. Real shape pending — DELETE /api/v1/billing/subscription (Backend Lead). */
+export interface CancellationResult {
+  scheduled: boolean;
+  cancel_at: string;
+  reason: string;
+}
 export interface UsageInfo {
   limits: Record<string, { used: number; limit: number }>;
 }
@@ -450,12 +472,34 @@ export const reportsApi = {
 
 export const billingApi = {
   subscription: () => api<Subscription>('/api/v1/billing/subscription'),
+  /**
+   * NOTE: the current backend checkout schema accepts ONLY {planId}
+   * (additionalProperties: false). Coupon/interval support is a recorded
+   * sub-task for Backend Lead — this client will start sending them once
+   * the contract is extended. Coupons can meanwhile be entered on the
+   * Stripe checkout page itself.
+   */
   checkout: (planId: string) =>
     api<{ url: string }>('/api/v1/billing/checkout', {
       method: 'POST',
       body: { planId },
     }),
   portal: () => api<{ url: string }>('/api/v1/billing/portal', { method: 'POST' }),
+  /** F-11: real endpoint pending (Backend Lead). Use withMockFallback. */
+  invoices: () => api<{ data: Invoice[] }>('/api/v1/billing/invoices'),
+  /** F-11: real endpoint pending (Backend Lead). Use withMockFallback. */
+  billingEmail: () => api<BillingEmailState>('/api/v1/billing/email'),
+  updateBillingEmail: (billing_email: string | null) =>
+    api<BillingEmailState>('/api/v1/billing/email', {
+      method: 'PATCH',
+      body: { billing_email },
+    }),
+  /** F-11: real endpoint pending (Backend Lead). Use withMockFallback. */
+  cancelSubscription: (reason: string) =>
+    api<CancellationResult>('/api/v1/billing/subscription', {
+      method: 'DELETE',
+      body: { reason },
+    }),
 };
 
 export const settingsApi = {
