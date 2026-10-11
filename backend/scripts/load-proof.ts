@@ -17,6 +17,15 @@ const TENANTS = Number(process.argv[2] ?? 10);
 const KW = Number(process.argv[3] ?? 5);
 
 async function main() {
+  // Safety: this script TRUNCATEs tenants CASCADE — refuse on non-test DBs
+  // (same /test/i convention as the test helpers and bench-hot.ts).
+  if (!/test/i.test(process.env.DATABASE_URL ?? '')) {
+    console.error(
+      'REFUSING to run load-proof: DATABASE_URL does not look like a test database ' +
+        '(this script runs TRUNCATE tenants CASCADE).',
+    );
+    process.exit(2);
+  }
   await runMigrations();
   await query(`TRUNCATE tenants CASCADE`);
   const tenants: Array<{ tenantId: string; siteId: string }> = [];
