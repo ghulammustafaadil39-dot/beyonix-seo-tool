@@ -3,6 +3,7 @@ import { buildApp } from '../src/index.js';
 import type { FastifyInstance } from 'fastify';
 import { pool, query, runMigrations } from '../src/db.js';
 import { applyPaymentEvent, getPayments } from '../src/providers/stripe.js';
+import { withIdempotency } from '../src/middleware/idempotency.js';
 import { sessionTokenFromResponse } from './helpers.js';
 import { onBillingEvent, processBillingGrace } from '../src/services/billing.js';
 
@@ -461,6 +462,199 @@ describe.runIf(HAS_TEST_DB)('C-01 billing completeness', () => {
     expect(inv.rows[0].status).toBe('refunded');
     const cr = await query(`SELECT amount_cents FROM tenant_credits WHERE tenant_id = $1`, [u.tenantId]);
     expect(Number(cr.rows[0].amount_cents)).toBe(2900);
+  });
+
+  it('SECURITY regression (C-01): two concurrent same-key checkouts execute exactly once', async () => {
+    const u = await signupVerified(app, `c01-conc-${Date.now()}@beyo.test`);
+    tenants.push(u.tenantId);
+    const key = `conc-${Date.now()}`;
+    const [r1, r2] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/billing/checkout',
+        headers: { ...auth(u.token), 'idempotency-key': key },
+        payload: { planId: 'growth' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/billing/checkout',
+        headers: { ...auth(u.token), 'idempotency-key': key },
+        payload: { planId: 'growth' },
+      }),
+    ]);
+    // The duplicate waited for the claim and replayed the stored response
+    // (identical body incl. the mock session id) instead of executing.
+    expect(r1.statusCode).toBe(200);
+    expect(r2.statusCode).toBe(200);
+    expect(r2.json()).toEqual(r1.json());
+    const rows = await query(`SELECT COUNT(*)::int c FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`, [
+      u.tenantId,
+      key,
+    ]);
+    expect(rows.rows[0].c).toBe(1);
+  });
+
+  it('SECURITY regression (C-01): withIdempotency runs a concurrent duplicate handler once', async () => {
+    // Reuses an existing tenant (FK target only) — this file is close to
+    // the pre-existing 20/min signup rate limit (S-03), so new regression
+    // tests avoid extra signups where a fresh tenant is not essential.
+    const anyTenant = await query(`SELECT id FROM tenants ORDER BY created_at DESC LIMIT 1`);
+    const tenantId = anyTenant.rows[0].id as string;
+    let executions = 0;
+    const wrapped = withIdempotency('billing:checkout', async () => {
+      executions += 1;
+      await new Promise((r) => setTimeout(r, 200));
+      return { url: 'https://checkout.test/x', executions };
+    });
+    const wrapKey = `wrap-${tenantId}-${Date.now()}`;
+    const mkReq = () =>
+      ({
+        headers: { 'idempotency-key': wrapKey },
+        tenant: { tenantId },
+        method: 'POST',
+        url: '/api/v1/billing/checkout',
+        body: { planId: 'growth' },
+        id: 'wrap-test',
+      }) as any;
+    const mkReply = () =>
+      ({
+        statusCode: 200,
+        sent: false,
+        status(c: number) {
+          this.statusCode = c;
+          return this;
+        },
+        send(b: unknown) {
+          this.sent = true;
+          return b;
+        },
+      }) as any;
+    const [a, b] = await Promise.all([wrapped(mkReq(), mkReply()), wrapped(mkReq(), mkReply())]);
+    expect(executions).toBe(1);
+    expect(a).toEqual({ url: 'https://checkout.test/x', executions: 1 });
+    expect(b).toEqual(a);
+  });
+
+  it('SECURITY regression (C-01): a stale subscription event cannot overwrite newer state', async () => {
+    const u = await signupVerified(app, `c01-ord-${Date.now()}@beyo.test`);
+    tenants.push(u.tenantId);
+    await query(
+      `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, stripe_customer_id, plan_id, status)
+       VALUES (gen_random_uuid(), $1, 'sub_ord_1', 'cus_ord_1', 'growth', 'active')`,
+      [u.tenantId],
+    );
+    await query(`UPDATE tenants SET plan_id = 'growth', stripe_customer_id = 'cus_ord_1' WHERE id = $1`, [u.tenantId]);
+
+    // NEWER event first: subscription deleted at T=1_800_000_000.
+    const del = await applyPaymentEvent({
+      id: `evt_ord_del_${Date.now()}`,
+      type: 'customer.subscription.deleted',
+      created: 1_800_000_000,
+      data: { id: 'sub_ord_1', object: 'subscription', status: 'canceled' },
+    });
+    expect(del.stale).toBeFalsy();
+    let sub = await query(`SELECT status, last_event_at FROM subscriptions WHERE tenant_id = $1`, [u.tenantId]);
+    expect(sub.rows[0].status).toBe('canceled');
+    expect(new Date(sub.rows[0].last_event_at).getTime()).toBe(1_800_000_000_000);
+
+    // OLDER event delivered late: updated(active, pro) at T=1_700_000_000
+    // must be skipped — but still recorded in the ledger as processed.
+    const staleId = `evt_ord_stale_${Date.now()}`;
+    const stale = await applyPaymentEvent({
+      id: staleId,
+      type: 'customer.subscription.updated',
+      created: 1_700_000_000,
+      data: {
+        id: 'sub_ord_1',
+        object: 'subscription',
+        status: 'active',
+        metadata: { planId: 'pro' },
+      },
+    });
+    expect(stale.stale).toBe(true);
+    sub = await query(`SELECT status, plan_id FROM subscriptions WHERE tenant_id = $1`, [u.tenantId]);
+    expect(sub.rows[0].status).toBe('canceled');
+    const t = await query(`SELECT plan_id FROM tenants WHERE id = $1`, [u.tenantId]);
+    expect(t.rows[0].plan_id).toBe('starter'); // downgrade from the delete survived
+    const ledger = await query(`SELECT processed_at FROM stripe_webhook_events WHERE event_id = $1`, [staleId]);
+    expect(ledger.rows[0].processed_at).not.toBeNull();
+
+    // A genuinely NEWER update still applies (guard blocks only stale).
+    await applyPaymentEvent({
+      id: `evt_ord_new_${Date.now()}`,
+      type: 'customer.subscription.updated',
+      created: 1_900_000_000,
+      data: {
+        id: 'sub_ord_1',
+        object: 'subscription',
+        status: 'active',
+        metadata: { planId: 'pro' },
+      },
+    });
+    sub = await query(`SELECT status, plan_id FROM subscriptions WHERE tenant_id = $1`, [u.tenantId]);
+    expect(sub.rows[0].status).toBe('active');
+    expect(sub.rows[0].plan_id).toBe('pro');
+  });
+
+  it('past_due upsert updates plan_id from the event (C-01 low fix)', async () => {
+    const u = await signupVerified(app, `c01-pd-${Date.now()}@beyo.test`);
+    tenants.push(u.tenantId);
+    await query(
+      `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, plan_id, status)
+       VALUES (gen_random_uuid(), $1, 'sub_pd_1', 'starter', 'active')`,
+      [u.tenantId],
+    );
+    process.env.STRIPE_PRICE_PRO = process.env.STRIPE_PRICE_PRO || 'price_pro_test';
+    await applyPaymentEvent({
+      id: `evt_pd_${Date.now()}`,
+      type: 'customer.subscription.updated',
+      data: {
+        id: 'sub_pd_1',
+        object: 'subscription',
+        status: 'past_due',
+        items: { data: [{ price: { id: process.env.STRIPE_PRICE_PRO } }] },
+        metadata: {},
+      },
+    });
+    const sub = await query(`SELECT status, plan_id FROM subscriptions WHERE stripe_sub_id = 'sub_pd_1'`);
+    expect(sub.rows[0].status).toBe('past_due');
+    expect(sub.rows[0].plan_id).toBe('pro');
+  });
+
+  it('coupon redemption is atomic: redeemed_count never exceeds max_redemptions', async () => {
+    await query(
+      `INSERT INTO billing_coupons (code, percent_off, duration, max_redemptions, redeemed_count)
+       VALUES ('MAXONE', 10, 'once', 1, 0)
+       ON CONFLICT (code) DO UPDATE SET max_redemptions = 1, redeemed_count = 0, active = TRUE`,
+    );
+    // Two checkout completions redeem the same capped coupon concurrently
+    // (one tenant, two sessions — the cap must hold regardless of
+    // interleaving; one signup keeps this file under the S-03 signup
+    // rate limit).
+    const u = await signupVerified(app, `c01-cap-${Date.now()}@beyo.test`);
+    tenants.push(u.tenantId);
+    await Promise.all([
+      applyPaymentEvent({
+        id: `evt_cap_a_${Date.now()}`,
+        type: 'checkout.session.completed',
+        data: {
+          customer: 'cus_cap_a',
+          subscription: 'sub_cap_a',
+          metadata: { tenantId: u.tenantId, planId: 'growth', couponCode: 'MAXONE' },
+        },
+      }),
+      applyPaymentEvent({
+        id: `evt_cap_b_${Date.now()}`,
+        type: 'checkout.session.completed',
+        data: {
+          customer: 'cus_cap_b',
+          subscription: 'sub_cap_b',
+          metadata: { tenantId: u.tenantId, planId: 'growth', couponCode: 'MAXONE' },
+        },
+      }),
+    ]);
+    const c = await query(`SELECT redeemed_count FROM billing_coupons WHERE code = 'MAXONE'`);
+    expect(Number(c.rows[0].redeemed_count)).toBe(1);
   });
 
   it('customer.subscription.deleted downgrades but never deletes data', async () => {

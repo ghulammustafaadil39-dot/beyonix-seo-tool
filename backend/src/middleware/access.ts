@@ -29,6 +29,23 @@ export function requireRole(...allowed: string[]) {
   };
 }
 
+/**
+ * preHandler: human user sessions only (F-13 fix). Key-management
+ * endpoints use this so a stolen API key — even one holding the legacy
+ * 'admin' scope — can never mint, list, or revoke keys (persistence).
+ */
+export async function requireHumanSession(req: FastifyRequest): Promise<void> {
+  const t = (req as any).tenant;
+  if (!t) throw forbidden();
+  if (t.apiKeyId) {
+    throw new ApiError(
+      403,
+      'HUMAN_SESSION_REQUIRED',
+      'This action requires a signed-in user session; API keys cannot manage API keys',
+    );
+  }
+}
+
 /** True when the caller's role outranks (or equals) the target role. */
 export function canAssignRole(actorRole: string, targetRole: string): boolean {
   if (targetRole === 'owner') return false; // ownership transfers separately

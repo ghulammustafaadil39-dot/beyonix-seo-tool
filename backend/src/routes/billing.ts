@@ -88,13 +88,17 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
       // read from the raw payload here (both real Stripe and mock shapes
       // carry top-level `id`) for the idempotency ledger (C-01 / N-A2-6).
       let eventId: string | undefined;
+      let eventCreated: number | undefined;
       try {
-        const parsed = JSON.parse(raw.toString('utf8')) as { id?: unknown };
+        const parsed = JSON.parse(raw.toString('utf8')) as { id?: unknown; created?: unknown };
         if (typeof parsed.id === 'string' && parsed.id.length > 0) eventId = parsed.id;
+        // C-01 ordering guard: thread Stripe's top-level `created` through
+        // (the frozen provider interface drops it from the parsed event).
+        if (typeof parsed.created === 'number' && parsed.created > 0) eventCreated = parsed.created;
       } catch {
         /* unsigned/invalid payloads are rejected by constructWebhookEvent */
       }
-      const { deduplicated } = await applyPaymentEvent(evt, query, eventId);
+      const { deduplicated } = await applyPaymentEvent({ ...evt, created: eventCreated }, query, eventId);
       return { received: true, deduplicated };
     });
   });

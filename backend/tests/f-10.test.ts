@@ -182,6 +182,53 @@ describe.runIf(HAS_TEST_DB)('F-10 notifications', () => {
     server.close();
   });
 
+  it('SECURITY regression (F-10): redirect to an internal address is NOT followed', async () => {
+    const u = await signupVerified(app);
+    tc.add(u.tenantId);
+
+    // "Internal" target: reachable via the `localhost` hostname. The raw
+    // global fetch used previously would follow the redirect straight to
+    // it; safeFetch must re-validate the hop and block it.
+    let internalHits = 0;
+    const internal = http.createServer((_req, res) => {
+      internalHits += 1;
+      res.writeHead(200).end('secret');
+    });
+    await new Promise<void>((r) => internal.listen(0, '127.0.0.1', r));
+    const internalPort = (internal.address() as any).port;
+
+    const redirector = http.createServer((_req, res) => {
+      res.writeHead(302, { Location: `http://localhost:${internalPort}/internal` }).end();
+    });
+    await new Promise<void>((r) => redirector.listen(0, '127.0.0.1', r));
+    const redirectorPort = (redirector.address() as any).port;
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/webhooks',
+      headers: auth(u.token),
+      payload: { url: `http://127.0.0.1:${redirectorPort}/hook`, events: ['limit.near'] },
+    });
+    expect(created.statusCode).toBe(200);
+    const endpointId = (created.json() as any).id as string;
+    await app.inject({ method: 'POST', url: `/api/v1/webhooks/${endpointId}/test`, headers: auth(u.token) });
+
+    await processWebhookRetries();
+
+    // The internal target was never contacted, and the delivery was NOT
+    // marked delivered — it stays pending with an SSRF error for retry.
+    expect(internalHits).toBe(0);
+    const row = await query(
+      `SELECT status, attempts, last_error FROM webhook_deliveries WHERE endpoint_id = $1`,
+      [endpointId],
+    );
+    expect(row.rows[0].status).toBe('pending');
+    expect(Number(row.rows[0].attempts)).toBe(1);
+    expect(row.rows[0].last_error).toMatch(/SSRF blocked/);
+    internal.close();
+    redirector.close();
+  });
+
   it('webhook retries: failing endpoint gets retried then marked failed', async () => {
     const u = await signupVerified(app);
     tc.add(u.tenantId);

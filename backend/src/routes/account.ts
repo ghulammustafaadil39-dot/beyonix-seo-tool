@@ -197,15 +197,25 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
     authed.post(
       '/account/invitations',
       { schema: inviteSchema, preHandler: [requireVerifiedEmail, requireRole('owner', 'admin', 'editor')] },
-      async (req) => {
+      async (req, reply) => {
         const { email, role } = req.body as { email: string; role: string };
         if (!EMAIL_RE.test(email)) throw validationError('Invalid email address');
         if (!canAssignRole((req as any).tenant.role, role)) {
           throw new ApiError(403, 'FORBIDDEN', 'You cannot invite a role equal to or above your own');
         }
-        const existing = await query(`SELECT id FROM users WHERE email = $1`, [email]);
-        if (existing.rows.length > 0) {
-          throw new ApiError(409, 'USER_EXISTS', 'This email already has an account — ask them to accept from their login');
+        // F-09 enumeration fix: an email registered in ANOTHER tenant must
+        // be indistinguishable at this endpoint — never 409 USER_EXISTS
+        // (that leaked platform-wide registration to any owner/admin/
+        // editor). The invitation is still created and emailed (the
+        // accept flow moves the user with orphan guards), but the response
+        // is a generic 202 with no token/id. An email that is already a
+        // member of THIS tenant is different: the caller can already see
+        // the member list, so saying so leaks nothing.
+        const existing = await query(`SELECT id, tenant_id FROM users WHERE email = $1`, [email]);
+        const crossTenantExisting =
+          existing.rows.length > 0 && (existing.rows[0].tenant_id as string) !== t(req);
+        if (existing.rows.length > 0 && !crossTenantExisting) {
+          throw new ApiError(409, 'USER_EXISTS', 'This email is already a member of your workspace');
         }
         const rawToken = crypto.randomBytes(32).toString('hex');
         const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
@@ -232,6 +242,14 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           entityId: inv.rows[0].id as string,
           meta: { email, role },
         });
+        if (crossTenantExisting) {
+          // Generic, non-distinguishing response (see above): no id, no
+          // token, no hint that the email is registered anywhere.
+          return reply.status(202).send({
+            ok: true,
+            message: 'If this email can be invited, an invitation has been sent.',
+          });
+        }
         // The raw token is returned so API clients (and tests) can complete
         // the flow; email remains the primary channel.
         return { id: inv.rows[0].id, email, role, expires_at: inv.rows[0].expires_at, token: rawToken };
@@ -283,6 +301,9 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       // - sole user of a tenant WITH data -> refused (no silent data loss);
       // - last owner of a shared tenant -> refused (would orphan it).
       const oldTenantId = me.rows[0].tenant_id as string;
+      // Guards first (pure reads), claim second, writes last — so a refused
+      // accept never burns the invitation.
+      let dissolveShell = false;
       if (oldTenantId !== row.tenant_id) {
         const others = await query(
           `SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND id <> $2`,
@@ -297,34 +318,43 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
               'You own a workspace with data — delete or transfer it before joining another workspace',
             );
           }
-          await query(`UPDATE users SET tenant_id = $1, role = $2 WHERE id = $3`, [
-            row.tenant_id,
-            row.role,
-            u(req),
-          ]);
-          await query(`DELETE FROM tenants WHERE id = $1`, [oldTenantId]);
-        } else {
-          if (me.rows[0].role === 'owner') {
-            const owners = await query(
-              `SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND role = 'owner' AND id <> $2`,
-              [oldTenantId, u(req)],
+          dissolveShell = true;
+        } else if (me.rows[0].role === 'owner') {
+          const owners = await query(
+            `SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND role = 'owner' AND id <> $2`,
+            [oldTenantId, u(req)],
+          );
+          if (Number(owners.rows[0].c) === 0) {
+            throw new ApiError(
+              409,
+              'INVITE_WOULD_ORPHAN_TENANT',
+              'You are the last owner of your current workspace — transfer ownership first',
             );
-            if (Number(owners.rows[0].c) === 0) {
-              throw new ApiError(
-                409,
-                'INVITE_WOULD_ORPHAN_TENANT',
-                'You are the last owner of your current workspace — transfer ownership first',
-              );
-            }
           }
-          await query(`UPDATE users SET tenant_id = $1, role = $2 WHERE id = $3`, [
-            row.tenant_id,
-            row.role,
-            u(req),
-          ]);
         }
       }
-      await query(`UPDATE team_invitations SET accepted_at = now() WHERE id = $1`, [row.id]);
+      // F-09 fix: claim the invitation with a SINGLE conditional UPDATE.
+      // A concurrent double-submit (double-click, retry, two tabs) — both
+      // requests can pass the read check above, but only the one whose
+      // UPDATE lands first proceeds; the loser gets 410 with NO writes.
+      const claim = await query(
+        `UPDATE team_invitations SET accepted_at = now()
+         WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL`,
+        [row.id],
+      );
+      if ((claim.rowCount ?? 0) === 0) {
+        throw new ApiError(410, 'INVITE_EXPIRED', 'This invitation has expired or was revoked');
+      }
+      if (oldTenantId !== row.tenant_id) {
+        await query(`UPDATE users SET tenant_id = $1, role = $2 WHERE id = $3`, [
+          row.tenant_id,
+          row.role,
+          u(req),
+        ]);
+        if (dissolveShell) {
+          await query(`DELETE FROM tenants WHERE id = $1`, [oldTenantId]);
+        }
+      }
       await logActivity(row.tenant_id as string, {
         userId: u(req),
         action: 'invite.accepted',

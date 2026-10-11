@@ -74,7 +74,7 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
     expect(again.statusCode).toBe(410);
   });
 
-  it('invitations: editor cannot invite admin; cannot invite existing users', async () => {
+  it('invitations: editor cannot invite admin; same-tenant member re-invite is 409', async () => {
     const owner = await signupVerified(app);
     tc.add(owner.tenantId);
 
@@ -115,7 +115,12 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
     });
     expect(ok.statusCode).toBe(200);
 
-    // Inviting an email that already has an account -> 409.
+    // Inviting an email that is ALREADY A MEMBER OF THIS TENANT -> 409.
+    // (Changed expectation context, F-09 enumeration fix: this 409 is kept
+    // ONLY for same-tenant members, whom the caller can already see in the
+    // member list. Cross-tenant existence must NOT be revealed — see the
+    // enumeration regression test below, which now expects a generic 202
+    // where the old code returned 409 USER_EXISTS.)
     const dupe = await app.inject({
       method: 'POST',
       url: '/api/v1/account/invitations',
@@ -124,6 +129,93 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
     });
     expect(dupe.statusCode).toBe(409);
     expect(dupe.json().error.code).toBe('USER_EXISTS');
+  });
+
+  it('SECURITY regression (F-09): inviting an email registered in ANOTHER tenant does not enumerate it', async () => {
+    const owner = await signupVerified(app);
+    tc.add(owner.tenantId);
+    // A user who exists platform-wide but belongs to a different tenant.
+    const stranger = await signupVerified(app);
+    tc.add(stranger.tenantId);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations',
+      headers: auth(owner.token),
+      payload: { email: stranger.email, role: 'viewer' },
+    });
+    // Generic 202 — NOT the old 409 USER_EXISTS, no token, no hint.
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ ok: true });
+    expect(res.json()).not.toHaveProperty('token');
+    expect(res.body).not.toContain('USER_EXISTS');
+    expect(res.body).not.toContain('already has an account');
+
+    // The invitation WAS created (and emailed) so the accept flow still
+    // works for the invitee via the emailed link.
+    const inv = await query(`SELECT COUNT(*)::int c FROM team_invitations WHERE tenant_id = $1 AND email = $2`, [
+      owner.tenantId,
+      stranger.email,
+    ]);
+    expect(inv.rows[0].c).toBe(1);
+
+    // And a genuinely new email still gets the normal 200 + token shape,
+    // unchanged.
+    const fresh = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations',
+      headers: auth(owner.token),
+      payload: { email: uniqueEmail('fresh'), role: 'viewer' },
+    });
+    expect(fresh.statusCode).toBe(200);
+    expect((fresh.json() as any).token).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('SECURITY regression (F-09): concurrent double-accept of one invitation succeeds exactly once', async () => {
+    const owner = await signupVerified(app);
+    tc.add(owner.tenantId);
+    const inviteEmail = uniqueEmail('dbl');
+    const inv = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations',
+      headers: auth(owner.token),
+      payload: { email: inviteEmail, role: 'editor' },
+    });
+    expect(inv.statusCode).toBe(200);
+    const invitee = await signupVerified(app, inviteEmail);
+    tc.add(invitee.tenantId);
+
+    const results = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/account/invitations/accept',
+        headers: auth(invitee.token),
+        payload: { token: (inv.json() as any).token },
+      }),
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/account/invitations/accept',
+        headers: auth(invitee.token),
+        payload: { token: (inv.json() as any).token },
+      }),
+    ]);
+    const successes = results.filter((r) => r.statusCode === 200);
+    expect(successes).toHaveLength(1);
+    const loser = results.find((r) => r.statusCode !== 200)!;
+    // Loser: 410 (lost the atomic accepted_at claim) or 401 (its pre-move
+    // token no longer binds to the moved user) — never a second success.
+    expect([401, 410]).toContain(loser.statusCode);
+
+    const members = await query(`SELECT COUNT(*)::int c FROM users WHERE tenant_id = $1 AND email = $2`, [
+      owner.tenantId,
+      inviteEmail,
+    ]);
+    expect(members.rows[0].c).toBe(1);
+    const invRow = await query(`SELECT accepted_at FROM team_invitations WHERE tenant_id = $1 AND email = $2`, [
+      owner.tenantId,
+      inviteEmail,
+    ]);
+    expect(invRow.rows[0].accepted_at).not.toBeNull();
   });
 
   it('members: role change, removal, last-owner protection', async () => {

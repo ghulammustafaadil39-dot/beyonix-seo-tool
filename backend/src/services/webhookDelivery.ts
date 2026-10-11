@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import { decrypt, encrypt } from '../crypto.js';
 import { query as defaultQuery, type QueryFn } from '../db.js';
-import { isBlockedIp, isLoopbackBypassActive } from './safeFetch.js';
+import { isBlockedIp, isLoopbackBypassActive, safeFetch } from './safeFetch.js';
 import { CircuitBreaker } from './circuitBreaker.js';
 
 // ---------------------------------------------------------------------------
@@ -128,19 +128,44 @@ async function deliverOne(
   const signature = signWebhookDelivery(secret, timestamp, body);
 
   await breakerFor(url.host).exec(async () => {
-    const res = await fetch(url.toString(), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-BSEO-Event': delivery.event,
-        'X-BSEO-Delivery': delivery.id,
-        'X-BSEO-Timestamp': String(timestamp),
-        'X-BSEO-Signature': signature,
-        'User-Agent': 'Beyonix-SEO-Webhooks/1.0',
+    // SECURITY (F-10 fix): delivery MUST go through safeFetch — the raw
+    // global fetch followed redirects blindly (an endpoint could 302/307
+    // the signed POST to an internal host) and re-resolved DNS after
+    // validation (rebinding TOCTOU). safeFetch re-validates EVERY redirect
+    // hop and pins the connection to the validated IP. Webhook receivers
+    // may acknowledge with almost any content type, so the type allow-list
+    // is widened to all top-level types (the SSRF/size protections are
+    // what matter here; the body is discarded beyond error text).
+    const res = await safeFetch(
+      url.toString(),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-BSEO-Event': delivery.event,
+          'X-BSEO-Delivery': delivery.id,
+          'X-BSEO-Timestamp': String(timestamp),
+          'X-BSEO-Signature': signature,
+          'User-Agent': 'Beyonix-SEO-Webhooks/1.0',
+        },
+        body,
       },
-      body,
-      signal: AbortSignal.timeout(15_000),
-    });
+      15_000,
+      5,
+      {
+        allowedContentTypes: [
+          'text/',
+          'application/',
+          'image/',
+          'audio/',
+          'video/',
+          'font/',
+          'multipart/',
+          'message/',
+          'model/',
+        ],
+      },
+    );
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
       throw new Error(`webhook HTTP ${res.status}: ${text}`);

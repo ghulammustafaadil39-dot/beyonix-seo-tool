@@ -252,11 +252,15 @@ async function resolveTenantForSubscription(
  * now()+30d. Returns { deduplicated } so the route can report replays.
  */
 export async function applyPaymentEvent(
-  evt: { type: string; data: any },
+  evt: { type: string; data: any; created?: number | string },
   q: (text: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }> = query,
   eventId?: string,
-): Promise<{ deduplicated: boolean }> {
+): Promise<{ deduplicated: boolean; stale?: boolean }> {
   const { type, data } = evt;
+  // C-01 ordering guard: Stripe's top-level `created` (unix seconds). The
+  // webhook route threads it through from the raw payload (the frozen
+  // provider interface's constructWebhookEvent drops it).
+  const eventAt = fromStripeTs((evt as any).created);
   // Webhook idempotency (N-A2-6): the event id is inserted BEFORE any
   // processing; a redelivery hits the conflict and becomes a no-op.
   // Direct callers (tests, mock-confirm) carry it on evt.id.
@@ -270,6 +274,44 @@ export async function applyPaymentEvent(
     if ((ins.rowCount ?? 0) === 0) return { deduplicated: true };
   }
   let tenantForLedger: string | null = null;
+
+  // Ordering guard (C-01 fix): an event OLDER than the newest event already
+  // applied to this subscription must not overwrite newer state (e.g. a
+  // late-delivered "updated(active)" resurrecting a canceled subscription).
+  // Stale events are still recorded in the ledger above and marked
+  // processed below — they are deduplicated work, not errors.
+  // charge.refunded does not mutate subscription state, so it is exempt.
+  if (eventAt && type !== 'charge.refunded') {
+    let preTenant: string | null = null;
+    if (type === 'checkout.session.completed') {
+      preTenant =
+        (data.metadata?.tenantId as string | undefined) ??
+        (await resolveTenantForSubscription(q, data).catch(() => null));
+    } else if (
+      type === 'customer.subscription.created' ||
+      type === 'customer.subscription.updated' ||
+      type === 'customer.subscription.deleted'
+    ) {
+      preTenant = await resolveTenantForSubscription(q, data, data.id as string | undefined).catch(
+        () => null,
+      );
+    } else if (type === 'invoice.paid' || type === 'invoice.payment_failed') {
+      preTenant = await resolveTenantForSubscription(q, data).catch(() => null);
+    }
+    if (preTenant) {
+      const cur = await q(`SELECT last_event_at FROM subscriptions WHERE tenant_id = $1`, [preTenant]);
+      const last = cur.rows[0]?.last_event_at as string | Date | null | undefined;
+      if (last && new Date(last).getTime() > eventAt.getTime()) {
+        if (eventId) {
+          await q(
+            `UPDATE stripe_webhook_events SET processed_at = now(), tenant_id = $2 WHERE event_id = $1`,
+            [eventId, preTenant],
+          );
+        }
+        return { deduplicated: false, stale: true };
+      }
+    }
+  }
 
   if (type === 'checkout.session.completed') {
     let tenantId: string | undefined = data.metadata?.tenantId ?? data.tenant_id;
@@ -315,7 +357,18 @@ export async function applyPaymentEvent(
     );
     await q(`UPDATE tenants SET plan_id = $2, stripe_customer_id = $3, read_only = FALSE WHERE id = $1`, [tenantId, planId, customerId ?? null]);
     if (couponCode) {
-      await q(`UPDATE billing_coupons SET redeemed_count = redeemed_count + 1 WHERE code = $1`, [couponCode]);
+      // Atomic redemption (C-01 fix): the max-redemptions predicate rides
+      // in the UPDATE itself, so concurrent completions cannot overshoot
+      // the cap. 0 rows = exhausted (or unknown) at redemption time —
+      // the count is NOT incremented past the cap.
+      const red = await q(
+        `UPDATE billing_coupons SET redeemed_count = redeemed_count + 1
+         WHERE code = $1 AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`,
+        [couponCode],
+      );
+      if ((red.rowCount ?? 0) === 0) {
+        console.warn(`[billing] coupon ${couponCode} not redeemed: exhausted or unknown at completion`);
+      }
     }
     const { emitBillingEvent } = await import('../services/billing.js');
     await emitBillingEvent({
@@ -360,6 +413,7 @@ export async function applyPaymentEvent(
          VALUES (gen_random_uuid(), $1, $2, $3, 'past_due', $4, $5, $6)
          ON CONFLICT (tenant_id) DO UPDATE SET
            stripe_sub_id = EXCLUDED.stripe_sub_id, status = 'past_due',
+           plan_id = EXCLUDED.plan_id,
            current_period_start = COALESCE(EXCLUDED.current_period_start, subscriptions.current_period_start),
            current_period_end = COALESCE(EXCLUDED.current_period_end, subscriptions.current_period_end),
            grace_until = COALESCE(subscriptions.grace_until, EXCLUDED.grace_until)`,
@@ -481,6 +535,15 @@ export async function applyPaymentEvent(
     console.warn(`[billing] unhandled webhook event type: ${type}`);
   }
 
+  // Record the newest applied event time for the ordering guard. Only
+  // flows that actually applied state reach here with a tenant.
+  if (eventAt && tenantForLedger) {
+    await q(
+      `UPDATE subscriptions SET last_event_at = GREATEST(COALESCE(last_event_at, $2), $2)
+       WHERE tenant_id = $1`,
+      [tenantForLedger, eventAt],
+    ).catch(() => undefined);
+  }
   if (eventId) {
     await q(`UPDATE stripe_webhook_events SET processed_at = now(), tenant_id = $2 WHERE event_id = $1`, [
       eventId,

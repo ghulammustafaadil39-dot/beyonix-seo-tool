@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/index.js';
 import type { FastifyInstance } from 'fastify';
@@ -179,6 +180,84 @@ describe.runIf(HAS_TEST_DB)('F-13 API keys', () => {
     const third = await app.inject({ method: 'GET', url: '/api/v1/settings', headers: h });
     expect(third.statusCode).toBe(429);
     expect(third.json().error.code).toBe('API_KEY_RATE_LIMITED');
+  });
+
+  it('SECURITY regression (F-13): the admin scope cannot be minted into a key', async () => {
+    const u = await signupVerified(app);
+    tc.add(u.tenantId);
+
+    for (const scopes of [['admin'], ['sites:read', 'admin']]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/apikeys',
+        headers: auth(u.token),
+        payload: { name: 'evil', scopes },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('SCOPE_NOT_ALLOWED');
+    }
+    const rows = await query(`SELECT COUNT(*)::int c FROM api_keys WHERE tenant_id = $1`, [u.tenantId]);
+    expect(rows.rows[0].c).toBe(0);
+  });
+
+  it('SECURITY regression (F-13): key management requires a human session, even for an admin-scoped key', async () => {
+    const u = await signupVerified(app);
+    tc.add(u.tenantId);
+
+    // A normal key the admin-scoped key will try (and fail) to revoke.
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/apikeys',
+      headers: auth(u.token),
+      payload: { name: 'victim', scopes: ['sites:read'] },
+    });
+    const victimId = (created.json() as any).id as string;
+    const victimRaw = (created.json() as any).key as string;
+
+    // Forge a legacy admin-scoped key directly in the DB (the API can no
+    // longer mint one — that is the point of the companion fix).
+    const rawAdmin = `bseo_${'cd'.repeat(32)}`;
+    const hash = crypto.createHash('sha256').update(rawAdmin).digest('hex');
+    await query(
+      `INSERT INTO api_keys (id, tenant_id, name, key_hash, key_prefix, scopes, rate_limit_per_min)
+       VALUES (gen_random_uuid(), $1, 'legacy-admin', $2, $3, ARRAY['admin'], 60)`,
+      [u.tenantId, hash, rawAdmin.slice(0, 12)],
+    );
+    const asKey = { 'x-api-key': rawAdmin };
+
+    // Sanity: the admin key DOES authenticate and passes scope gates
+    // elsewhere — key management is the surface that must refuse it.
+    const settings = await app.inject({ method: 'GET', url: '/api/v1/settings', headers: asKey });
+    expect(settings.statusCode).toBe(200);
+
+    const list = await app.inject({ method: 'GET', url: '/api/v1/apikeys', headers: asKey });
+    expect(list.statusCode).toBe(403);
+    expect(list.json().error.code).toBe('HUMAN_SESSION_REQUIRED');
+
+    const mint = await app.inject({
+      method: 'POST',
+      url: '/api/v1/apikeys',
+      headers: asKey,
+      payload: { name: 'persistence', scopes: ['sites:read'] },
+    });
+    expect(mint.statusCode).toBe(403);
+    expect(mint.json().error.code).toBe('HUMAN_SESSION_REQUIRED');
+
+    const revoke = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/apikeys/${victimId}`,
+      headers: asKey,
+    });
+    expect(revoke.statusCode).toBe(403);
+    expect(revoke.json().error.code).toBe('HUMAN_SESSION_REQUIRED');
+
+    // The victim key survived the attempted key-authenticated revoke.
+    const stillWorks = await app.inject({
+      method: 'GET',
+      url: '/api/v1/settings',
+      headers: { 'x-api-key': victimRaw },
+    });
+    expect(stillWorks.statusCode).toBe(200);
   });
 
   it('non-admin team members cannot create keys', async () => {

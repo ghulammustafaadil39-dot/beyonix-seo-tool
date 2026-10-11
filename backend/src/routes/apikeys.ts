@@ -3,7 +3,15 @@ import type { FastifyInstance } from 'fastify';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
-import { API_SCOPES, isApiScope, requireRole, requireScope, actorMeta, actorUserId } from '../middleware/access.js';
+import {
+  API_SCOPES,
+  isApiScope,
+  requireHumanSession,
+  requireRole,
+  requireScope,
+  actorMeta,
+  actorUserId,
+} from '../middleware/access.js';
 import { paginate, assertUuid } from '../pagination.js';
 import { logActivity } from '../services/activityLog.js';
 
@@ -40,7 +48,7 @@ export async function registerApiKeyRoutes(fastify: FastifyInstance) {
 
     authed.get('/apikeys/scopes', async () => ({ scopes: API_SCOPES }));
 
-    authed.get('/apikeys', { preHandler: requireScope('sites:read') }, async (req) => {
+    authed.get('/apikeys', { preHandler: requireHumanSession }, async (req) => {
       const { page, limit, offset } = paginate(req);
       const [rows, count] = await Promise.all([
         query(
@@ -55,7 +63,10 @@ export async function registerApiKeyRoutes(fastify: FastifyInstance) {
 
     authed.post(
       '/apikeys',
-      { schema: createSchema, preHandler: [requireRole('owner', 'admin'), requireScope('admin')] },
+      {
+        schema: createSchema,
+        preHandler: [requireHumanSession, requireRole('owner', 'admin'), requireScope('admin')],
+      },
       async (req) => {
         const { name, scopes, rateLimitPerMin } = req.body as {
           name: string;
@@ -64,8 +75,17 @@ export async function registerApiKeyRoutes(fastify: FastifyInstance) {
         };
         const unknown = scopes.filter((s) => !isApiScope(s));
         if (unknown.length > 0) throw new ApiError(400, 'UNKNOWN_SCOPE', `Unknown scope(s): ${unknown.join(', ')}`);
-        // API keys cannot mint the platform 'admin' scope unless the caller
-        // is a team admin/owner (already enforced) — and never for viewers.
+        // F-13 fix: the 'admin' scope is NEVER mintable into an API key.
+        // An admin-scoped key passed every requireRole gate (including key
+        // management), so a single stolen key could mint fresh keys and
+        // persist forever. Keys are least-privilege, resource-scoped only.
+        if (scopes.includes('admin')) {
+          throw new ApiError(
+            400,
+            'SCOPE_NOT_ALLOWED',
+            "The 'admin' scope cannot be granted to an API key; use resource scopes (e.g. 'sites:read') instead",
+          );
+        }
         const { raw, hash, prefix } = generateApiKey();
         const r = await query(
           `INSERT INTO api_keys (id, tenant_id, name, key_hash, key_prefix, scopes, rate_limit_per_min, created_by)
@@ -86,7 +106,7 @@ export async function registerApiKeyRoutes(fastify: FastifyInstance) {
 
     authed.delete(
       '/apikeys/:id',
-      { preHandler: [requireRole('owner', 'admin'), requireScope('admin')] },
+      { preHandler: [requireHumanSession, requireRole('owner', 'admin'), requireScope('admin')] },
       async (req) => {
         const id = assertUuid((req.params as any).id, 'key id');
         // Soft-revoke (keeps the audit trail; the hash can never be reused).
