@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { query as defaultQuery } from '../db.js';
 import { notFound } from '../errors.js';
@@ -49,7 +50,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['seeds'],
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')], // S-01: DataForSEO spend; S-03: per-tenant budget
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')], // S-01: DataForSEO spend; S-03: per-tenant budget
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -160,7 +161,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['seeds'],
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')], // S-01: DataForSEO spend
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')], // S-01: DataForSEO spend
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -226,7 +227,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             required: ['competitor'],
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('keywords:read')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireScope('keywords:read')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -437,7 +438,7 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
             properties: { csv: { type: 'string', minLength: 1, maxLength: 500_000 } },
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;

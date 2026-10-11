@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { query as defaultQuery } from '../db.js';
 import { notFound, badRequest } from '../errors.js';
 import { requireSite } from '../services/sites.js';
@@ -392,7 +393,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
       {
         schema: { params: siteParams },
         // A1-H2: refresh spends DataForSEO budget — editor+ / ranks:write.
-        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'ranks:write')], // S-01: DataForSEO spend
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'ranks:write')], // S-01: DataForSEO spend
       },
       async (req) => {
         const { tenantId } = req.tenant;

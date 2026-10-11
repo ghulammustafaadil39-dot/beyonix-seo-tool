@@ -7,6 +7,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { query } from '../db.js';
 import { badRequest, notFound } from '../errors.js';
@@ -96,7 +97,7 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
       },
       // A1-H2: competitor CRUD is a mutation — editor+ (sessions) /
       // competitors:write (API keys). Previously only requireVerifiedEmail.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'competitors:write')],
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'competitors:write')],
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -121,7 +122,7 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
     app.delete('/sites/:id/competitors/:competitorId', {
       schema: { params: competitorIdParams },
       // A1-H2: competitor CRUD is a mutation — editor+ / competitors:write.
-      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'competitors:write')],
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'competitors:write')],
     }, async (req, reply) => {
       const { id, competitorId } = req.params as { id: string; competitorId: string };
       const site = await requireSite(req.tenant.tenantId, id);

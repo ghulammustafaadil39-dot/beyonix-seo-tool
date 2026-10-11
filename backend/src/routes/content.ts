@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
+import { requireActiveSubscriptionOrTrial } from '../middleware/requireSubscription.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
 import { requireSite } from '../services/sites.js';
 import { buildGeoHtml } from '../services/contentEngine.js';
@@ -116,7 +117,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     }>(
       '/sites/:id/content',
       {
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')], // S-01: creating a piece enqueues LLM generation; S-03: per-tenant budget
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')], // S-01: creating a piece enqueues LLM generation; S-03: per-tenant budget
         schema: {
           params: uuidParamSchema,
           body: {
@@ -280,7 +281,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // (Re)enqueue generation; only allowed from draft status.
     app.post<{ Params: SiteParams }>(
       '/content/:id/generate',
-      { schema: { params: uuidParamSchema }, preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')] }, // S-01: LLM spend; S-03: per-tenant budget
+      { schema: { params: uuidParamSchema }, preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')] }, // S-01: LLM spend; S-03: per-tenant budget
       async (req) => {
         const { tenantId, plan } = req.tenant;
         const r = await defaultQuery(`SELECT * FROM content_pieces WHERE id = $1 AND tenant_id = $2`, [
@@ -391,7 +392,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
       '/content/:id/outline',
       {
         schema: { params: uuidParamSchema },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
       },
       async (req) => {
         const { tenantId, plan } = req.tenant;
@@ -481,7 +482,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -619,7 +620,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
