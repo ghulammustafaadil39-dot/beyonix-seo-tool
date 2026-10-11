@@ -45,6 +45,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   delete process.env.AUTH_RATE_LIMIT_PER_MIN;
+  delete process.env.TENANT_EXPENSIVE_LIMIT_PER_HOUR; // set inside a test; never leak to the next file (singleFork shares process.env)
   // Clean up our namespaced keys and close handles.
   const keys = await testRedis.keys(`${NS}*`);
   if (keys.length > 0) await testRedis.del(...keys);

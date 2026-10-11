@@ -1,5 +1,5 @@
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
-import { assertDataBudget, recordUsage } from '../metering.js';
+import { assertDataBudget, recordUsage, recordProviderSpend } from '../metering.js';
 import type { KeywordMetric, SerpResult, KeywordSerpProvider } from '../providers/types.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -30,7 +30,9 @@ export async function getKeywordMetrics(
   if (missing.length > 0) {
     // Budget gate BEFORE the billable call (throws 402 when exceeded).
     await assertDataBudget(tenantId, 'keyword_metrics', missing.length, q);
-    const fresh = await (providerOverride ?? getKeywordSerpProvider()).keywordMetrics(missing, locationCode);
+    const provider = providerOverride ?? getKeywordSerpProvider();
+    const fresh = await provider.keywordMetrics(missing, locationCode);
+    if (!provider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'keyword_metrics', missing.length, 0, q);
     for (const m of fresh) {
       hit.set(m.keyword.toLowerCase(), { keyword: m.keyword, volume: m.volume, difficulty: m.difficulty });
       await q(
@@ -66,7 +68,9 @@ export async function getSerp(
   }
   // Budget gate BEFORE the billable call (throws 402 when exceeded).
   await assertDataBudget(tenantId, 'serp_checks', 1, q);
-  const fresh = await (providerOverride ?? getKeywordSerpProvider()).serp(keyword, domain, locationCode);
+  const serpProvider = providerOverride ?? getKeywordSerpProvider();
+  const fresh = await serpProvider.serp(keyword, domain, locationCode);
+  if (!serpProvider.isMock) await recordProviderSpend(tenantId, 'dataforseo', 'serp', 1, 0, q);
   await q(
     `INSERT INTO serp_cache (cache_key, position, url, serp_features, fetched_at)
      VALUES ($1, $2, $3, $4, now())

@@ -1,10 +1,13 @@
 import type { FastifyInstance } from 'fastify';
+import { requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
-import { badRequest } from '../errors.js';
+import { badRequest, validationError } from '../errors.js';
 import { requireSite } from '../services/sites.js';
 import { enqueue, QUEUES, Jobs } from '../queues.js';
+import { rescoreToxicLinks, TOXIC_THRESHOLD } from '../services/toxicLinks.js';
+import { findLinkOpportunities, buildDisavowFile } from '../services/linkOpportunities.js';
 
 const idParams = {
   type: 'object',
@@ -80,7 +83,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
   await fastify.register(async (app) => {
     await authPlugin(app);
 
-    app.get('/sites/:id/backlinks', {
+    app.get('/sites/:id/backlinks', { preHandler: requireScope('backlinks:read'),
       schema: {
         params: idParams,
         querystring: {
@@ -148,7 +151,7 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
       const { csv } = req.body as { csv: string };
       const links = parseBacklinkCsv(csv, site.domain);
       if (links.length === 0) {
-        throw badRequest(
+        throw validationError(
           'No valid links found in the CSV. Expected rows like: https://blog.example/post, https://yoursite.com/page (or a single column of linking page URLs).',
         );
       }
@@ -162,7 +165,116 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
           [tenantId, site.id, link.sourceUrl, link.targetUrl],
         );
       }
-      return { ok: true, imported: links.length };
+      // F-06: score every imported link with the heuristic so the UI can
+      // show toxic flags immediately.
+      const rescored = await rescoreToxicLinks(tenantId, site.id, site.domain, query);
+      return { ok: true, imported: links.length, toxic: rescored.toxic, toxic_heuristic: true };
+    });
+
+    // ---- F-06: backlinks v2 ----
+
+    // Anchor-text distribution.
+    app.get('/sites/:id/backlinks/anchors', { preHandler: requireScope('backlinks:read'), schema: { params: idParams } }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const r = await query(
+        `SELECT COALESCE(NULLIF(anchor_text, ''), '(no anchor text)') AS anchor, COUNT(*)::int AS links
+         FROM backlinks
+         WHERE site_id = $1 AND tenant_id = $2 AND status = 'active'
+         GROUP BY 1 ORDER BY links DESC LIMIT 50`,
+        [site.id, site.tenant_id],
+      );
+      return { anchors: r.rows, toxic_heuristic: true };
+    });
+
+    // Heuristic toxic-link list (labeled — never a penalty verdict).
+    app.get('/sites/:id/backlinks/toxic', { preHandler: requireScope('backlinks:read'),
+      schema: {
+        params: idParams,
+        querystring: {
+          type: 'object',
+          properties: {
+            minScore: { type: 'integer', minimum: 0, maximum: 100, default: TOXIC_THRESHOLD },
+            limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+          },
+        },
+      },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const { minScore = TOXIC_THRESHOLD, limit = 50 } = req.query as { minScore?: number; limit?: number };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const r = await query(
+        `SELECT id, source_url, target_url, anchor_text, toxic_flags, toxic_score, referring_domain, last_seen
+         FROM backlinks
+         WHERE site_id = $1 AND tenant_id = $2 AND status = 'active' AND toxic_score >= $3
+         ORDER BY toxic_score DESC LIMIT $4`,
+        [site.id, site.tenant_id, minScore, limit],
+      );
+      return {
+        links: r.rows,
+        total: r.rows.length,
+        threshold: TOXIC_THRESHOLD,
+        heuristic: true,
+        note: 'Flags are heuristics, not a measured penalty risk. Review before disavowing.',
+      };
+    });
+
+    // Re-score all active links (e.g. after the heuristic is improved).
+    app.post('/sites/:id/backlinks/rescore', {
+      schema: { params: idParams },
+      preHandler: requireVerifiedEmail,
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const result = await rescoreToxicLinks(site.tenant_id, site.id, site.domain, query);
+      return { ...result, toxic_heuristic: true };
+    });
+
+    // Link-opportunity finder.
+    app.get('/sites/:id/backlinks/opportunities', { preHandler: requireScope('backlinks:read'), schema: { params: idParams } }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const r = await query(
+        `SELECT id, source_url, source_domain, kind, reason, created_at FROM link_opportunities
+         WHERE site_id = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 100`,
+        [site.id, site.tenant_id],
+      );
+      return { opportunities: r.rows, total: r.rows.length, heuristic: true };
+    });
+
+    app.post('/sites/:id/backlinks/opportunities/refresh', {
+      schema: { params: idParams },
+      preHandler: requireVerifiedEmail,
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const opportunities = await findLinkOpportunities(site.tenant_id, site.id, query);
+      return { opportunities, total: opportunities.length, heuristic: true };
+    });
+
+    // Disavow file download (.txt) for heuristic-toxic links.
+    app.get('/sites/:id/backlinks/disavow', { preHandler: requireScope('backlinks:read'),
+      schema: {
+        params: idParams,
+        querystring: {
+          type: 'object',
+          properties: { minScore: { type: 'integer', minimum: 0, maximum: 100, default: TOXIC_THRESHOLD } },
+        },
+      },
+    }, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const { minScore = TOXIC_THRESHOLD } = req.query as { minScore?: number };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const r = await query(
+        `SELECT source_url, toxic_score FROM backlinks
+         WHERE site_id = $1 AND tenant_id = $2 AND status = 'active' AND toxic_score >= $3`,
+        [site.id, site.tenant_id, minScore],
+      );
+      const txt = buildDisavowFile(r.rows as Array<{ source_url: string; toxic_score: number }>);
+      return reply
+        .type('text/plain; charset=utf-8')
+        .header('Content-Disposition', `attachment; filename="disavow-${site.domain}.txt"`)
+        .send(txt);
     });
   });
 }

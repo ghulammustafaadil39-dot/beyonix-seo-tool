@@ -4,7 +4,11 @@ import { query as defaultQuery } from '../db.js';
 
 /** Loads a site ensuring it belongs to the tenant. Throws 404 otherwise (no leak). */
 export async function requireSite(tenantId: string, siteId: string, q: QueryFn = defaultQuery) {
-  const r = await q(`SELECT * FROM sites WHERE id = $1 AND tenant_id = $2`, [siteId, tenantId]);
+  // Soft-deleted sites are invisible (canonical deleted_at from migration
+  // 013, Backend-A C-06). Main's requireSite did not filter this; the filter
+  // is kept here so soft-delete actually hides the site from all
+  // requireSite-backed routes.
+  const r = await q(`SELECT * FROM sites WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, [siteId, tenantId]);
   if (r.rows.length === 0) throw notFound('Site');
   return r.rows[0] as {
     id: string; tenant_id: string; domain: string; verified: boolean;
@@ -45,3 +49,14 @@ export function toPublicSite(site: Record<string, unknown>): PublicSite {
 export function siteUrl(domain: string): string {
   return `https://${domain}`;
 }
+
+/**
+ * Soft-delete / restore: CANONICAL implementation is Backend-A's C-06
+ * service in services/retention.ts (sites.deleted_at comes from migration
+ * 013; restore enforces the 30-day window; the retention job hard-purges
+ * afterwards). Backend-B's duplicate implementation + lazy-DDL column
+ * ensure were removed at the Wave-2 rebase reconciliation — these
+ * re-exports keep the existing import sites working.
+ * NOTE the canonical argument order: (tenantId, siteId, q).
+ */
+export { softDeleteSite, restoreSite } from './retention.js';

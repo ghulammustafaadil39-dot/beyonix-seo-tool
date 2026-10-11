@@ -25,6 +25,17 @@ export interface RuleCtx {
   pagespeed?: { lcpMs: number | null; cls: number | null; performanceScore: number | null } | null;
   /** internal: site-level rules already emitted (init by runRules) */
   siteEmitted?: Set<string>;
+  // ---- C-04 additions ----
+  /** sitemap URLs with no incoming internal links (orphan pages) */
+  orphans?: string[];
+  /** near-duplicate page clusters (each a list of urls) */
+  dupClusters?: string[][];
+  /** normalized url -> inbound internal link count */
+  inlinks?: Map<string, number>;
+  /** homepage url (for impact weighting context) */
+  homepageUrl?: string;
+  /** redirect chains detected during the crawl */
+  redirectChains?: Array<{ from: string; to: string; hops: number | null; loopSuspected: boolean }>;
 }
 
 export interface Rule {
@@ -406,6 +417,134 @@ export const RULES: Rule[] = [
             ),
           ]
         : [],
+  },
+  // ---------------- C-04 rules ----------------
+  {
+    type: 'redirect-chain-long',
+    severity: 'warning',
+    check: (p) => {
+      const hops = p.redirectHops ?? 0;
+      return hops > 3
+        ? [
+            mk(
+              'redirect-chain-long',
+              'warning',
+              p.url,
+              `This page redirects through ${hops} hops before loading \u2014 every hop slows the page and leaks ranking signal.`,
+              'Point links and the sitemap directly at the final URL so the redirect chain is at most 1 hop.',
+            ),
+          ]
+        : [];
+    },
+  },
+  {
+    type: 'redirect-loop',
+    severity: 'error',
+    check: (p, ctx) => {
+      const chains = ctx.redirectChains ?? [];
+      const loop = chains.find((c) => c.loopSuspected && (c.from === p.url || c.to === p.url));
+      return loop
+        ? [
+            mk(
+              'redirect-loop',
+              'error',
+              p.url,
+              'This URL is caught in a redirect loop \u2014 browsers show an error and search engines drop the page.',
+              'Fix the redirect rules on your server/hosting so the URL resolves to one final page.',
+            ),
+          ]
+        : [];
+    },
+  },
+  {
+    type: 'orphan-page',
+    severity: 'info',
+    check: (p, ctx) => {
+      const orphans = ctx.orphans ?? [];
+      return orphans.includes(p.url)
+        ? [
+            mk(
+              'orphan-page',
+              'info',
+              p.url,
+              'This page is in your sitemap but no other page on your site links to it \u2014 visitors and crawlers can hardly find it.',
+              'Add internal links to this page from relevant pages (navigation, related posts, category pages).',
+            ),
+          ]
+        : [];
+    },
+  },
+  {
+    type: 'duplicate-content',
+    severity: 'warning',
+    check: (p, ctx) => {
+      const clusters = ctx.dupClusters ?? [];
+      const cluster = clusters.find((c) => c.includes(p.url));
+      if (!cluster) return [];
+      const others = cluster.filter((u) => u !== p.url).slice(0, 3);
+      return [
+        mk(
+          'duplicate-content',
+          'warning',
+          p.url,
+          `This page's content is nearly identical to ${cluster.length - 1} other page(s)${others.length ? ` (e.g. ${others.join(', ')})` : ''} \u2014 search engines may rank the wrong one or none.`,
+          'Differentiate the pages with unique content, or canonicalize/merge the duplicates into one page.',
+        ),
+      ];
+    },
+  },
+  {
+    type: 'image-too-large',
+    severity: 'warning',
+    check: (p) => {
+      const big = p.images.filter((i) => (i.bytes ?? 0) > 1_000_000);
+      return big.length > 0
+        ? [
+            mk(
+              'image-too-large',
+              'warning',
+              p.url,
+              `${big.length} image(s) are larger than 1 MB${big[0]?.src ? ` (e.g. ${big[0].src.slice(0, 80)})` : ''} \u2014 heavy images are the #1 cause of slow pages.`,
+              'Compress images (WebP/AVIF) and resize them to the display size; aim for under 200 KB each.',
+            ),
+          ]
+        : [];
+    },
+  },
+  {
+    type: 'image-missing-dimensions',
+    severity: 'info',
+    check: (p) => {
+      const missing = p.images.filter((i) => !i.width || !i.height).length;
+      return missing > 0
+        ? [
+            mk(
+              'image-missing-dimensions',
+              'info',
+              p.url,
+              `${missing} image(s) have no width/height attributes \u2014 the page layout shifts while images load (bad CLS score).`,
+              'Add explicit width and height attributes to every <img> tag.',
+            ),
+          ]
+        : [];
+    },
+  },
+  {
+    type: 'schema-invalid-json',
+    severity: 'warning',
+    check: (p) =>
+      (p.schemaIssues ?? [])
+        .filter((s) => s.type === 'schema-invalid-json')
+        .map((s) => mk('schema-invalid-json', 'warning', p.url, s.message, s.fix)),
+  },
+  {
+    type: 'schema-missing-field',
+    severity: 'info',
+    check: (p) =>
+      (p.schemaIssues ?? [])
+        .filter((s) => s.type === 'schema-missing-field')
+        .slice(0, 5)
+        .map((s) => mk('schema-missing-field', 'info', p.url, s.message, s.fix)),
   },
 ];
 

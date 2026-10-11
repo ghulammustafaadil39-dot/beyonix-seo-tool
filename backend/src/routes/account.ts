@@ -3,7 +3,8 @@ import jwt from 'jsonwebtoken';
 import type { FastifyInstance } from 'fastify';
 import { pool, query, type QueryFn } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
-import { authPlugin, signToken } from '../middleware/auth.js';
+import { authPlugin, signToken, setAuthCookie, setCsrfCookie } from '../middleware/auth.js';
+import { issueCsrfToken } from '../middleware/csrf.js';
 import { canAssignRole, requireRole, requireScope } from '../middleware/access.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { getNotify } from '../providers/notify.js';
@@ -122,7 +123,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * NEW-1: every tenant-scoped table whose rows would be destroyed (or
  * orphaned) by `DELETE FROM tenants`. Curated from the migrations by
  * grepping for `REFERENCES tenants` / `tenant_id` columns
- * (001, 010–019) — keep this list in sync when a migration adds a
+ * (001, 010–019, 020–029) — keep this list in sync when a migration adds a
  * tenant-scoped table. A shell tenant may be dissolved on invite accept
  * ONLY when it has zero rows across ALL of these.
  *
@@ -133,6 +134,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *   with ON DELETE SET NULL by design (the audit trail must survive).
  * - `email_verification_tokens` / `user_sessions` — scoped to the user,
  *   not the tenant; the user (and their rows) move, nothing is lost.
+ * - Backend-B globals (migrations 020–029): `serp_snapshots`,
+ *   `pagespeed_cache`, `daily_quotas` — shared caches/quotas with no
+ *   tenant_id; nothing tenant-owned is lost when they survive a dissolve.
+ * - `rank_tracking_configs` (021) — no tenant_id column (PK is
+ *   keyword_id → keywords ON DELETE CASCADE); it cannot exist without a
+ *   keywords row, and `keywords` IS guarded below, so a dissolve can
+ *   never silently destroy it.
  */
 export const SHELL_TENANT_TABLES = [
   'sites',
@@ -164,6 +172,22 @@ export const SHELL_TENANT_TABLES = [
   'api_keys',
   'tenant_credits',
   'onboarding_state',
+  // Backend-B Wave 2 (migrations 020–029): every tenant_id-bearing table.
+  'audit_pages',
+  'audit_diffs',
+  'rank_alerts',
+  'alert_events',
+  'competitors',
+  'keyword_lists',
+  'keyword_list_members',
+  'keyword_gaps',
+  'content_versions',
+  'content_profiles',
+  'geo_prompts',
+  'link_opportunities',
+  'tenant_branding',
+  'report_schedules',
+  'share_tokens',
 ] as const;
 
 /**
@@ -350,7 +374,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       return { ok: true };
     });
 
-    authed.post('/account/invitations/accept', { schema: acceptInviteSchema }, async (req) => {
+    authed.post('/account/invitations/accept', { schema: acceptInviteSchema }, async (req, reply) => {
       const { token } = req.body as { token: string };
       const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
       // NEW-1: the whole accept flow — invitation/user reads, shell
@@ -503,6 +527,13 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       const fresh = signToken(u(req), acceptedTenantId, acceptedTokenVersion);
       const dj = jwt.decode(fresh) as { jti?: string } | null;
       if (dj?.jti) await createSession(u(req), dj.jti, 'invite-accept');
+      // Browser parity with login (issueAuthSession in routes/auth.ts):
+      // the pre-move cookie 401s after the move (tenant binding), so the
+      // fresh token MUST also land in the httpOnly session cookie (+ CSRF
+      // cookie), or browser users would have to re-login after accepting.
+      // The body token stays for API clients.
+      setAuthCookie(reply, fresh);
+      setCsrfCookie(reply, issueCsrfToken());
       return { ok: true, tenantId: acceptedTenantId, role: acceptedRole, token: fresh };
     });
 

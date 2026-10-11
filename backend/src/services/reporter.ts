@@ -2,6 +2,7 @@ import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
 import { generateMetered } from './llmMetered.js';
 import { geoScore } from './geoService.js';
+import { REPORT_SECTIONS } from './reportBranding.js';
 import { requireSite } from './sites.js';
 
 export interface ReportData {
@@ -133,18 +134,33 @@ export function buildTemplateSummary(d: ReportData, domain: string): string {
  * Builds the weekly report. Prefers an LLM-written summary; falls back to
  * the deterministic template when the LLM call fails.
  */
+export interface GenerateReportOpts {
+  /** Subset of sections to include; defaults to all. */
+  sections?: string[];
+  /** Reporting window in days (default 7). */
+  periodDays?: number;
+}
+
+/**
+ * Builds the weekly report. Prefers an LLM-written summary; falls back to
+ * the deterministic template when the LLM call fails.
+ * Cost caps: generateMetered enforces the tenant's ai_words budget and
+ * maxWords caps the output; sections limit what the summary covers.
+ */
 export async function generateReport(
   tenantId: string,
   siteId: string,
   q: QueryFn = defaultQuery,
+  opts: GenerateReportOpts = {},
 ): Promise<{ summary: string; highlights: ReportData }> {
   const data = await collectReportData(tenantId, siteId, q);
   const site = await requireSite(tenantId, siteId, q);
+  const sections = opts.sections && opts.sections.length > 0 ? opts.sections : [...REPORT_SECTIONS];
   let summary: string;
   try {
     const prompt =
       `Summarize this SEO week for a non-expert business owner in plain language, 250 words. ` +
-      `Cover site health, keyword rankings, backlinks and AI visibility, and end with one concrete next step.\n` +
+      `Cover only these sections: ${sections.join(', ')}. End with one concrete next step.\n` +
       `DATA: ${JSON.stringify(data)}`;
     const res = await generateMetered(tenantId, { prompt, maxWords: 350, siteId }, q);
     summary = res.text;

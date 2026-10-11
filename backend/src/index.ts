@@ -32,6 +32,7 @@ import { registerRankRoutes } from './routes/ranks.js';
 import { registerContentRoutes } from './routes/content.js';
 import { registerOnpageRoutes } from './routes/onpage.js';
 import { registerBacklinkRoutes } from './routes/backlinks.js';
+import { registerCompetitorRoutes } from './routes/competitors.js';
 import { registerGeoRoutes } from './routes/geo.js';
 import { registerReportRoutes } from './routes/reports.js';
 import { registerSettingsRoutes } from './routes/settings.js';
@@ -157,6 +158,7 @@ export async function buildApp() {
       await registerContentRoutes(v1);
       await registerOnpageRoutes(v1);
       await registerBacklinkRoutes(v1);
+      await registerCompetitorRoutes(v1);
       await registerGeoRoutes(v1);
       await registerReportRoutes(v1);
       await registerSettingsRoutes(v1);

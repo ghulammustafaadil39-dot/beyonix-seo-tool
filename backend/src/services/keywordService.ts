@@ -2,6 +2,9 @@ import { ApiError } from '../errors.js';
 import { decrypt } from '../crypto.js';
 import { query as defaultQuery, type QueryFn } from '../db.js';
 import { DEFAULT_LOCATION_CODE, getKeywordMetrics } from './keywordCache.js';
+import { getKeywordSerpProvider } from '../providers/dataforseo.js';
+import { expandSeed, parseKeywordBulkImport } from './keywordText.js';
+import { recordProviderSpend } from '../metering.js';
 import { getGoogle } from '../providers/google.js';
 import { requireSite, siteUrl } from './sites.js';
 
@@ -201,4 +204,282 @@ export async function refreshKeywordMetrics(
     count++;
   }
   return count;
+}
+
+/**
+ * F-03: seed expansion — deterministic variants of each seed, enriched with
+ * cached+metered metrics, upserted as added_from='expansion'.
+ */
+export async function expandKeywords(
+  tenantId: string,
+  siteId: string,
+  seeds: string[],
+  q: QueryFn = defaultQuery,
+): Promise<any[]> {
+  const clean = (seeds ?? []).map((s) => String(s).trim()).filter(Boolean);
+  if (clean.length === 0 || clean.length > 5) {
+    throw new ApiError(400, 'BAD_REQUEST', 'Provide between 1 and 5 non-empty seeds.');
+  }
+  await requireSite(tenantId, siteId, q);
+  const locationCode = await siteLocation(siteId, tenantId, q);
+  const candidates = new Set<string>();
+  for (const seed of clean) {
+    for (const k of expandSeed(seed, 20)) candidates.add(k);
+  }
+  const list = [...candidates].slice(0, 100);
+  if (list.length === 0) return [];
+  const metrics = await getKeywordMetrics(tenantId, list, q, undefined, locationCode);
+  const groupMap = groupKeywords(metrics.map((m) => m.keyword.toLowerCase().trim()).filter(Boolean));
+  const rows: any[] = [];
+  for (const m of metrics) {
+    const keyword = m.keyword.toLowerCase().trim();
+    if (!keyword) continue;
+    const r = await q(
+      `INSERT INTO keywords (id, tenant_id, site_id, keyword, volume, difficulty, intent, priority_score, added_from, group_key)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'expansion', $8)
+       ON CONFLICT (site_id, keyword) DO NOTHING
+       RETURNING *`,
+      [tenantId, siteId, keyword, m.volume, m.difficulty, classifyIntent(keyword), priorityScore(m.volume, m.difficulty), groupMap.get(keyword) ?? 'misc'],
+    );
+    if (r.rows[0]) rows.push(r.rows[0]);
+  }
+  rows.sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0));
+  return rows;
+}
+
+export interface KeywordCluster {
+  group_key: string;
+  keywords: string[];
+  intents: Record<string, number>;
+  total_volume: number;
+  avg_difficulty: number | null;
+}
+
+/** F-03: cluster a site's keywords by topic (group_key) + intent mix. Pure over rows. */
+export function clusterRows(
+  rows: Array<{ keyword: string; group_key: string | null; intent: string | null; volume: number | null; difficulty: number | null }>,
+): KeywordCluster[] {
+  const map = new Map<string, KeywordCluster>();
+  for (const r of rows) {
+    const key = r.group_key || 'misc';
+    let c = map.get(key);
+    if (!c) {
+      c = { group_key: key, keywords: [], intents: {}, total_volume: 0, avg_difficulty: null };
+      map.set(key, c);
+    }
+    c.keywords.push(r.keyword);
+    const intent = r.intent || 'informational';
+    c.intents[intent] = (c.intents[intent] ?? 0) + 1;
+    c.total_volume += r.volume ?? 0;
+  }
+  const out = [...map.values()];
+  const diffByKey = new Map<string, { sum: number; n: number }>();
+  for (const r of rows) {
+    if (r.difficulty == null) continue;
+    const key = r.group_key || 'misc';
+    const d = diffByKey.get(key) ?? { sum: 0, n: 0 };
+    d.sum += r.difficulty; d.n += 1;
+    diffByKey.set(key, d);
+  }
+  for (const c of out) {
+    const d = diffByKey.get(c.group_key);
+    c.avg_difficulty = d && d.n > 0 ? Math.round(d.sum / d.n) : null;
+    c.keywords.sort();
+  }
+  out.sort((a, b) => b.total_volume - a.total_volume);
+  return out;
+}
+
+export interface CannibalizationHit {
+  kind: 'same-url-multiple-keywords' | 'multiple-urls-one-keyword';
+  keyword: string;
+  keyword_id: string;
+  urls: string[];
+  detail: string;
+}
+
+/**
+ * F-03: cannibalization detection.
+ * - same-url-multiple-keywords: two tracked keywords whose latest ranking URL is identical.
+ * - multiple-urls-one-keyword: the site's domain appears with 2+ distinct URLs
+ *   in the latest SERP snapshot of one keyword.
+ */
+export async function detectCannibalization(
+  tenantId: string,
+  siteId: string,
+  q: QueryFn = defaultQuery,
+): Promise<CannibalizationHit[]> {
+  const site = await requireSite(tenantId, siteId, q);
+  const hits: CannibalizationHit[] = [];
+
+  // (a) same ranking URL for multiple keywords
+  const rows = (
+    await q(
+      `SELECT k.id AS keyword_id, k.keyword, rc.url
+       FROM keywords k
+       JOIN LATERAL (
+         SELECT url FROM rank_checks
+         WHERE keyword_id = k.id AND tenant_id = $2 AND url IS NOT NULL
+         ORDER BY checked_at DESC LIMIT 1
+       ) rc ON TRUE
+       WHERE k.site_id = $1 AND k.tenant_id = $2 AND k.tracked = TRUE`,
+      [siteId, tenantId],
+    )
+  ).rows as Array<{ keyword_id: string; keyword: string; url: string }>;
+  const byUrl = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const list = byUrl.get(r.url) ?? [];
+    list.push(r);
+    byUrl.set(r.url, list);
+  }
+  for (const [url, list] of byUrl) {
+    if (list.length >= 2) {
+      hits.push({
+        kind: 'same-url-multiple-keywords',
+        keyword: list.map((l) => l.keyword).join(', '),
+        keyword_id: list[0].keyword_id,
+        urls: [url],
+        detail: `${list.length} tracked keywords all rank to the same page — they compete with each other.`,
+      });
+    }
+  }
+
+  // (b) multiple own-domain URLs in one keyword's snapshot
+  const snaps = (
+    await q(
+      `SELECT k.id AS keyword_id, k.keyword, s.items
+       FROM keywords k
+       JOIN LATERAL (
+         SELECT snapshot_id FROM rank_checks
+         WHERE keyword_id = k.id AND tenant_id = $2 AND snapshot_id IS NOT NULL
+         ORDER BY checked_at DESC LIMIT 1
+       ) rc ON TRUE
+       JOIN serp_snapshots s ON s.id = rc.snapshot_id
+       WHERE k.site_id = $1 AND k.tenant_id = $2 AND k.tracked = TRUE`,
+      [siteId, tenantId],
+    )
+  ).rows as Array<{ keyword_id: string; keyword: string; items: Array<{ url: string; domain: string }> }>;
+  const want = site.domain.toLowerCase().replace(/^www\./, '');
+  for (const s of snaps) {
+    const ownUrls = [...new Set(
+      (s.items ?? [])
+        .filter((i) => String(i.domain ?? '').toLowerCase().replace(/^www\./, '') === want)
+        .map((i) => i.url),
+    )];
+    if (ownUrls.length >= 2) {
+      hits.push({
+        kind: 'multiple-urls-one-keyword',
+        keyword: s.keyword,
+        keyword_id: s.keyword_id,
+        urls: ownUrls.slice(0, 5),
+        detail: `${ownUrls.length} of your pages rank for "${s.keyword}" — Google can't pick a winner; consolidate.`,
+      });
+    }
+  }
+  return hits;
+}
+
+export interface KeywordGap {
+  keyword: string;
+  competitor_position: number;
+  competitor_url: string;
+  volume: number | null;
+  difficulty: number | null;
+}
+
+/**
+ * F-03/F-07: keyword gap vs a competitor — keywords they rank for (top 100)
+ * that we don't track. Results cached 7 days in keyword_gaps.
+ * `dataSource` is 'mock' when the provider is in mock mode (honest label).
+ */
+export async function keywordGap(
+  tenantId: string,
+  siteId: string,
+  competitorDomain: string,
+  q: QueryFn = defaultQuery,
+): Promise<{ gaps: KeywordGap[]; dataSource: 'mock' | 'real'; fetchedAt: string }> {
+  await requireSite(tenantId, siteId, q);
+  const comp = competitorDomain.trim().toLowerCase().replace(/^www\./, '');
+  if (!comp || comp.length > 253) throw new ApiError(400, 'BAD_REQUEST', 'Invalid competitor domain.');
+
+  const cached = await q(
+    `SELECT gaps, fetched_at, data_source FROM keyword_gaps
+     WHERE site_id = $1 AND tenant_id = $2 AND competitor_domain = $3
+       AND fetched_at > now() - interval '7 days'`,
+    [siteId, tenantId, comp],
+  );
+  if (cached.rows.length > 0) {
+    return {
+      gaps: cached.rows[0].gaps as KeywordGap[],
+      dataSource: cached.rows[0].data_source === 'real' ? 'real' : 'mock',
+      fetchedAt: cached.rows[0].fetched_at,
+    };
+  }
+
+  const provider = getKeywordSerpProvider();
+  const dataSource = provider.isMock ? 'mock' : 'real';
+  const compKws = provider.competitorKeywords
+    ? await provider.competitorKeywords(comp)
+    : [];
+  if (!provider.isMock && provider.competitorKeywords) {
+    await recordProviderSpend(tenantId, 'dataforseo', 'keyword_gap', 1, 0);
+  }
+  const ours = new Set(
+    (
+      await q(`SELECT keyword FROM keywords WHERE site_id = $1 AND tenant_id = $2`, [siteId, tenantId])
+    ).rows.map((r: any) => String(r.keyword).toLowerCase()),
+  );
+  const missing = compKws.filter((c) => !ours.has(c.keyword.toLowerCase()));
+  // Enrich with volume/difficulty (cached+metered) for the top 50.
+  const top = missing.slice(0, 50);
+  const metrics = top.length > 0 ? await getKeywordMetrics(tenantId, top.map((t) => t.keyword), q) : [];
+  const byKw = new Map(metrics.map((m) => [m.keyword.toLowerCase(), m]));
+  const gaps: KeywordGap[] = top.map((t) => ({
+    keyword: t.keyword,
+    competitor_position: t.position,
+    competitor_url: t.url,
+    volume: byKw.get(t.keyword.toLowerCase())?.volume ?? null,
+    difficulty: byKw.get(t.keyword.toLowerCase())?.difficulty ?? null,
+  }));
+  gaps.sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0));
+
+  await q(
+    `INSERT INTO keyword_gaps (id, tenant_id, site_id, competitor_domain, fetched_at, gaps, data_source)
+     VALUES (gen_random_uuid(), $1, $2, $3, now(), $4, $5)
+     ON CONFLICT (site_id, competitor_domain) DO UPDATE SET fetched_at = now(), gaps = EXCLUDED.gaps, data_source = EXCLUDED.data_source`,
+    [tenantId, siteId, comp, JSON.stringify(gaps), dataSource],
+  );
+  return { gaps, dataSource, fetchedAt: new Date().toISOString() };
+}
+
+/**
+ * F-03: bulk keyword import from CSV/text. Parses, enriches with
+ * cached+metered metrics, upserts (added_from='import').
+ */
+export async function importKeywords(
+  tenantId: string,
+  siteId: string,
+  text: string,
+  q: QueryFn = defaultQuery,
+): Promise<{ imported: number; skipped: number }> {
+  await requireSite(tenantId, siteId, q);
+  const kws = parseKeywordBulkImport(text, 1000);
+  if (kws.length === 0) throw new ApiError(400, 'BAD_REQUEST', 'No valid keywords found in the import.');
+  const locationCode = await siteLocation(siteId, tenantId, q);
+  const metrics = await getKeywordMetrics(tenantId, kws, q, undefined, locationCode);
+  const groupMap = groupKeywords(metrics.map((m) => m.keyword.toLowerCase().trim()).filter(Boolean));
+  let imported = 0;
+  for (const m of metrics) {
+    const keyword = m.keyword.toLowerCase().trim();
+    if (!keyword) continue;
+    const r = await q(
+      `INSERT INTO keywords (id, tenant_id, site_id, keyword, volume, difficulty, intent, priority_score, added_from, group_key)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'import', $8)
+       ON CONFLICT (site_id, keyword) DO NOTHING
+       RETURNING id`,
+      [tenantId, siteId, keyword, m.volume, m.difficulty, classifyIntent(keyword), priorityScore(m.volume, m.difficulty), groupMap.get(keyword) ?? 'misc'],
+    );
+    if (r.rows.length > 0) imported++;
+  }
+  return { imported, skipped: kws.length - imported };
 }

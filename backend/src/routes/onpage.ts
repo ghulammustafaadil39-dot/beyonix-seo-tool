@@ -8,7 +8,7 @@ import { generateMetered } from '../services/llmMetered.js';
 import { checkLimit, assertLimit } from '../metering.js';
 import { type PlanId } from '../plans.js';
 import { safeFetch } from '../services/safeFetch.js';
-import { ApiError, badRequest } from '../errors.js';
+import { ApiError, badRequest, validationError } from '../errors.js';
 
 export interface PageBasics {
   statusCode: number;
@@ -60,10 +60,10 @@ function assertUrlOnSite(rawUrl: string, domain: string): void {
   try {
     u = new URL(rawUrl);
   } catch {
-    throw badRequest('url must be a valid absolute URL');
+    throw validationError('url must be a valid absolute URL');
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-    throw badRequest('url must use http(s)');
+    throw validationError('url must use http(s)');
   }
   const host = u.hostname.toLowerCase();
   const d = domain.toLowerCase().replace(/^www\./, '');
