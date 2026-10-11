@@ -1,0 +1,15 @@
+-- Wave-4 Pass#6 fix (LA): F2-L-1 — distinguish concurrent duplicate webhook
+-- delivery from crashed-attempt retry.
+--
+-- The E4-M-2 reprocess fix (row exists, processed_at IS NULL -> reprocess)
+-- fires for two very different cases:
+--   (a) a previous attempt CRASHED mid-processing -> must reprocess, and
+--   (b) a second CONCURRENT delivery of the same event id while the first
+--       attempt is still in flight -> must dedupe (old behavior was safer).
+-- started_at records when the winning attempt began. A duplicate that
+-- arrives while started_at is fresh (< 5 min) is treated as case (b) and
+-- deduped; a duplicate arriving later is treated as case (a) and
+-- reprocessed. Non-idempotent handlers (charge.refunded tenant credit,
+-- coupon redeemed_count, duplicate billing events) are then safe against
+-- the concurrent-delivery window without losing crash recovery.
+ALTER TABLE stripe_webhook_events ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
