@@ -15,8 +15,8 @@ interface EntityRule {
 
 const ENTITY_RULES: Record<string, EntityRule> = {
   usage_events: { table: 'usage_events', dateColumn: 'created_at' },
-  audit_issues: { table: 'audit_issues', dateColumn: 'created_at' },
-  audits: { table: 'audits', dateColumn: 'created_at' },
+  // audit_issues cascades from audits (ON DELETE CASCADE) — no standalone rule.
+  audits: { table: 'audits', dateColumn: 'finished_at' }, // NULL (unfinished) is never swept
   rank_checks: { table: 'rank_checks', dateColumn: 'checked_at' },
   geo_checks: { table: 'geo_checks', dateColumn: 'checked_at' },
   provider_spend: { table: 'provider_spend', dateColumn: 'created_at' },
@@ -49,19 +49,49 @@ export interface CleanupResult {
 }
 
 /**
+ * Built-in retention windows, mirroring the migration 013 seed. Used when
+ * the retention_policies table is empty (e.g. wiped by a test TRUNCATE or
+ * an ops accident) so cleanup degrades to defaults instead of silently
+ * doing nothing.
+ */
+export const DEFAULT_RETENTION_POLICIES: Record<string, string> = {
+  usage_events: '13 months',
+  audits: '12 months',
+  rank_checks: '13 months',
+  geo_checks: '12 months',
+  provider_spend: '13 months',
+  webhook_deliveries: '90 days',
+  dead_letter_jobs: '90 days',
+  notification_log: '12 months',
+  activity_log: '24 months',
+  api_request_log: '30 days',
+  usage_reservations: '3 months',
+};
+
+/**
  * Runs the retention cleanup once. Returns per-entity delete counts.
  * Safe to run concurrently (each DELETE is a single statement).
  */
 export async function runRetentionCleanup(q: QueryFn = defaultQuery): Promise<CleanupResult[]> {
+  // DB rows override the built-in defaults per entity; entities missing from
+  // the table (new rules, wiped seeds) still get their default window.
   const policies = await q(`SELECT entity, keep_for FROM retention_policies`);
+  const keepByEntity: Record<string, string> = { ...DEFAULT_RETENTION_POLICIES };
+  for (const p of policies.rows) keepByEntity[p.entity as string] = p.keep_for as string;
+  const entries = Object.entries(keepByEntity).map(([entity, keep_for]) => ({ entity, keep_for }));
   const results: CleanupResult[] = [];
-  for (const p of policies.rows) {
+  for (const p of entries) {
     const entity = p.entity as string;
     const rule = ENTITY_RULES[entity];
     if (!rule) continue;
-    // Skip tables that do not exist (policy seeded ahead of migration).
-    const exists = await q(`SELECT to_regclass($1) AS cls`, [`public.${rule.table}`]);
-    if (!exists.rows[0]?.cls) continue;
+    // Skip tables (or age columns) that do not exist — policy may be seeded
+    // ahead of the migration that creates them.
+    const exists = await q(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+      [rule.table, rule.dateColumn],
+    );
+    if (exists.rows.length === 0) continue;
     const where = [
       `${rule.dateColumn} < now() - $1::interval`,
       ...(rule.extraWhere ? [rule.extraWhere] : []),

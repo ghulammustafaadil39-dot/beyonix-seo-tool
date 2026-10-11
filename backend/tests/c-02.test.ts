@@ -152,16 +152,31 @@ describe.runIf(HAS_TEST_DB)('C-02 metering', () => {
         fired.push({ level: info.level, used: info.used });
       }
     });
+    // Alert hooks fire fire-and-forget after commit (best-effort, never
+    // blocks metering) — poll with a timeout instead of asserting
+    // immediately, then assert EXACTLY-ONCE counts.
+    const waitFor = async (level: 80 | 100, timeoutMs = 5000) => {
+      const start = Date.now();
+      for (;;) {
+        if (fired.some((f) => f.level === level)) return;
+        if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${level}% alert`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
     try {
       // starter geo_checks_month = 20. Reserve 16 -> hits 80%.
       const r1 = await reserveUsage(tenantNoSub, 'starter', 'geo_checks', 16);
       await commitUsage(r1.reservationId);
+      await waitFor(80);
       // Reserve again (still 80%) -> no second 80% fire.
       const r2 = await reserveUsage(tenantNoSub, 'starter', 'geo_checks', 1);
       await commitUsage(r2.reservationId);
       // Push to 20 -> 100% fires once.
       const r3 = await reserveUsage(tenantNoSub, 'starter', 'geo_checks', 3);
       await commitUsage(r3.reservationId);
+      await waitFor(100);
+      // Settle: a duplicate fire would arrive within this window.
+      await new Promise((r) => setTimeout(r, 300));
       expect(fired.filter((f) => f.level === 80)).toHaveLength(1);
       expect(fired.filter((f) => f.level === 100)).toHaveLength(1);
     } finally {
