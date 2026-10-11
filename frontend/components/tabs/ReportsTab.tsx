@@ -33,7 +33,12 @@ function HighlightList({ highlights }: { highlights: Record<string, unknown> }) 
       'Open issues',
       `${h.openIssues.error ?? 0} errors, ${h.openIssues.warning ?? 0} warnings, ${h.openIssues.info ?? 0} info`,
     ]);
-  if (typeof h.geoScore === 'number') rows.push(['AI visibility score', `${h.geoScore}% of AI answers mentioned your brand`]);
+  // B3-M1: geoScore comes from the SIMULATED GEO checks (geo_checks table).
+  // Label it honestly like the GEO tabs ("Simulated estimate") and the
+  // backend's own report renderings (reportBranding.ts: "% of simulated
+  // AI answers"), so it is never read as measured data.
+  if (typeof h.geoScore === 'number')
+    rows.push(['AI visibility score (simulated estimate)', `${h.geoScore}% of simulated AI answers mentioned your brand`]);
   rows.push(['Backlinks', `${h.newBacklinks ?? 0} new, ${h.lostBacklinks ?? 0} lost`]);
   if (typeof h.draftsInReview === 'number' && h.draftsInReview > 0)
     rows.push(['Content drafts awaiting review', String(h.draftsInReview)]);

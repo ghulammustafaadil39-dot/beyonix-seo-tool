@@ -40,9 +40,10 @@ export default function PrivacyPage() {
       </LegalSection>
       <LegalSection heading="3. Cookies">
         <p>
-          Essential cookies keep you logged in and remember your cookie choice. Optional
-          analytics cookies (only if you accept them in the cookie banner) help us understand
-          aggregate product usage.
+          We use only essential cookies: the session cookie that keeps you
+          logged in (and its CSRF-protection companion), plus a local record
+          of your cookie-banner choice. We do not set analytics, advertising,
+          or tracking cookies.
         </p>
       </LegalSection>
       <LegalSection heading="4. Sub-processors">
