@@ -198,7 +198,10 @@ export interface AuditIssue {
   url: string;
   detail: string;
   fix_suggestion: string;
-  status: 'open' | 'fixed' | 'ignored';
+  // F-02 (wired): backend enum is open|ignored|resolved|wont-fix
+  // (migration-era 'fixed' is REJECTED by validation — see bb-f02 tests).
+  status: 'open' | 'ignored' | 'resolved' | 'wont-fix';
+  impact?: number;
 }
 
 export interface Keyword {
@@ -236,7 +239,10 @@ export interface ContentPiece {
   title: string;
   outline: string | null;
   draft: string | null;
-  status: 'draft' | 'review' | 'approved';
+  // F-04 (wired): backend workflow statuses (services/contentWorkflow.ts).
+  status: 'brief' | 'outline' | 'draft' | 'review' | 'changes_requested' | 'approved' | 'published';
+  brief?: string | null;
+  tone?: string | null;
   ai_words_used: number;
   created_at: string;
   updated_at: string;
@@ -286,6 +292,10 @@ export interface GeoCheck {
   mentioned: boolean | null;
   context_snippet: string | null;
   checked_at: string;
+  sentiment?: string | null;
+  citations?: unknown;
+  simulated?: boolean;
+  engine_version?: string | null;
 }
 export interface GeoScore {
   score: number | null;
@@ -298,6 +308,8 @@ export interface Report {
   period_end: string;
   summary: string;
   highlights: Record<string, unknown> | null;
+  sections?: string[] | null;
+  branding?: TenantBranding | null;
   created_at: string;
 }
 /**
@@ -438,7 +450,7 @@ export const auditsApi = {
     const qs = q.toString();
     return api<Paged<AuditIssue>>(`/api/v1/audits/${auditId}/issues${qs ? `?${qs}` : ''}`);
   },
-  setIssueStatus: (issueId: string, status: 'open' | 'fixed' | 'ignored') =>
+  setIssueStatus: (issueId: string, status: 'open' | 'ignored' | 'resolved' | 'wont-fix') =>
     api<AuditIssue>(`/api/v1/issues/${issueId}`, { method: 'PATCH', body: { status } }),
 };
 
@@ -475,7 +487,7 @@ export const contentApi = {
   generate: (id: string) =>
     api<{ ok: boolean }>(`/api/v1/content/${id}/generate`, { method: 'POST' }),
   approve: (id: string) => api<ContentPiece>(`/api/v1/content/${id}/approve`, { method: 'POST' }),
-  exportUrl: (id: string, format: 'html' | 'markdown') =>
+  exportUrl: (id: string, format: 'html' | 'markdown' | 'docx') =>
     `${BASE_URL}/api/v1/content/${id}/export?format=${format}`,
 };
 
@@ -1018,4 +1030,499 @@ export const adminApi = {
     }),
   auditLog: (page = 1, limit = 20) =>
     api<Paged<AdminAuditEntry>>(`/api/v1/admin/audit-log?page=${page}&limit=${limit}`),
+};
+
+// ===========================================================================
+// Wave 2 wiring round 2 (Frontend Lead): F-02..F-08 backends (Backend-B,
+// merged to main). All shapes below are read from the merged backend route
+// files (routes/audit.ts, keywords.ts, content.ts, geo.ts, backlinks.ts,
+// competitors.ts, reports.ts) and their services — not from mock adapters.
+// ===========================================================================
+
+// ---------- shared: share links (F-02 audits / F-08 reports) ----------
+
+/** GET .../shares row — id/timestamps ONLY; the token/hash is never listed. */
+export interface ShareLink {
+  id: string;
+  resource_type: string;
+  resource_id: string;
+  created_at: string;
+  expires_at: string;
+}
+
+/** POST .../share response (201) — the raw token is shown exactly once. */
+export interface ShareCreated {
+  url: string;
+  token: string;
+  expires_at: string;
+}
+
+// ---------- F-02: audit v2 ----------
+
+export interface AuditGroup {
+  type: string;
+  severity: string;
+  count: number;
+  total_impact: number;
+  fix_suggestion: string;
+  urls: string[];
+}
+
+export interface AuditDiff {
+  prev_audit_id: string | null;
+  new_issues: number;
+  resolved_issues: number;
+  new_errors: number;
+  by_type: Record<string, { new: number; resolved: number }>;
+  created_at: string;
+}
+
+export type AuditIssueStatus = 'open' | 'ignored' | 'resolved' | 'wont-fix';
+
+export const auditsV2Api = {
+  groups: (auditId: string, status?: AuditIssueStatus) =>
+    api<{ data: AuditGroup[] }>(
+      `/api/v1/audits/${auditId}/groups${status ? `?status=${status}` : ''}`,
+    ),
+  diff: (auditId: string) => api<{ diff: AuditDiff | null }>(`/api/v1/audits/${auditId}/diff`),
+  createShare: (auditId: string, expiresInDays = 30) =>
+    api<ShareCreated>(`/api/v1/audits/${auditId}/share`, {
+      method: 'POST',
+      body: { expiresInDays },
+    }),
+  listShares: (auditId: string) =>
+    api<{ data: ShareLink[] }>(`/api/v1/audits/${auditId}/shares`),
+  revokeShare: (auditId: string, tokenId: string) =>
+    api<null>(`/api/v1/audits/${auditId}/shares/${tokenId}`, { method: 'DELETE' }),
+  exportUrl: (auditId: string, format: 'pdf' | 'csv') =>
+    `${BASE_URL}/api/v1/audits/${auditId}/export?format=${format}`,
+};
+
+// ---------- F-03: keywords v2 ----------
+
+export interface KeywordCluster {
+  group_key: string;
+  keywords: string[];
+  intents: Record<string, number>;
+  total_volume: number;
+  avg_difficulty: number | null;
+}
+
+export interface CannibalizationHit {
+  kind: 'same-url-multiple-keywords' | 'multiple-urls-one-keyword';
+  keyword: string;
+  keyword_id: string;
+  urls: string[];
+  detail: string;
+}
+
+/** GET /keywords/gap — dataSource honestly labels mock-provider data. */
+export interface KeywordGapResult {
+  gaps: Array<{
+    keyword: string;
+    competitor_position: number;
+    competitor_url: string;
+    volume: number | null;
+    difficulty: number | null;
+  }>;
+  dataSource: 'mock' | 'real';
+  fetchedAt: string;
+}
+
+export interface KeywordList {
+  id: string;
+  site_id: string;
+  name: string;
+  tags: string[];
+  members?: number;
+  created_at: string;
+}
+
+export const keywordsV2Api = {
+  expand: (siteId: string, seeds: string[]) =>
+    api<{ data: Keyword[]; total: number }>(`/api/v1/sites/${siteId}/keywords/expand`, {
+      method: 'POST',
+      body: { seeds },
+    }),
+  clusters: (siteId: string) =>
+    api<{ data: KeywordCluster[] }>(`/api/v1/sites/${siteId}/keywords/clusters`),
+  questions: (siteId: string) =>
+    api<{ data: Keyword[]; total: number }>(`/api/v1/sites/${siteId}/keywords/questions`),
+  cannibalization: (siteId: string) =>
+    api<{ data: CannibalizationHit[]; total: number }>(
+      `/api/v1/sites/${siteId}/keywords/cannibalization`,
+    ),
+  gap: (siteId: string, competitor: string) =>
+    api<KeywordGapResult>(
+      `/api/v1/sites/${siteId}/keywords/gap?competitor=${encodeURIComponent(competitor)}`,
+    ),
+  importCsv: (siteId: string, csv: string) =>
+    api<{ imported: number; skipped: number }>(`/api/v1/sites/${siteId}/keywords/import`, {
+      method: 'POST',
+      body: { csv },
+    }),
+  exportUrl: (siteId: string) => `${BASE_URL}/api/v1/sites/${siteId}/keywords/export`,
+  lists: (siteId: string) => api<{ data: KeywordList[] }>(`/api/v1/sites/${siteId}/keyword-lists`),
+  createList: (siteId: string, name: string, tags: string[]) =>
+    api<{ list: KeywordList; existed?: boolean }>(`/api/v1/sites/${siteId}/keyword-lists`, {
+      method: 'POST',
+      body: { name, tags },
+    }),
+  updateList: (listId: string, body: { name?: string; tags?: string[] }) =>
+    api<{ list: KeywordList }>(`/api/v1/keyword-lists/${listId}`, { method: 'PATCH', body }),
+  deleteList: (listId: string) =>
+    api<{ deleted: boolean }>(`/api/v1/keyword-lists/${listId}`, { method: 'DELETE' }),
+  listMembers: (listId: string) =>
+    api<{ data: Keyword[]; total: number }>(`/api/v1/keyword-lists/${listId}/keywords`),
+  addMembers: (listId: string, keywordIds: string[]) =>
+    api<{ added: number }>(`/api/v1/keyword-lists/${listId}/keywords`, {
+      method: 'POST',
+      body: { keywordIds },
+    }),
+  removeMember: (listId: string, kwId: string) =>
+    api<{ deleted: boolean }>(`/api/v1/keyword-lists/${listId}/keywords/${kwId}`, {
+      method: 'DELETE',
+    }),
+};
+
+// ---------- F-04: content v2 ----------
+
+export type ContentStatus =
+  | 'brief' | 'outline' | 'draft' | 'review' | 'changes_requested' | 'approved' | 'published';
+
+export interface ContentVersion {
+  id: string;
+  title: string | null;
+  status: string;
+  changed_by: string | null;
+  created_at: string;
+  outline_preview: string;
+  draft_preview: string;
+}
+
+export interface OptimizeResult {
+  coveragePct: number;
+  present: string[];
+  missing: string[];
+  topTerms: Array<{ term: string; count?: number } | string>;
+  sourcesAnalyzed: number;
+  keyword: string | null;
+}
+
+export interface SeoAssets {
+  altTexts: string[];
+  metaTitle: string;
+  metaDescription: string;
+  faqSchema: Record<string, unknown> | null;
+}
+
+export interface ContentProfile {
+  id?: string;
+  tone: string | null;
+  vocabulary: string | null;
+  do_rules: string | null;
+  dont_rules: string | null;
+  sample: string | null;
+}
+
+/** POST /sites/:id/publish — mock:true means NOTHING was published. */
+export interface PublishResult {
+  ok: boolean;
+  mock: boolean;
+  message: string;
+  url?: string;
+}
+
+export const contentV2Api = {
+  createWithBrief: (
+    siteId: string,
+    input: { keywordId?: string; title: string; tone?: string; length?: string; brief: string },
+  ) =>
+    api<ContentPiece>(`/api/v1/sites/${siteId}/content`, { method: 'POST', body: input }),
+  setBrief: (id: string, brief: string) =>
+    api<ContentPiece>(`/api/v1/content/${id}/brief`, { method: 'POST', body: { brief } }),
+  generateOutline: (id: string) =>
+    api<ContentPiece>(`/api/v1/content/${id}/outline`, { method: 'POST' }),
+  optimize: (id: string) => api<OptimizeResult>(`/api/v1/content/${id}/optimize`, { method: 'POST' }),
+  internalLinks: (id: string) =>
+    api<{ data: Array<{ url: string; title: string; anchor: string; score: number }> }>(
+      `/api/v1/content/${id}/internal-links`,
+    ),
+  duplication: (id: string, text?: string) =>
+    api<{ data: Array<{ source: string; similarityPct: number }> }>(
+      `/api/v1/content/${id}/duplication`,
+      { method: 'POST', body: text ? { text } : {} },
+    ),
+  seoAssets: (id: string, topics: string[] = [], imageCount = 3) =>
+    api<SeoAssets>(`/api/v1/content/${id}/seo-assets`, {
+      method: 'POST',
+      body: { topics, imageCount },
+    }),
+  setStatus: (id: string, status: ContentStatus) =>
+    api<ContentPiece>(`/api/v1/content/${id}/status`, { method: 'PATCH', body: { status } }),
+  versions: (id: string) =>
+    api<{ data: ContentVersion[]; total: number }>(`/api/v1/content/${id}/versions`),
+  profile: (siteId: string) =>
+    api<{ profile: ContentProfile | null }>(`/api/v1/sites/${siteId}/content-profile`),
+  saveProfile: (siteId: string, body: Partial<Omit<ContentProfile, 'id'>>) =>
+    api<{ profile: ContentProfile }>(`/api/v1/sites/${siteId}/content-profile`, {
+      method: 'PUT',
+      body,
+    }),
+  publish: (
+    siteId: string,
+    body: {
+      pieceId: string;
+      target: 'wordpress' | 'webflow';
+      status?: 'draft' | 'publish';
+      siteUrl?: string;
+      username?: string;
+      appPassword?: string;
+      apiToken?: string;
+      collectionId?: string;
+    },
+  ) => api<PublishResult>(`/api/v1/sites/${siteId}/publish`, { method: 'POST', body }),
+};
+
+// ---------- F-05: GEO v2 (ALL data simulated — backend marks simulated:true) ----------
+
+export interface GeoPrompt {
+  id: string;
+  prompt: string;
+  created_at: string;
+}
+
+export interface GeoRunResult {
+  results: unknown;
+  simulated: true;
+  disclaimer: string;
+}
+
+export const geoV2Api = {
+  prompts: (siteId: string) =>
+    api<{ prompts: GeoPrompt[]; total: number }>(`/api/v1/sites/${siteId}/geo/prompts`),
+  addPrompt: (siteId: string, prompt: string) =>
+    api<GeoPrompt>(`/api/v1/sites/${siteId}/geo/prompts`, { method: 'POST', body: { prompt } }),
+  deletePrompt: (siteId: string, promptId: string) =>
+    api<null>(`/api/v1/sites/${siteId}/geo/prompts/${promptId}`, { method: 'DELETE' }),
+  runSet: (siteId: string, engines?: string[], maxPrompts?: number) =>
+    api<GeoRunResult>(`/api/v1/sites/${siteId}/geo/run-set`, {
+      method: 'POST',
+      body: { ...(engines ? { engines } : {}), ...(maxPrompts ? { maxPrompts } : {}) },
+    }),
+  history: (siteId: string, days = 30) =>
+    api<{
+      simulated: true;
+      points: Array<{
+        date: string;
+        platform: string;
+        checks: number;
+        mentions: number;
+        mentionRatePct: number;
+      }>;
+    }>(`/api/v1/sites/${siteId}/geo/history?days=${days}`),
+  shareOfVoice: (siteId: string, days = 30) =>
+    api<{
+      simulated: true;
+      rows: Array<{ domain: string; mentions: number; checks: number; mentionRatePct: number }>;
+    }>(`/api/v1/sites/${siteId}/geo/share-of-voice?days=${days}`),
+  recommendations: (siteId: string) =>
+    api<{
+      score: number;
+      simulated: true;
+      recommendations: Array<{ priority: 'high' | 'medium' | 'low'; title: string; detail: string }>;
+    }>(`/api/v1/sites/${siteId}/geo/recommendations`),
+  llmsTxtUrl: (siteId: string) => `${BASE_URL}/api/v1/sites/${siteId}/geo/llms-txt`,
+};
+
+export const GEO_ENGINES = ['chatgpt', 'perplexity', 'gemini', 'claude', 'ai_overview'] as const;
+
+// ---------- F-06: backlinks v2 ----------
+
+export interface ToxicLink {
+  id: string;
+  source_url: string;
+  target_url: string;
+  anchor_text: string | null;
+  toxic_flags: string[] | null;
+  toxic_score: number;
+  referring_domain: string | null;
+  last_seen: string;
+}
+
+export interface LinkOpportunity {
+  id: string;
+  source_url: string;
+  source_domain: string;
+  kind: 'reclaim' | 'unlinked-mention';
+  reason: string;
+  created_at: string;
+}
+
+export const backlinksV2Api = {
+  anchors: (siteId: string) =>
+    api<{ anchors: Array<{ anchor: string; links: number }>; toxic_heuristic: boolean }>(
+      `/api/v1/sites/${siteId}/backlinks/anchors`,
+    ),
+  toxic: (siteId: string, minScore?: number) =>
+    api<{
+      links: ToxicLink[];
+      total: number;
+      threshold: number;
+      heuristic: true;
+      note: string;
+    }>(`/api/v1/sites/${siteId}/backlinks/toxic${minScore ? `?minScore=${minScore}` : ''}`),
+  rescore: (siteId: string) =>
+    api<{ rescored: number; toxic: number; toxic_heuristic: boolean }>(
+      `/api/v1/sites/${siteId}/backlinks/rescore`,
+      { method: 'POST' },
+    ),
+  opportunities: (siteId: string) =>
+    api<{ opportunities: LinkOpportunity[]; total: number; heuristic: boolean }>(
+      `/api/v1/sites/${siteId}/backlinks/opportunities`,
+    ),
+  refreshOpportunities: (siteId: string) =>
+    api<{ opportunities: LinkOpportunity[]; total: number; heuristic: boolean }>(
+      `/api/v1/sites/${siteId}/backlinks/opportunities/refresh`,
+      { method: 'POST' },
+    ),
+  disavowUrl: (siteId: string, minScore?: number) =>
+    `${BASE_URL}/api/v1/sites/${siteId}/backlinks/disavow${minScore ? `?minScore=${minScore}` : ''}`,
+};
+
+// ---------- F-07: competitors ----------
+
+export interface Competitor {
+  id: string;
+  domain: string;
+  label: string | null;
+  created_at: string;
+}
+
+export interface CompetitorCompare {
+  site: string;
+  competitors: string[];
+  keywords: Array<{
+    keyword: string;
+    volume: number | null;
+    sitePosition: number | null;
+    competitors: Record<string, number | null>;
+  }>;
+  summary: Array<{ domain: string; keywords: number; visibilitySharePct: number }>;
+}
+
+export interface CompetitorGap {
+  keyword: string;
+  volume: number | null;
+  sitePosition: number | null;
+  competitor: string;
+  competitorPosition: number;
+}
+
+export const competitorsApi = {
+  list: (siteId: string) =>
+    api<{ competitors: Competitor[]; total: number }>(`/api/v1/sites/${siteId}/competitors`),
+  add: (siteId: string, domain: string, label?: string) =>
+    api<Competitor>(`/api/v1/sites/${siteId}/competitors`, {
+      method: 'POST',
+      body: { domain, ...(label ? { label } : {}) },
+    }),
+  remove: (siteId: string, competitorId: string) =>
+    api<null>(`/api/v1/sites/${siteId}/competitors/${competitorId}`, { method: 'DELETE' }),
+  compare: (siteId: string) =>
+    api<CompetitorCompare>(`/api/v1/sites/${siteId}/competitors/compare`),
+  keywordGaps: (siteId: string, limit = 50) =>
+    api<{ gaps: CompetitorGap[]; total: number; note?: string }>(
+      `/api/v1/sites/${siteId}/competitors/keyword-gaps?limit=${limit}`,
+    ),
+  contentGaps: (siteId: string, limit = 50) =>
+    api<{
+      gaps: Array<CompetitorGap & { suggestion: string }>;
+      total: number;
+    }>(`/api/v1/sites/${siteId}/competitors/content-gaps?limit=${limit}`),
+  backlinks: (siteId: string) =>
+    api<{
+      site: { domain: string; links: number; referringDomains: number };
+      competitors: Array<{
+        domain: string;
+        links: null;
+        referringDomains: null;
+        data: 'unavailable';
+      }>;
+      note: string;
+    }>(`/api/v1/sites/${siteId}/competitors/backlinks`),
+};
+
+// ---------- F-08: white-label reports v2 ----------
+
+export interface TenantBranding {
+  company_name: string | null;
+  logo_url: string | null;
+  primary_color: string | null;
+  accent_color: string | null;
+}
+
+export const REPORT_SECTIONS = [
+  'executive',
+  'audit',
+  'keywords',
+  'backlinks',
+  'geo',
+  'content',
+] as const;
+export type ReportSection = (typeof REPORT_SECTIONS)[number];
+
+export interface ReportComparison {
+  current: { id: string; period_start: string; period_end: string };
+  previous: { id: string; period_start: string; period_end: string } | null;
+  deltas: {
+    auditScore: number | null;
+    openErrors: number | null;
+    keywordsImproved: number | null;
+    geoScore: number | null;
+  };
+}
+
+export interface ReportSchedule {
+  id: string;
+  frequency: 'weekly' | 'monthly';
+  recipients: string[];
+  sections: string[];
+  enabled: boolean;
+  [key: string]: unknown;
+}
+
+export const reportsV2Api = {
+  branding: () => api<TenantBranding>('/api/v1/branding'),
+  saveBranding: (body: Partial<TenantBranding>) =>
+    api<TenantBranding>('/api/v1/branding', { method: 'PUT', body }),
+  build: (siteId: string, sections: string[], periodDays = 7) =>
+    api<Report>(`/api/v1/sites/${siteId}/reports/build`, {
+      method: 'POST',
+      body: { sections, periodDays },
+    }),
+  pdfUrl: (reportId: string) => `${BASE_URL}/api/v1/reports/${reportId}/pdf`,
+  htmlUrl: (reportId: string) => `${BASE_URL}/api/v1/reports/${reportId}/html`,
+  compare: (reportId: string) => api<ReportComparison>(`/api/v1/reports/${reportId}/compare`),
+  createShare: (reportId: string, expiresInDays = 30) =>
+    api<ShareCreated>(`/api/v1/reports/${reportId}/share`, {
+      method: 'POST',
+      body: { expiresInDays },
+    }),
+  listShares: (reportId: string) =>
+    api<{ data: ShareLink[] }>(`/api/v1/reports/${reportId}/shares`),
+  revokeShare: (reportId: string, tokenId: string) =>
+    api<null>(`/api/v1/reports/${reportId}/shares/${tokenId}`, { method: 'DELETE' }),
+  schedule: (siteId: string) =>
+    api<{ schedule: ReportSchedule | null }>(`/api/v1/sites/${siteId}/reports/schedule`),
+  saveSchedule: (
+    siteId: string,
+    body: { frequency?: string; recipients?: string[]; sections?: string[]; enabled?: boolean },
+  ) =>
+    api<{ schedule: ReportSchedule }>(`/api/v1/sites/${siteId}/reports/schedule`, {
+      method: 'PUT',
+      body,
+    }),
+  deleteSchedule: (siteId: string) =>
+    api<null>(`/api/v1/sites/${siteId}/reports/schedule`, { method: 'DELETE' }),
 };
