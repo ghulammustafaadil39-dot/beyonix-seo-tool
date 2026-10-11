@@ -105,22 +105,28 @@ export function getLLM(override?: 'gemini' | 'openai' | 'mock', apiKey?: string)
 }
 
 /**
- * Tenant-aware LLM: honors the tenant's BYOK key (tenants.llm_api_key_enc)
- * when set, else falls back to the account-level provider selection.
+ * Tenant-aware LLM: honors the tenant's llm_provider setting
+ * (mock/gemini/openai; null = server default) and BYOK key
+ * (tenants.llm_api_key_enc) when set, else falls back to the
+ * account-level provider selection.
  */
 export async function getLLMForTenant(tenantId: string): Promise<LLMProvider> {
   try {
     const r = await query(`SELECT llm_provider, llm_api_key_enc FROM tenants WHERE id = $1`, [tenantId]);
     const row = r.rows[0];
     if (row?.llm_provider === 'mock') return new MockLLMProvider();
+    let byokKey: string | undefined;
     if (row?.llm_api_key_enc) {
       try {
-        const key = decrypt(row.llm_api_key_enc);
-        if (key) return getLLM(undefined, key);
+        byokKey = decrypt(row.llm_api_key_enc) || undefined;
       } catch {
         /* corrupted key — fall through to account provider */
       }
     }
+    if (row?.llm_provider === 'gemini' || row?.llm_provider === 'openai') {
+      return getLLM(row.llm_provider, byokKey);
+    }
+    if (byokKey) return getLLM(undefined, byokKey);
   } catch {
     /* DB unavailable (unit tests) — fall through */
   }
