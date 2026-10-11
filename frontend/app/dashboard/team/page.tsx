@@ -93,7 +93,7 @@ export default function TeamPage() {
           `${window.location.origin}/dashboard/team/accept?token=${encodeURIComponent(res.token)}`,
         );
         setInviteNotice(
-          'Invitation created. Mail is in dev/mock mode, so the accept link is shown here once — copy it now.',
+          'Invitation created. Mail is in mock mode (SMTP not configured), so the accept link is shown here once — copy it now.',
         );
       } else {
         setInviteNotice(res.message || 'Invitation sent.');
@@ -298,7 +298,18 @@ export default function TeamPage() {
         {inviteNotice && <p className="bx-alert-ok mt-3">{inviteNotice}</p>}
         {inviteLink && (
           <div className="bx-alert-warn mt-3" role="alert">
-            <p className="font-semibold">Invite link (dev only — shown once)</p>
+            {/* A3-L3: the backend includes the token whenever mail is in mock
+                mode — which includes production WITHOUT SMTP configured. The
+                frontend cannot tell dev apart from prod-without-SMTP, so this
+                loud warning renders every time the link is shown. */}
+            <p className="font-semibold">
+              Invite link — email is in MOCK mode (SMTP not configured)
+            </p>
+            <p className="mt-1 text-sm text-white/70">
+              The invite email was NOT sent. This one-time link is shown here
+              instead — copy it now; it won&apos;t be shown again. Configure
+              SMTP_* to send real invite emails.
+            </p>
             <div className="mt-2 flex items-center gap-2">
               <code className="bx-input font-mono !text-xs">{inviteLink}</code>
               <button

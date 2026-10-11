@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { requireScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
@@ -96,7 +96,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     }>(
       '/sites/:id/content',
       {
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')], // S-01: creating a piece enqueues LLM generation; S-03: per-tenant budget
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')], // S-01: creating a piece enqueues LLM generation; S-03: per-tenant budget
         schema: {
           params: uuidParamSchema,
           body: {
@@ -181,7 +181,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
       Body: { title?: string; outline?: string; draft?: string };
     }>(
       '/content/:id',
-      { preHandler: requireScope('content:write'),
+      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -228,7 +228,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Approve a piece (moves review -> approved).
     app.post<{ Params: SiteParams }>(
       '/content/:id/approve',
-      { preHandler: requireScope('content:write'), schema: { params: uuidParamSchema } },
+      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         const r = await defaultQuery(
@@ -244,7 +244,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // (Re)enqueue generation; only allowed from draft status.
     app.post<{ Params: SiteParams }>(
       '/content/:id/generate',
-      { schema: { params: uuidParamSchema }, preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')] }, // S-01: LLM spend; S-03: per-tenant budget
+      { schema: { params: uuidParamSchema }, preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')] }, // S-01: LLM spend; S-03: per-tenant budget
       async (req) => {
         const { tenantId, plan } = req.tenant;
         const r = await defaultQuery(`SELECT * FROM content_pieces WHERE id = $1 AND tenant_id = $2`, [
@@ -326,7 +326,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Set/replace the brief (brief -> outline -> draft workflow).
     app.post<{ Params: SiteParams; Body: { brief: string } }>(
       '/content/:id/brief',
-      { preHandler: requireScope('content:write'),
+      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -353,7 +353,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
       '/content/:id/outline',
       {
         schema: { params: uuidParamSchema },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')],
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
       },
       async (req) => {
         const { tenantId, plan } = req.tenant;
@@ -387,7 +387,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // NLP term-coverage scoring against top SERP results.
     app.post<{ Params: SiteParams }>(
       '/content/:id/optimize',
-      { preHandler: requireScope('content:write'), schema: { params: uuidParamSchema } },
+      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
         const piece = await requirePiece(tenantId, req.params.id);
@@ -414,7 +414,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Duplication check vs existing content + crawled pages.
     app.post<{ Params: SiteParams; Body: { text?: string } }>(
       '/content/:id/duplication',
-      { preHandler: requireScope('content:write'),
+      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'),
         schema: {
           params: uuidParamSchema,
           body: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 200000 } } },
@@ -443,7 +443,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireScope('content:write')],
+        preHandler: [requireVerifiedEmail, expensiveTenantLimit(), requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
@@ -465,7 +465,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
     // Approval-flow status transitions (validated).
     app.patch<{ Params: SiteParams; Body: { status: string } }>(
       '/content/:id/status',
-      { preHandler: requireScope('content:write'),
+      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -525,7 +525,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
 
     app.put<{ Params: SiteParams; Body: { tone?: string; vocabulary?: string; do_rules?: string; dont_rules?: string; sample?: string } }>(
       '/sites/:id/content-profile',
-      { preHandler: requireScope('content:write'),
+      { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'),
         schema: {
           params: uuidParamSchema,
           body: {
@@ -581,7 +581,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             },
           },
         },
-        preHandler: [requireVerifiedEmail, requireScope('content:write')],
+        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;

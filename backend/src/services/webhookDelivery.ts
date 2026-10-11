@@ -197,6 +197,12 @@ async function deliverOne(
 /**
  * Delivers due webhook retries (called from the scheduler every 5 min, and
  * directly by tests). Returns the number of deliveries attempted.
+ *
+ * A2-M4: claim-then-work. The leader lock can expire mid-tick, letting a
+ * second worker run this schedule concurrently — each delivery is claimed
+ * with an atomic conditional UPDATE (pending -> in_progress), so a webhook
+ * is delivered at most once even then. Stale 'in_progress' rows (worker
+ * died mid-flight, claimed >10 min ago) are reclaimable.
  */
 export async function processWebhookRetries(
   q: QueryFn = defaultQuery,
@@ -209,12 +215,24 @@ export async function processWebhookRetries(
             e.url, e.secret_enc, e.tenant_id
      FROM webhook_deliveries d
      JOIN webhook_endpoints e ON e.id = d.endpoint_id
-     WHERE d.status = 'pending' AND d.next_retry_at <= now()
+     WHERE (d.status = 'pending'
+            OR (d.status = 'in_progress' AND d.claimed_at < now() - interval '10 minutes'))
+       AND d.next_retry_at <= now()
      ORDER BY d.next_retry_at ASC
      LIMIT 100`,
   );
   let attempted = 0;
   for (const row of due.rows) {
+    // Atomic claim: only the winner of this conditional UPDATE delivers.
+    const claimed = await q(
+      `UPDATE webhook_deliveries SET status = 'in_progress', claimed_at = now()
+       WHERE id = $1
+         AND ((status = 'pending')
+              OR (status = 'in_progress' AND claimed_at < now() - interval '10 minutes'))
+         AND next_retry_at <= now()`,
+      [row.id],
+    );
+    if ((claimed.rowCount ?? 0) === 0) continue; // another worker claimed it
     attempted += 1;
     const attempts = Number(row.attempts) + 1;
     try {
@@ -241,7 +259,7 @@ export async function processWebhookRetries(
       } else {
         const nextRetry = new Date(Date.now() + RETRY_DELAYS_MS[attempts - 1]);
         await q(
-          `UPDATE webhook_deliveries SET attempts = $2, next_retry_at = $3, last_error = $4 WHERE id = $1`,
+          `UPDATE webhook_deliveries SET status = 'pending', attempts = $2, next_retry_at = $3, last_error = $4 WHERE id = $1`,
           [row.id, attempts, nextRetry.toISOString(), message],
         );
       }
@@ -258,7 +276,7 @@ export async function replayDelivery(
 ): Promise<boolean> {
   const r = await q(
     `UPDATE webhook_deliveries SET status = 'pending', attempts = 0,
-       next_retry_at = now(), last_error = NULL
+       next_retry_at = now(), last_error = NULL, claimed_at = NULL
      WHERE id = $1 AND tenant_id = $2 AND status IN ('failed', 'delivered')`,
     [deliveryId, tenantId],
   );

@@ -16,6 +16,10 @@
   },
   "name": "beyonix-seo-tool-web",
   "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "next build",
     "dev": "next dev",

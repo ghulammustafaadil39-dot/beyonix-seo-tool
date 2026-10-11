@@ -43,8 +43,9 @@ function LoginForm({ onTotp }: { onTotp: (token: string) => void }) {
         </p>
       )}
       <div>
-        <label className="bx-label">Email</label>
+        <label htmlFor="login-email" className="bx-label">Email</label>
         <input
+          id="login-email"
           type="email"
           required
           value={email}
@@ -53,8 +54,9 @@ function LoginForm({ onTotp }: { onTotp: (token: string) => void }) {
         />
       </div>
       <div>
-        <label className="bx-label">Password</label>
+        <label htmlFor="login-password" className="bx-label">Password</label>
         <input
+          id="login-password"
           type="password"
           required
           value={password}

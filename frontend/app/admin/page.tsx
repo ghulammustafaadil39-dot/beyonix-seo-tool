@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   adminApi,
+  api,
   ApiError,
   PLAN_NAMES,
   type AdminAuditEntry,
@@ -123,11 +124,15 @@ export default function AdminPage() {
         await adminApi.credit(action.tenant.id, cents, reason.trim());
         note(`Credit of ${formatMoney(cents)} recorded for ${action.tenant.name}.`);
       } else if (action.kind === 'impersonate') {
-        const res = await adminApi.impersonate(action.tenant.id);
-        // Switch this browser to the short-lived impersonation session
-        // (5 minutes, audit-logged server-side). The admin must sign in
-        // again afterwards — their own session is replaced, not stacked.
-        document.cookie = `bseo_token=${encodeURIComponent(res.token)}; path=/; max-age=${res.expiresInSec}; SameSite=Lax`;
+        // A3-H1: the impersonation JWT must never touch JS. POST to the
+        // same-origin handoff route (app/api/admin/impersonate/route.ts),
+        // which sets it as an httpOnly (+Secure in prod) cookie server-side;
+        // the response body carries no token. The admin's own session is
+        // replaced — they must sign in again afterwards.
+        await api<{ ok: boolean; tenantId: string }>('/api/admin/impersonate', {
+          method: 'POST',
+          body: { tenantId: action.tenant.id },
+        });
         window.location.href = '/dashboard';
         return;
       }

@@ -19,18 +19,6 @@ import { getNotify } from '../providers/notify.js';
 import { emitAlert } from './crawlJobs.js';
 import { scanKeywordAnomaly } from './rankAnomaly.js';
 
-/**
- * Pure helper: is a rank check due for a keyword last checked at
- * `lastCheckedAt`? True when never checked, or last check was before
- * today (UTC midnight).
- */
-export function needsRankCheck(lastCheckedAt: Date | null): boolean {
-  if (!lastCheckedAt) return true;
-  const now = new Date();
-  const startOfTodayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  return lastCheckedAt.getTime() < startOfTodayUtc;
-}
-
 export interface TrackingConfig extends SnapshotOpts {
   locationCode: number;
   device: string;
@@ -100,6 +88,11 @@ export async function rankCheckProcessor(job: Job): Promise<unknown> {
 
   // Batch budget pre-check: fail fast when the monthly rank-check budget is
   // exhausted instead of 402-ing on every keyword below.
+  // A1-M1: this stays a check-then-act PRE-FLIGHT by design — the atomic
+  // enforcement lives per-call inside getSerpSnapshot() (reserve →
+  // billable call → commit). A batch reservation here would hold `dueCount`
+  // units for the whole job while each call also reserves, double-holding
+  // budget; and the per-call reserve is what actually serializes spend.
   const dueCount = kwRows.filter((k) => !checkedToday.has(k.id)).length;
   try {
     await assertDataBudget(tenantId, 'serp_checks', dueCount, q);

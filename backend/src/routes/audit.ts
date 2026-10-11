@@ -2,12 +2,12 @@
 // All routes are tenant-scoped via authPlugin + requireSite/tenant_id filters.
 
 import type { FastifyInstance } from 'fastify';
-import { requireScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { requireSite } from '../services/sites.js';
 import { enqueue, QUEUES, Jobs } from '../queues.js';
-import { query } from '../db.js';
+import { pool, query } from '../db.js';
 import { conflict, notFound } from '../errors.js';
 import { ApiError } from '../errors.js';
 import { checkLimit } from '../metering.js';
@@ -67,7 +67,9 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     // Trigger a new full-site audit (enqueues a crawl job). 409 if one is active.
     app.post('/sites/:id/audits', {
       schema: { params: uuidParams('id'), body: { type: 'object', properties: {} } },
-      preHandler: [requireVerifiedEmail, requireScope('audits:write')], // S-01: crawls cost provider budget
+      // A1-H2: audit triggers are a mutation — editor+ roles for sessions,
+      // 'audits:write' scope for API keys. S-01: crawls cost provider budget.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write')],
     }, async (req, reply) => {
       const { tenantId, plan } = req.tenant;
       const siteId = (req.params as { id: string }).id;
@@ -85,30 +87,85 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
         );
       }
 
-      const existing = await query(
-        `SELECT id FROM audits
-         WHERE site_id = $1 AND tenant_id = $2 AND status IN ('queued','running')
-         LIMIT 1`,
-        [siteId, tenantId],
-      );
-      if (existing.rows.length > 0) {
-        throw conflict('AUDIT_RUNNING', 'An audit is already queued or running for this site.');
+      // A1-H1: the active-audit check + INSERT run in ONE transaction. The
+      // site row is locked FOR UPDATE so concurrent double-submits
+      // serialize, and the partial unique index audits_one_active_per_site
+      // (migration 041) makes the INSERT the final arbiter — a loser that
+      // raced past the SELECT still gets 23505, translated to 409 below,
+      // instead of leaving a permanent orphan 'queued' row.
+      const client = await pool.connect();
+      let audit: any;
+      try {
+        await client.query('BEGIN');
+        try {
+          await client.query('SELECT id FROM sites WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [
+            siteId,
+            tenantId,
+          ]);
+          const existing = await client.query(
+            `SELECT id FROM audits
+             WHERE site_id = $1 AND tenant_id = $2 AND status IN ('queued','running')
+             LIMIT 1`,
+            [siteId, tenantId],
+          );
+          if (existing.rows.length > 0) {
+            throw conflict('AUDIT_RUNNING', 'An audit is already queued or running for this site.');
+          }
+          const ins = await client.query(
+            `INSERT INTO audits (id, tenant_id, site_id, status, started_at)
+             VALUES (gen_random_uuid(), $1, $2, 'queued', now())
+             RETURNING *`,
+            [tenantId, siteId],
+          );
+          audit = ins.rows[0];
+          await client.query('COMMIT');
+        } catch (err) {
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            /* already rolled back */
+          }
+          throw err;
+        }
+      } catch (err: any) {
+        // Lost the race past the SELECT: the partial unique index fired.
+        // Same outcome as the fast-path check above — 409, not 500.
+        if (err?.code === '23505') {
+          throw conflict('AUDIT_RUNNING', 'An audit is already queued or running for this site.');
+        }
+        throw err;
+      } finally {
+        client.release();
       }
 
-      const ins = await query(
-        `INSERT INTO audits (id, tenant_id, site_id, status, started_at)
-         VALUES (gen_random_uuid(), $1, $2, 'queued', now())
-         RETURNING *`,
-        [tenantId, siteId],
-      );
-      const audit = ins.rows[0];
-
-      await enqueue(
-        QUEUES.crawl,
-        Jobs.CRAWL_SITE,
-        { siteId, tenantId, auditId: audit.id },
-        { idempotencyKey: `crawl:${siteId}:${isoWeekKey()}` },
-      );
+      // A1-H1: enqueue() can throw AFTER the row exists (Redis down, tenant
+      // enqueue rate limit) — mark the row 'failed' instead of leaving a
+      // permanent orphan 'queued' row that would 409 all future audits.
+      // SEC-REVIEW (Wave-4): the jobId MUST be unique per audit row. BullMQ
+      // silently dedupes on duplicate jobId (returns the existing job, no
+      // error), so a week-scoped key like crawl:<site>:<week> would orphan
+      // any second audit created in the same week: the new 'queued' row
+      // would never be processed and all future audits would 409 forever.
+      // Uniqueness per audit row closes that window; the active-audit
+      // rule itself is enforced by the route + partial unique index above.
+      // NOTE: BullMQ rejects a colon-containing custom jobId unless it
+      // splits into exactly 3 parts — hence the crawl:<auditId>:<week>
+      // shape (unique per audit, still 3 parts).
+      try {
+        await enqueue(
+          QUEUES.crawl,
+          Jobs.CRAWL_SITE,
+          { siteId, tenantId, auditId: audit.id },
+          { idempotencyKey: `crawl:${audit.id}:${isoWeekKey()}` },
+        );
+      } catch (err: any) {
+        const message = `enqueue failed: ${err?.message ?? String(err)}`.slice(0, 1000);
+        await query(
+          `UPDATE audits SET status = 'failed', finished_at = now(), error = $2 WHERE id = $1`,
+          [audit.id, message],
+        );
+        throw err;
+      }
 
       return reply.code(201).send({ audit });
     });
@@ -214,7 +271,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Triage an issue: open | fixed | ignored.
-    app.patch('/issues/:issueId', { preHandler: requireScope('audits:write'),
+    app.patch('/issues/:issueId', { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write'),
       schema: {
         params: uuidParams('issueId'),
         body: {
@@ -378,7 +435,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Create a signed share link for an audit (SECURITY-SENSITIVE: HMAC token).
-    app.post('/audits/:auditId/share', { preHandler: requireScope('audits:write'),
+    app.post('/audits/:auditId/share', { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write'),
       schema: {
         params: uuidParams('auditId'),
         body: {
@@ -416,7 +473,9 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     // List ACTIVE share links for an audit (F-02 revocation support).
     // SECURITY: returns id/resource/timestamps ONLY — never the token or
     // its hash (the hash is a bearer-equivalent lookup key).
-    app.get('/audits/:auditId/shares', { preHandler: requireScope('audits:write'),
+    // Keep reads open to viewer: sessions need only the viewer role, but API
+    // keys still require the audits:write scope (pre-existing contract).
+    app.get('/audits/:auditId/shares', { preHandler: requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'audits:write'),
       schema: { params: uuidParams('auditId') },
     }, async (req) => {
       const { tenantId } = req.tenant;
@@ -435,7 +494,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     // Revoke one share link (deletes the share_tokens row — the documented
     // revocation model; the public link 404s immediately afterwards).
     // Tenant-scoped: another tenant's token id 404s, nothing is deleted.
-    app.delete('/audits/:auditId/shares/:tokenId', { preHandler: requireScope('audits:write'),
+    app.delete('/audits/:auditId/shares/:tokenId', { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write'),
       schema: {
         params: {
           type: 'object',
@@ -526,7 +585,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
     });
 
     // Scheduled crawls per plan (scheduler hook reads sites.crawl_schedule).
-    app.patch('/sites/:id/crawl-schedule', { preHandler: requireScope('audits:write'),
+    app.patch('/sites/:id/crawl-schedule', { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write'),
       schema: {
         params: uuidParams('id'),
         body: {

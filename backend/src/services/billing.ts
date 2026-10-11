@@ -1,6 +1,6 @@
 import { query as defaultQuery, type QueryFn } from '../db.js';
 import { getNotify } from '../providers/notify.js';
-import { getPlan } from '../plans.js';
+import { getPlan, type PlanId } from '../plans.js';
 
 // ---------------------------------------------------------------------------
 // Billing event hooks (C-01: dunning emails + grace-period lifecycle).
@@ -99,6 +99,29 @@ export function registerDefaultBillingHooks(): void {
 }
 
 const GRACE_PERIOD_DAYS = 3;
+
+/**
+ * A1-M5: recomputes tenants.read_only against a plan's site/keyword
+ * limits (shared by the Stripe re-activation path and the admin plan
+ * override — previously the override left read_only stale and the two
+ * code paths disagreed).
+ */
+export async function recomputeReadOnly(
+  tenantId: string,
+  planId: PlanId,
+  q: QueryFn = defaultQuery,
+): Promise<boolean> {
+  const plan = getPlan(planId);
+  const sites = Number(
+    (await q('SELECT COUNT(*)::int c FROM sites WHERE tenant_id=$1 AND deleted_at IS NULL', [tenantId])).rows[0].c,
+  );
+  const kws = Number(
+    (await q('SELECT COUNT(*)::int c FROM keywords WHERE tenant_id=$1 AND tracked=TRUE', [tenantId])).rows[0].c,
+  );
+  const overLimit = sites > plan.max_sites || kws > plan.max_keywords_tracked;
+  await q(`UPDATE tenants SET read_only = $2 WHERE id = $1`, [tenantId, overLimit]);
+  return overLimit;
+}
 
 /**
  * Downgrades a tenant to starter after the grace period (C-01). Data is

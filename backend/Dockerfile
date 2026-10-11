@@ -12,5 +12,11 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY migrations ./migrations
 RUN npm run build && npm prune --omit=dev
+# A2-H2: build-smoke — tsc never emits .txt assets; `npm run build` copies
+# src/prompts into dist/prompts (see package.json). Fail the image build if
+# the templates didn't land, so a future build-script regression is caught
+# here instead of as ENOENTs in production.
+RUN test -f ./dist/prompts/geo-answer.txt && \
+    test "$(ls ./dist/prompts/*.txt | wc -l)" = "$(ls ./src/prompts/*.txt | wc -l)"
 USER node
 CMD ["node", "dist/index.js"]

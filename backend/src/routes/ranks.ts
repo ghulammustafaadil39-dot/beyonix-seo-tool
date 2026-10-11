@@ -3,7 +3,7 @@
 // All routes are tenant-scoped via authPlugin + requireSite/tenant_id filters.
 
 import type { FastifyInstance } from 'fastify';
-import { requireScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query as defaultQuery } from '../db.js';
@@ -344,7 +344,11 @@ export function registerRankRoutes(fastify: FastifyInstance) {
     // Per-keyword tracking config: device / location / language (C-05).
     app.patch<{ Params: { kwId: string }; Body: { device?: string; location_code?: number; language?: string } }>(
       '/keywords/:kwId/tracking',
-      { schema: { params: kwParams, body: trackingBodySchema } },
+      {
+        schema: { params: kwParams, body: trackingBodySchema },
+        // A1-H2: tracking config is a mutation — editor+ / ranks:write.
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'ranks:write'),
+      },
       async (req) => {
         const { tenantId } = req.tenant;
         const kwId = req.params.kwId;
@@ -385,7 +389,11 @@ export function registerRankRoutes(fastify: FastifyInstance) {
     // Enqueue a rank check for all tracked keywords (idempotent per day).
     app.post<{ Params: { id: string } }>(
       '/sites/:id/ranks/refresh',
-      { schema: { params: siteParams }, preHandler: requireVerifiedEmail }, // S-01: DataForSEO spend
+      {
+        schema: { params: siteParams },
+        // A1-H2: refresh spends DataForSEO budget — editor+ / ranks:write.
+        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'ranks:write')], // S-01: DataForSEO spend
+      },
       async (req) => {
         const { tenantId } = req.tenant;
         const siteId = req.params.id;

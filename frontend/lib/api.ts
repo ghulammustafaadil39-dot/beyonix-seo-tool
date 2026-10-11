@@ -232,6 +232,14 @@ export interface RankHistoryPoint {
   url: string | null;
 }
 
+/**
+ * A3-M1/M2: provenance of provider-backed numbers. The backend returns
+ * `dataSource: 'mock' | 'real'` on ranks/keywords research/expand/import;
+ * the frontend must surface it so seeded mock data is never presented as
+ * measured. Optional on responses whose endpoint never returns it.
+ */
+export type DataSource = 'mock' | 'real';
+
 export interface ContentPiece {
   id: string;
   site_id: string;
@@ -456,10 +464,13 @@ export const auditsApi = {
 
 export const keywordsApi = {
   research: (siteId: string, seeds: string[], limit?: number) =>
-    api<{ data: Keyword[] }>(`/api/v1/sites/${siteId}/keywords/research`, {
-      method: 'POST',
-      body: { seeds, limit },
-    }),
+    api<{ data: Keyword[]; total: number; dataSource?: DataSource }>(
+      `/api/v1/sites/${siteId}/keywords/research`,
+      {
+        method: 'POST',
+        body: { seeds, limit },
+      },
+    ),
   list: (siteId: string, tracked?: boolean) =>
     api<Paged<Keyword>>(
       `/api/v1/sites/${siteId}/keywords${tracked !== undefined ? `?tracked=${tracked}` : ''}`,
@@ -470,7 +481,9 @@ export const keywordsApi = {
 };
 
 export const ranksApi = {
-  latest: (siteId: string) => api<{ data: RankEntry[] }>(`/api/v1/sites/${siteId}/ranks`),
+  // A3-M1: backend returns dataSource 'mock'|'real' on this endpoint.
+  latest: (siteId: string) =>
+    api<{ data: RankEntry[]; dataSource?: DataSource }>(`/api/v1/sites/${siteId}/ranks`),
   history: (kwId: string, days = 90) =>
     api<{ data: RankHistoryPoint[] }>(`/api/v1/keywords/${kwId}/history?days=${days}`),
   refresh: (siteId: string) =>
@@ -1005,11 +1018,11 @@ export const adminApi = {
       `/api/v1/admin/tenants/${id}/credit`,
       { method: 'POST', body: { amountCents, reason } },
     ),
-  impersonate: (tenantId: string) =>
-    api<{ token: string; tenantId: string; expiresInSec: number }>('/api/v1/admin/impersonate', {
-      method: 'POST',
-      body: { tenantId },
-    }),
+  // SEC-REVIEW (Wave-4): the old impersonate() helper returned the raw JWT
+  // to JS, which led to the document.cookie anti-pattern (A3-H1). It is
+  // intentionally removed — impersonation now goes through the same-origin
+  // route /api/admin/impersonate, which sets the session via HttpOnly
+  // Set-Cookie. Do not re-add a JSON-token impersonate helper.
   failedJobs: (page = 1, limit = 20, status?: string) =>
     api<Paged<AdminFailedJob>>(
       `/api/v1/admin/jobs/failed?page=${page}&limit=${limit}${status ? `&status=${status}` : ''}`,

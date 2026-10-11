@@ -114,8 +114,9 @@ export default function ContentDetailPage({
       <form onSubmit={save} className="bx-card space-y-4">
         {saved && <p className="bx-alert-ok">Saved.</p>}
         <div>
-          <label className="bx-label">Title</label>
+          <label htmlFor="content-title" className="bx-label">Title</label>
           <input
+            id="content-title"
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -123,8 +124,9 @@ export default function ContentDetailPage({
           />
         </div>
         <div>
-          <label className="bx-label">Outline</label>
+          <label htmlFor="content-outline" className="bx-label">Outline</label>
           <textarea
+            id="content-outline"
             value={outline}
             onChange={(e) => setOutline(e.target.value)}
             rows={6}
@@ -132,8 +134,9 @@ export default function ContentDetailPage({
           />
         </div>
         <div>
-          <label className="bx-label">Draft</label>
+          <label htmlFor="content-draft" className="bx-label">Draft</label>
           <textarea
+            id="content-draft"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             rows={18}

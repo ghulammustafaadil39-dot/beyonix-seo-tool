@@ -4,7 +4,8 @@ import type { FastifyInstance } from 'fastify';
 import { query } from '../db.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
-import { assertLimit, checkLimit } from '../metering.js';
+import { requireRoleOrScope } from '../middleware/access.js';
+import { withUsageReservation } from '../metering.js';
 import { requireSite, toPublicSite } from '../services/sites.js';
 import { softDeleteSite, restoreSite } from '../services/retention.js';
 import {
@@ -114,20 +115,30 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
     await authPlugin(authed);
 
-    authed.post('/sites', { schema: createSiteSchema }, async (req, reply) => {
+    // A1-H2: site mutations require editor+ (sessions) or the sites:write
+    // scope (API keys). These routes previously had NO gate at all.
+    authed.post(
+      '/sites',
+      { schema: createSiteSchema, preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'sites:write') },
+      async (req, reply) => {
       const { domain } = req.body as { domain: string };
       const clean = normalizeDomain(domain);
-      assertLimit(await checkLimit(req.tenant.tenantId, req.tenant.plan, 'sites'));
-      const r = await query(
-        `INSERT INTO sites (id, tenant_id, domain)
-         VALUES (gen_random_uuid(), $1, $2)
-         ON CONFLICT (tenant_id, domain) DO NOTHING
-         RETURNING *`,
-        [req.tenant.tenantId, clean],
-      );
-      if (r.rowCount === 0 || r.rows.length === 0) throw conflict('SITE_EXISTS', 'This domain is already added');
-      return reply.status(201).send(toPublicSite(r.rows[0]));
-    });
+      // A1-M1: atomic reservation instead of check-then-act — concurrent
+      // POST /sites at the plan limit can no longer both pass the check.
+      const site = await withUsageReservation(req.tenant.tenantId, 'sites', 1, async () => {
+        const r = await query(
+          `INSERT INTO sites (id, tenant_id, domain)
+           VALUES (gen_random_uuid(), $1, $2)
+           ON CONFLICT (tenant_id, domain) DO NOTHING
+           RETURNING *`,
+          [req.tenant.tenantId, clean],
+        );
+        if (r.rowCount === 0 || r.rows.length === 0) throw conflict('SITE_EXISTS', 'This domain is already added');
+        return { value: toPublicSite(r.rows[0]) };
+      });
+      return reply.status(201).send(site);
+      },
+    );
 
     authed.get('/sites', async (req) => {
       const r = await query('SELECT * FROM sites WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC', [
@@ -141,7 +152,13 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       return toPublicSite(await requireSite(req.tenant.tenantId, id));
     });
 
-    authed.patch('/sites/:id', { schema: patchSiteSchema }, async (req) => {
+    authed.patch(
+      '/sites/:id',
+      {
+        schema: patchSiteSchema,
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'sites:write'),
+      },
+      async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const { domain, serp_location_code } = req.body as { domain?: string; serp_location_code?: number };
@@ -169,25 +186,49 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
         if (err?.code === '23505') throw conflict('SITE_EXISTS', 'This domain is already added');
         throw err;
       }
-    });
+      },
+    );
 
     // Soft-delete instead of hard DELETE (canonical Backend-A C-06
     // implementation in services/retention.ts; arg order tenantId, siteId).
-    authed.delete('/sites/:id', { schema: { params: idParamSchema } }, async (req) => {
+    // A1-H2: site deletion is owner/admin-only (editors manage content, not
+    // the site lifecycle) — documented in the commit message.
+    authed.delete(
+      '/sites/:id',
+      {
+        schema: { params: idParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin'], 'sites:write'),
+      },
+      async (req) => {
       const { id } = req.params as { id: string };
       const deleted = await softDeleteSite(req.tenant.tenantId, id, query);
       if (!deleted) throw notFound('Site');
       return { ok: true, soft_deleted: true };
-    });
+      },
+    );
 
-    authed.post('/sites/:id/restore', { schema: { params: idParamSchema } }, async (req) => {
+    // A1-H2: restore is the lifecycle pair of delete — owner/admin only.
+    authed.post(
+      '/sites/:id/restore',
+      {
+        schema: { params: idParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin'], 'sites:write'),
+      },
+      async (req) => {
       const { id } = req.params as { id: string };
       const restored = await restoreSite(req.tenant.tenantId, id, query);
       if (!restored) throw notFound('Site');
       return { ok: true };
-    });
+      },
+    );
 
-    authed.post('/sites/:id/verify', { schema: verifySchema }, async (req) => {
+    authed.post(
+      '/sites/:id/verify',
+      {
+        schema: verifySchema,
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'sites:write'),
+      },
+      async (req) => {
       const { id } = req.params as { id: string };
       const { method } = req.body as { method: 'meta' | 'file' | 'dns' };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -215,9 +256,16 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
         instructions: verifyInstructions(method, token, site.domain),
         verified,
       };
-    });
+      },
+    );
 
-    authed.post('/sites/:id/verify/check', { schema: { params: idParamSchema } }, async (req) => {
+    authed.post(
+      '/sites/:id/verify/check',
+      {
+        schema: { params: idParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'sites:write'),
+      },
+      async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       if (site.verified) return { verified: true };
@@ -228,7 +276,8 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
         );
       }
       return { verified: ok };
-    });
+      },
+    );
 
     authed.get('/sites/:id/overview', { schema: { params: idParamSchema } }, async (req) => {
       const { id } = req.params as { id: string };

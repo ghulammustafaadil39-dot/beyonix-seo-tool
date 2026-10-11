@@ -4,6 +4,7 @@ import { encrypt } from '../crypto.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
+import { requireRoleOrScope } from '../middleware/access.js';
 import { getGoogle, isMockGoogleAllowed } from '../providers/google.js';
 import {
   OAUTH_STATE_COOKIE,
@@ -98,7 +99,11 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
     // account's real property list so a forged id can't be stored.
     authed.post(
       '/sites/:id/ga4/connect',
-      { schema: { params: idParamSchema, body: connectBodySchema } },
+      // A1-H2: integration settings are a mutation — editor+ / sites:write.
+      {
+        schema: { params: idParamSchema, body: connectBodySchema },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'sites:write'),
+      },
       async (req) => {
         const { id } = req.params as { id: string };
         const { property_id } = req.body as { property_id: string };
@@ -129,7 +134,13 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
       return getGoogle().ga4Overview(site.gsc_refresh_token_enc, site.ga4_property_id);
     });
 
-    authed.post('/sites/:id/ga4/disconnect', { schema: { params: idParamSchema } }, async (req) => {
+    authed.post(
+      '/sites/:id/ga4/disconnect',
+      // A1-H2: integration settings are a mutation — editor+ / sites:write.
+      {
+        schema: { params: idParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'sites:write'),
+      }, async (req) => {
       const { id } = req.params as { id: string };
       await requireSite(req.tenant.tenantId, id);
       await query(

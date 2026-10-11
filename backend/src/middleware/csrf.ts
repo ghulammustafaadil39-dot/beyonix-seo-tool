@@ -33,15 +33,21 @@ export function csrfTokenValid(
 
 /**
  * True when this request must pass the CSRF check: a state-changing method
- * with an ambient session cookie and no explicit Authorization header.
+ * with an ambient session cookie and no non-ambient credential. A present
+ * `x-api-key` header proves a non-ambient credential exactly like an
+ * Authorization header (A1-M2/A2-L4): API-key browser clients that also
+ * carry the session cookie must not be CSRF-rejected on mutations.
  * Pure and unit-testable; the Fastify guard below wraps it.
  */
 export function requiresCsrfCheck(
   method: string,
   hasSessionCookie: boolean,
   hasAuthHeader: boolean,
+  hasApiKey = false,
 ): boolean {
-  return MUTATION_METHODS.has(method.toUpperCase()) && hasSessionCookie && !hasAuthHeader;
+  return (
+    MUTATION_METHODS.has(method.toUpperCase()) && hasSessionCookie && !hasAuthHeader && !hasApiKey
+  );
 }
 
 /**
@@ -53,7 +59,11 @@ export async function csrfGuard(req: FastifyRequest): Promise<void> {
   const cookies = (req as any).cookies as Record<string, string> | undefined;
   const hasSessionCookie = !!cookies?.['bseo_token'];
   const hasAuthHeader = !!req.headers.authorization?.startsWith('Bearer ');
-  if (!requiresCsrfCheck(req.method, hasSessionCookie, hasAuthHeader)) return;
+  // A1-M2: an x-api-key header is a non-ambient credential — exempt like
+  // the Authorization header so API-key browser clients carrying the
+  // session cookie aren't 403'd on every mutation.
+  const hasApiKey = !!req.headers['x-api-key'];
+  if (!requiresCsrfCheck(req.method, hasSessionCookie, hasAuthHeader, hasApiKey)) return;
   const ok = csrfTokenValid(cookies?.[CSRF_COOKIE], req.headers[CSRF_HEADER] as string | undefined);
   if (!ok) {
     throw new ApiError(403, 'CSRF_INVALID', 'Missing or invalid CSRF token');

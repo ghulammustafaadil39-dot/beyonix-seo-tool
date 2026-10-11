@@ -37,9 +37,16 @@ const ENTITY_RULES: Record<string, EntityRule> = {
   usage_reservations: {
     table: 'usage_reservations',
     dateColumn: 'created_at',
-    // Committed reservations ARE the usage record — keep them like
-    // usage_events. Only dead holds (cancelled / long-expired) are purged.
+    // Dead holds only: cancelled holds and long-expired uncommitted holds.
     extraWhere: `status = 'cancelled' OR (status = 'reserved' AND expires_at < now() - interval '7 days')`,
+  },
+  // A2-L6: committed reservations ARE the usage record — purge them on the
+  // same 13-month window as usage_events so the table can't grow forever.
+  // (Split from usage_reservations because dead holds use a shorter window.)
+  usage_reservations_committed: {
+    table: 'usage_reservations',
+    dateColumn: 'created_at',
+    extraWhere: `status = 'committed'`,
   },
 };
 
@@ -66,6 +73,7 @@ export const DEFAULT_RETENTION_POLICIES: Record<string, string> = {
   activity_log: '24 months',
   api_request_log: '30 days',
   usage_reservations: '3 months',
+  usage_reservations_committed: '13 months',
 };
 
 /**

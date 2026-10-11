@@ -1,7 +1,8 @@
 import { query as defaultQuery, type QueryFn } from '../db.js';
 import { getNotify } from '../providers/notify.js';
 import { registerUsageAlertHook } from '../metering.js';
-import { emitWebhookEvent, validateWebhookUrl } from './webhookDelivery.js';
+import { emitWebhookEvent } from './webhookDelivery.js';
+import { safeFetch } from './safeFetch.js';
 
 // ---------------------------------------------------------------------------
 // F-10: notifications — per-user alert rules, digests, multi-channel
@@ -73,14 +74,21 @@ async function resolveTargets(
   return out;
 }
 
-async function sendSlack(webhookUrl: string, msg: NotificationMessage): Promise<void> {
-  await validateWebhookUrl(webhookUrl); // SSRF-checked like other webhooks
-  const res = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: `*${msg.title}*\n${msg.body}${msg.link ? `\n<${msg.link}|Open>` : ''}` }),
-    signal: AbortSignal.timeout(15_000),
-  });
+/** Exported for regression tests (A1-M4: must go through safeFetch). */
+export async function sendSlack(webhookUrl: string, msg: NotificationMessage): Promise<void> {
+  // A1-M4: route through safeFetch (DNS pinning + per-hop re-validation),
+  // not a raw fetch() after a separate validateWebhookUrl() — the raw
+  // fetch re-resolves DNS at T1, enabling DNS-rebinding TOCTOU. safeFetch
+  // performs the URL safety check itself, so no separate validation step.
+  const res = await safeFetch(
+    webhookUrl,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `*${msg.title}*\n${msg.body}${msg.link ? `\n<${msg.link}|Open>` : ''}` }),
+    },
+    15_000,
+  );
   if (!res.ok) throw new Error(`Slack webhook HTTP ${res.status}`);
 }
 
@@ -194,6 +202,10 @@ export function wireDefaultUsageAlerts(): void {
  * Sends due digests (daily/weekly). For each user with digest frequency !=
  * off whose last_sent_at is older than the period, emails a summary of
  * recent notifications and updates last_sent_at.
+ *
+ * A2-M4: claim-then-work. The leader lock can expire mid-tick, letting a
+ * second worker run this schedule concurrently — the conditional UPDATE
+ * below is the atomic claim, so a digest is sent at most once even then.
  */
 export async function processDigests(q: QueryFn = defaultQuery): Promise<number> {
   const due = await q(
@@ -207,7 +219,16 @@ export async function processDigests(q: QueryFn = defaultQuery): Promise<number>
   for (const row of due.rows) {
     const tenantId = row.tenant_id as string;
     const userId = row.user_id as string;
-    const since = (row.last_sent_at as string | null) ?? new Date(Date.now() - 8 * 86400_000).toISOString();
+    const prevSent = row.last_sent_at as string | null;
+    // Atomic claim: only the winner of this conditional UPDATE proceeds to
+    // send. IS NOT DISTINCT FROM matches the NULL and timestamp cases.
+    const claimed = await q(
+      `UPDATE notification_digests SET last_sent_at = now()
+       WHERE tenant_id = $1 AND user_id = $2 AND last_sent_at IS NOT DISTINCT FROM $3`,
+      [tenantId, userId, prevSent],
+    );
+    if ((claimed.rowCount ?? 0) === 0) continue; // another worker claimed it
+    const since = prevSent ?? new Date(Date.now() - 8 * 86400_000).toISOString();
     const items = await q(
       `SELECT notification_type, channel, status, created_at FROM notification_log
        WHERE tenant_id = $1 AND (user_id = $2 OR user_id IS NULL) AND created_at >= $3
@@ -228,10 +249,6 @@ export async function processDigests(q: QueryFn = defaultQuery): Promise<number>
         console.error('[notifications] digest send failed', err);
       }
     }
-    await q(`UPDATE notification_digests SET last_sent_at = now() WHERE tenant_id = $1 AND user_id = $2`, [
-      tenantId,
-      userId,
-    ]);
     sent += 1;
   }
   return sent;

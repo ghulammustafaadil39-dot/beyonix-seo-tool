@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ranksApi, type RankEntry } from '@/lib/api';
+import { ranksApi, type DataSource, type RankEntry } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import Sparkline from '../Sparkline';
 
@@ -41,11 +41,14 @@ export default function RankingsTab({ siteId }: { siteId: string }) {
   const [history, setHistory] = useState<Record<string, (number | null)[]>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [refreshNote, setRefreshNote] = useState<string | null>(null);
+  // A3-M1: provenance of the positions ('mock' = seeded, no DataForSEO key).
+  const [dataSource, setDataSource] = useState<DataSource | null>(null);
 
   const load = async () => {
     try {
       const res = await ranksApi.latest(siteId);
       setRanks(res.data);
+      setDataSource(res.dataSource ?? null);
     } catch (e) {
       report(e);
     } finally {
@@ -107,6 +110,12 @@ export default function RankingsTab({ siteId }: { siteId: string }) {
       </div>
       {refreshNote && (
         <p className="bx-alert-info">{refreshNote}</p>
+      )}
+      {dataSource === 'mock' && (
+        <p className="bx-alert-info">
+          Ranking positions are mock data (no DataForSEO key configured) — treat
+          them as illustrative. Add DataForSEO keys for live rank tracking.
+        </p>
       )}
 
       <div className="bx-table-wrap">

@@ -77,7 +77,11 @@ export function isPlaintextFallbackAllowed(nodeEnv: string): boolean {
   return nodeEnv === 'development' || nodeEnv === 'test';
 }
 
-/** The kid new encryptions use. Throws when no key is configured. */
+/**
+ * The kid new encryptions use. Throws when no key is configured.
+ * AUDIT (A2-L3): kept as public API — exercised by tests/s-07.test.ts
+ * (key-rotation coverage); not dead.
+ */
 export function currentKid(): string {
   const k = keys();
   if (!k) throw new Error('No encryption key configured');

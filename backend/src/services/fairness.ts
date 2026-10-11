@@ -43,6 +43,30 @@ export async function releaseHeavySlot(tenantId: string, slotId: string): Promis
   await redis.srem(`${redisKeyPrefix()}fair:heavy:${tenantId}`, slotId).catch(() => {});
 }
 
+/**
+ * A2-L7: heartbeats a held slot's TTL. The acquire script sets EXPIRE 900
+ * once, but a heavy job may legitimately run up to its queue timeout
+ * (15 min for crawl) — without a heartbeat it could lose its slot at the
+ * boundary while still running, silently exceeding
+ * HEAVY_CONCURRENCY_PER_TENANT. Only extends when our slot is still a
+ * member (never resurrects a reaped set).
+ */
+export async function heartbeatHeavySlot(tenantId: string, slotId: string, ttlSec = 900): Promise<boolean> {
+  const redis = getRedis();
+  const out = await redis.eval(
+    `if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then
+       return redis.call('EXPIRE', KEYS[1], ARGV[2])
+     else
+       return 0
+     end`,
+    1,
+    `${redisKeyPrefix()}fair:heavy:${tenantId}`,
+    slotId,
+    String(ttlSec),
+  );
+  return Number(out) === 1;
+}
+
 /** Pure helper (unit-tested): round-robin pick of the next tenant with
  * pending jobs, skipping tenants already at their heavy-slot limit. */
 export function pickNextTenantFairly(pending: string[], atLimit: Set<string>): string | null {

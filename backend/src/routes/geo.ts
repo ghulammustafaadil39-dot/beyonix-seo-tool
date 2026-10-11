@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { requireScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { expensiveTenantLimit } from '../middleware/rateLimit.js';
@@ -47,7 +47,8 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
     });
 
     app.post('/sites/:id/geo/check', {
-      preHandler: [requireVerifiedEmail, expensiveTenantLimit()], // S-01: LLM spend; S-03: per-tenant budget
+      // A1-H2: geo checks spend LLM budget — editor+ / geo:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'), expensiveTenantLimit()], // S-01: LLM spend; S-03: per-tenant budget
       schema: {
         params: idParams,
         body: {
@@ -111,6 +112,8 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
           properties: { prompt: { type: 'string', minLength: 3, maxLength: 500 } },
         },
       },
+      // A1-H2: prompt management is a mutation — editor+ / geo:write.
+      preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'),
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -135,11 +138,15 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
       }
     });
 
-    app.delete('/sites/:id/geo/prompts/:promptId', { schema: { params: {
+    // A1-H2: prompt management is a mutation — editor+ / geo:write.
+    app.delete('/sites/:id/geo/prompts/:promptId', {
+      schema: { params: {
       type: 'object',
       properties: { id: { type: 'string', format: 'uuid' }, promptId: { type: 'string', format: 'uuid' } },
       required: ['id', 'promptId'],
-    } } }, async (req, reply) => {
+      } },
+      preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'),
+    }, async (req, reply) => {
       const { id, promptId } = req.params as { id: string; promptId: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const r = await query(
@@ -152,7 +159,8 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
 
     // Run the whole prompt set across engines (capped for latency).
     app.post<{ Body: { engines?: string[]; maxPrompts?: number } }>('/sites/:id/geo/run-set', {
-      preHandler: [requireVerifiedEmail, expensiveTenantLimit()],
+      // A1-H2: run-sets spend LLM budget — editor+ / geo:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'), expensiveTenantLimit()],
       schema: {
         params: idParams,
         body: {

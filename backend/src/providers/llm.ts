@@ -89,10 +89,19 @@ class OpenAIProvider implements LLMProvider {
 
 let cached: LLMProvider | null = null;
 
-/** Factory: explicit override > explicit apiKey > first available key > mock. Never throws. */
+/** Factory: explicit override > first available key > mock.
+ * A2-H1: throws when an apiKey is supplied without an explicit provider
+ * (never guess a provider for a key — credential disclosure). */
 export function getLLM(override?: 'gemini' | 'openai' | 'mock', apiKey?: string): LLMProvider {
   const want = override ?? config.llmProvider;
   if (want === 'mock') return new MockLLMProvider();
+  // A2-H1 (hardened per SEC-REVIEW Wave-4): NEVER guess the provider for an
+  // explicitly-supplied key, regardless of server config state. A tenant's
+  // key routed to the config-default provider would be a live credential
+  // disclosure to the wrong third party. Fail closed instead.
+  if (apiKey && !override) {
+    throw new Error('getLLM: apiKey supplied without an explicit provider — refusing to guess (A2-H1 fail-closed)');
+  }
   if (want === 'gemini' || (!want && (apiKey || config.geminiApiKey)))
     return new GeminiProvider(apiKey || config.geminiApiKey);
   if (want === 'openai' || (!want && (apiKey || config.openaiApiKey)))
@@ -126,7 +135,16 @@ export async function getLLMForTenant(tenantId: string): Promise<LLMProvider> {
     if (row?.llm_provider === 'gemini' || row?.llm_provider === 'openai') {
       return getLLM(row.llm_provider, byokKey);
     }
-    if (byokKey) return getLLM(undefined, byokKey);
+    // A2-H1: a BYOK key with no explicit tenant provider must NEVER be
+    // sent to a guessed provider. Fall through to the account-level
+    // provider selection (server keys) instead of leaking the tenant key
+    // to the wrong third party.
+    if (byokKey) {
+      console.warn(
+        `[provider] tenant ${tenantId} has a BYOK key but no llm_provider set — ` +
+          'ignoring the BYOK key (fail closed, A2-H1); set llm_provider to use it.',
+      );
+    }
   } catch {
     /* DB unavailable (unit tests) — fall through */
   }

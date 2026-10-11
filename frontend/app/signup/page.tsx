@@ -55,8 +55,9 @@ export default function SignupPage() {
               </p>
             )}
             <div>
-              <label className="bx-label">Name</label>
+              <label htmlFor="signup-name" className="bx-label">Name</label>
               <input
+                id="signup-name"
                 type="text"
                 required
                 value={name}
@@ -65,8 +66,9 @@ export default function SignupPage() {
               />
             </div>
             <div>
-              <label className="bx-label">Email</label>
+              <label htmlFor="signup-email" className="bx-label">Email</label>
               <input
+                id="signup-email"
                 type="email"
                 required
                 value={email}
@@ -75,8 +77,9 @@ export default function SignupPage() {
               />
             </div>
             <div>
-              <label className="bx-label">Password</label>
+              <label htmlFor="signup-password" className="bx-label">Password</label>
               <input
+                id="signup-password"
                 type="password"
                 required
                 minLength={8}

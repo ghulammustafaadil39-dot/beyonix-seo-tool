@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { requireScope } from '../middleware/access.js';
+import { requireRoleOrScope, requireScope } from '../middleware/access.js';
 import { authPlugin } from '../middleware/auth.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { query } from '../db.js';
@@ -120,7 +120,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/backlinks/refresh', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail, // S-01: provider-backed refresh
+      // A1-H2: refresh spends provider budget — editor+ / backlinks:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')], // S-01: provider-backed refresh
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -145,6 +146,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
           properties: { csv: { type: 'string', minLength: 1, maxLength: MAX_CSV_BYTES } },
         },
       },
+      // A1-H2: import writes data — editor+ / backlinks:write.
+      preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write'),
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -156,13 +159,23 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
         );
       }
       const tenantId = req.tenant.tenantId;
-      for (const link of links) {
+      // A1-L1: batch the INSERTs — one statement per 500 links instead of
+      // one round trip per link (imports can be thousands of rows).
+      for (let i = 0; i < links.length; i += 500) {
+        const batch = links.slice(i, i + 500);
+        const values: string[] = [];
+        const params: unknown[] = [];
+        batch.forEach((link, j) => {
+          const o = j * 4;
+          values.push(`(gen_random_uuid(), $${o + 1}, $${o + 2}, $${o + 3}, $${o + 4})`);
+          params.push(tenantId, site.id, link.sourceUrl, link.targetUrl);
+        });
         await query(
           `INSERT INTO backlinks (id, tenant_id, site_id, source_url, target_url)
-           VALUES (gen_random_uuid(), $1, $2, $3, $4)
+           VALUES ${values.join(', ')}
            ON CONFLICT (site_id, source_url, target_url)
            DO UPDATE SET last_seen = CURRENT_DATE, status = 'active'`,
-          [tenantId, site.id, link.sourceUrl, link.targetUrl],
+          params,
         );
       }
       // F-06: score every imported link with the heuristic so the UI can
@@ -222,7 +235,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
     // Re-score all active links (e.g. after the heuristic is improved).
     app.post('/sites/:id/backlinks/rescore', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail,
+      // A1-H2: rescore is a bulk mutation — editor+ / backlinks:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
@@ -244,7 +258,8 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
 
     app.post('/sites/:id/backlinks/opportunities/refresh', {
       schema: { params: idParams },
-      preHandler: requireVerifiedEmail,
+      // A1-H2: refresh computes and stores data — editor+ / backlinks:write.
+      preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
     }, async (req) => {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);

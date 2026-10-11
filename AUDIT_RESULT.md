@@ -126,3 +126,42 @@ README lists under "Real": "BullMQ jobs (retry/backoff, idempotent, per-tenant r
 
 ## Final hostile audit loop (§9)
 (to be added — fresh auditors, two consecutive clean passes required)
+## Final hostile audit loop (§9) — PASS #1 (2026-10-11, LA session 3)
+
+Three fresh auditors (A1: routes+services, A2: backend core/db/migrations/worker/crypto, A3: frontend+docs/secret-scan/deps), read-only. Raw reports: `.audit-pass1-a1.md`, `.audit-pass1-a2.md`, `.audit-pass1-a3.md`.
+
+**Totals: 0 critical · 5 HIGH · 14 MEDIUM (unique, after dedupe) · 19 LOW.**
+
+### HIGH (all must be fixed before pass #2)
+| # | Finding | Location | Fix direction |
+|---|---|---|---|
+| A1-H1 | Audit double-submit/enqueue-failure leaves permanent orphan `queued` row → all future audits 409 forever | `backend/src/routes/audit.ts:68-105` | Partial unique index `(site_id) WHERE status IN ('queued','running')` + transactional check + mark `failed` on enqueue error |
+| A1-H2 | Team roles unenforced: `requireScope` is a no-op for user sessions and zero of ~48 product mutation routes use `requireRole(OrScope)` — any viewer can delete sites, publish content, trigger crawls | `backend/src/routes/*.ts` (~48 routes) | Apply existing `requireRoleOrScope(['owner','admin','editor'], scope)` to all mutating domain routes |
+| A2-H1 | Tenant BYOK LLM key sent to the WRONG provider (tenant OpenAI key → Google API query string) — live credential disclosure | `backend/src/providers/llm.ts:93-99` | Fail closed: never guess provider for a BYOK key; require explicit tenant provider |
+| A2-H1b | (dup of A1-H2, same root cause in access.ts) | `backend/src/middleware/access.ts` | — |
+| A2-H2 | Prod Docker image never ships `src/prompts/*.txt` → every LLM feature (content, GEO, on-page) throws ENOENT in production while tests stay green | `backend/Dockerfile:9-14` + `src/services/prompt.ts` | `COPY src/prompts ./dist/prompts` after build + build-smoke test |
+| A3-H1 | Admin impersonation writes session JWT via `document.cookie` (JS-readable, no Secure) — defeats S-06 httpOnly design; XSS can steal the 5-min tenant session | `frontend/app/admin/page.tsx:130` | Backend issues impersonation session via `Set-Cookie: HttpOnly; Secure` |
+
+### MEDIUM (unique)
+| # | Finding |
+|---|---|
+| A1-M1 | Plan-limit enforcement is check-then-act everywhere; atomic `reserveUsage` exists but has zero production callers (overspend of plan limits + DataForSEO budget under concurrency) |
+| A1-M2 | CSRF guard 403s legit API-key browser clients that also carry a session cookie (`x-api-key` not treated as non-ambient credential) |
+| A1-M3 | `checkLimit('sites')` counts soft-deleted sites → Starter user blocked from replacing a deleted site for 30 days |
+| A1-M4 | Slack dispatch validates webhook URL then uses raw `fetch()` — DNS-rebinding TOCTOU (use `safeFetch`) |
+| A1-M5 | Admin plan override leaves tenant stuck `read_only` and `subscriptions` row `canceled` (out of sync) |
+| A1-M6 | Checkout accepts client-controlled `trialDays` up to 90 — set trial length server-side |
+| A1-M7 | Admin tenant-detail returns full row incl. `llm_api_key_enc` ciphertext |
+| A2-M4 | Leader-election 30s TTL can expire mid-tick → duplicate digest emails + duplicate webhook deliveries (no atomic claim in either consumer) |
+| A2-M5 | `incr`-then-`expire` race can permanently 429 a tenant/API key (key with no TTL) |
+| A2-M6 | Fairness `moveToDelayed` + normal return likely double-executes heavy jobs in BullMQ |
+| A2-M7 | GEO check prompt injects raw user query — no `delimitUntrusted` |
+| A3-M1 | Rankings UI shows mock SERP data with no mock label (backend returns `dataSource`, frontend drops it) |
+| A3-M2 | Keyword research volume/difficulty mock not labeled in KeywordsTab (gap panel labels it — inconsistent) |
+| A3-M3 | `.env.example` missing real vars: NEXT_PUBLIC_API_URL, API_INTERNAL_URL, APP_HOST/API_HOST/APP_TLS_EMAIL, STRIPE_PRICE_*_ANNUAL, BSEO_REDIS_PREFIX, DB_STATEMENT_TIMEOUT_MS, LLM_TENANT_DEFAULT_CAP_WORDS, SEED_DEMO, MOCK_GOOGLE_* |
+
+### LOW (19 — fix or justify each)
+A1-L1 backlink CSV 5000 sequential INSERTs in request handler; A1-L2 `GET /metrics` unauthenticated (aggregate spend); A1-L3 CONTRACTS.md error-envelope shape doc drift; A1-L4 dead code (reserveUsage/commit/cancel if unused, `paged`, `GeoEngine`, `needsRankCheck`); A1-L5 `u(req)` "apikey:<id>" into UUID columns (latent 500); A1-L6 `PATCH /settings` accepts empty-string `llm_api_key`. A2-L1 `jwt.verify` without `algorithms` whitelist (3 sites); A2-L2 duplicate indexes (040 vs 001; api_keys_hash_idx vs UNIQUE); A2-L3 dead exports (`storeIdempotentResponse`, `currentKid`); A2-L4 CSRF `x-api-key` (dup of A1-M2, keep one); A2-L5 local coupon codes passed as Stripe coupon IDs (mock/real split); A2-L6 committed `usage_reservations` never purged; A2-L7 fairness slot TTL not heartbeated; A2-L8 migration numbering gaps (informational). A3-L1 settings inputs lack label association; A3-L2 test-fixture key.pem (synthetic, no action); A3-L3 invite debug token renders in UI on prod-without-SMTP; A3-L4 invite token in sessionStorage (accepted pattern, noted); A3-L5 `npm audit` limitation + no `engines` field.
+
+### Explicitly clean slices (no finding)
+Tenant isolation in all sampled SQL; SSRF via safeFetch (except A1-M4); billing webhook (sig/idempotency/ordering/plan-from-price); share tokens; authN/session incl. OAuth PKCE; GDPR erase coverage; migration runner semantics + all 29 migrations; crypto (GCM/random IV/kid); config fail-closed; idempotency middleware; invite-accept race; all 111 frontend endpoint×method pairs match backend; zero dangerouslySetInnerHTML; zero client console.log; token hygiene in auth flows; honesty labels (GEO simulated, insights projection, competitor unavailable, toxic heuristic, CMS mock); README mock-vs-real table matches code; secret scan clean (except synthetic fixture key).

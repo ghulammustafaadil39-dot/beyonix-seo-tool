@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { ApiError, unauthorized } from '../errors.js';
-import { getRedis, redisKeyPrefix } from '../redis.js';
+import { getRedis, incrWithTtl, redisKeyPrefix } from '../redis.js';
 import { isSessionActive, touchSession } from '../services/sessions.js';
 import { CSRF_COOKIE } from './csrf.js';
 import { authCookieOptions, csrfCookieOptions } from '../services/securityHeaders.js';
@@ -129,10 +129,11 @@ async function tenantFromApiKey(rawKey: string): Promise<{ ctx: TenantContext; s
   if (!row || row.revoked_at) throw unauthorized('Invalid or revoked API key');
 
   // F-13: per-key rate limit (fixed window, Redis).
+  // A2-M5: atomic INCR-with-TTL (Lua) — a crash between INCR and EXPIRE
+  // used to leave a TTL-less key that 429'd the key forever.
   const redis = getRedis();
   const rlKey = `${redisKeyPrefix()}apikey:${row.id as string}`;
-  const count = await redis.incr(rlKey);
-  if (count === 1) await redis.expire(rlKey, 60);
+  const count = await incrWithTtl(redis, rlKey, 60);
   const max = Number(row.rate_limit_per_min ?? 60);
   if (count > max) {
     throw new ApiError(429, 'API_KEY_RATE_LIMITED', `API key rate limit exceeded (${max}/min)`, {
@@ -187,7 +188,7 @@ export async function authPlugin(fastify: FastifyInstance) {
     if (!token) throw unauthorized('Authentication required');
     let payload: any;
     try {
-      payload = jwt.verify(token, config.jwtSecret);
+      payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
     } catch {
       throw unauthorized('Invalid or expired token');
     }

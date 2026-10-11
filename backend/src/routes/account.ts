@@ -5,7 +5,7 @@ import { pool, query, type QueryFn } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
 import { authPlugin, signToken, setAuthCookie, setCsrfCookie } from '../middleware/auth.js';
 import { issueCsrfToken } from '../middleware/csrf.js';
-import { canAssignRole, requireHumanSession, requireRole, requireScope } from '../middleware/access.js';
+import { actorUserId, canAssignRole, requireHumanSession, requireRole, requireScope } from '../middleware/access.js';
 import { DEFAULT_RETENTION_POLICIES } from '../services/retention.js';
 import { getQueue, QUEUES } from '../queues.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
@@ -334,7 +334,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         if (m.rows[0].role === 'owner') throw new ApiError(403, 'FORBIDDEN', 'Ownership cannot be changed here');
         await query(`UPDATE users SET role = $1 WHERE id = $2`, [role, memberId]);
         await logActivity(t(req), {
-          userId: u(req),
+          userId: actorUserId(req),
           action: 'member.role_changed',
           entityType: 'user',
           entityId: memberId,
@@ -362,7 +362,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       if (memberId === u(req)) throw new ApiError(400, 'CANNOT_REMOVE_SELF', 'You cannot remove yourself');
       await query(`DELETE FROM users WHERE id = $1`, [memberId]);
       await logActivity(t(req), {
-        userId: u(req),
+        userId: actorUserId(req),
         action: 'member.removed',
         entityType: 'user',
         entityId: memberId,
@@ -402,7 +402,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           `INSERT INTO team_invitations (id, tenant_id, email, role, token_hash, invited_by, expires_at)
            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now() + interval '7 days')
            RETURNING id, expires_at`,
-          [t(req), email, role, tokenHash, u(req)],
+          [t(req), email, role, tokenHash, actorUserId(req)],
         );
         const acceptUrl = `${config.appUrl}/dashboard/team/accept?token=${rawToken}`;
         try {
@@ -415,7 +415,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           console.error('[account] invitation email failed', err);
         }
         await logActivity(t(req), {
-          userId: u(req),
+          userId: actorUserId(req),
           action: 'invite.sent',
           entityType: 'invitation',
           entityId: inv.rows[0].id as string,
@@ -458,7 +458,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         [id, t(req)],
       );
       if ((r.rowCount ?? 0) === 0) throw new ApiError(404, 'NOT_FOUND', 'Invitation not found');
-      await logActivity(t(req), { userId: u(req), action: 'invite.revoked', entityType: 'invitation', entityId: id });
+      await logActivity(t(req), { userId: actorUserId(req), action: 'invite.revoked', entityType: 'invitation', entityId: id });
       return { ok: true };
     });
 
@@ -585,7 +585,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       await logActivity(
         row.tenant_id as string,
         {
-          userId: u(req),
+          userId: actorUserId(req),
           action: 'invite.accepted',
           entityType: 'invitation',
           entityId: row.id as string,
@@ -649,10 +649,10 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           const r = await query(
             `INSERT INTO workspaces (id, tenant_id, name, limits, created_by)
              VALUES (gen_random_uuid(), $1, $2, $3, $4) RETURNING id, name, limits, created_at`,
-            [t(req), name.trim(), limits ? JSON.stringify(limits) : null, u(req)],
+            [t(req), name.trim(), limits ? JSON.stringify(limits) : null, actorUserId(req)],
           );
           await logActivity(t(req), {
-            userId: u(req),
+            userId: actorUserId(req),
             action: 'workspace.created',
             entityType: 'workspace',
             entityId: r.rows[0].id as string,
@@ -682,7 +682,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           throw err;
         });
         await logActivity(t(req), {
-          userId: u(req),
+          userId: actorUserId(req),
           action: 'workspace.updated',
           entityType: 'workspace',
           entityId: ws.id as string,
@@ -697,7 +697,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       await query(`UPDATE sites SET workspace_id = NULL WHERE workspace_id = $1`, [ws.id]);
       await query(`DELETE FROM workspaces WHERE id = $1`, [ws.id]);
       await logActivity(t(req), {
-        userId: u(req),
+        userId: actorUserId(req),
         action: 'workspace.deleted',
         entityType: 'workspace',
         entityId: ws.id as string,
@@ -732,7 +732,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         }
         await query(`UPDATE sites SET workspace_id = $1 WHERE id = $2`, [ws.id, siteId]);
         await logActivity(t(req), {
-          userId: u(req),
+          userId: actorUserId(req),
           action: 'workspace.site_assigned',
           entityType: 'site',
           entityId: siteId,
@@ -940,7 +940,7 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           const r = await query(sql, [tenantId]);
           dump[section] = redactExportSection(section, r.rows);
         }
-        await logActivity(tenantId, { userId: u(req), action: 'account.exported' });
+        await logActivity(tenantId, { userId: actorUserId(req), action: 'account.exported' });
         return reply
           .header('Content-Type', 'application/json')
           .header('Content-Disposition', `attachment; filename="beyonix-seo-export-${tenantId}.json"`)
