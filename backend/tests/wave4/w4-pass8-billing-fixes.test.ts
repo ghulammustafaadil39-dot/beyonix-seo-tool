@@ -337,4 +337,160 @@ describe.runIf(HAS_TEST_DB)('Pass#8 billing fixes (H5-H#1, H5-L#1, H1-L-2)', () 
       spy.mockRestore();
     }
   });
+
+  test('I1-L-1: concurrent invoice.payment_failed + subscription.updated(past_due) dun exactly once', async () => {
+    const owner = await signupOwner(app);
+    await query(`UPDATE tenants SET notify_email = $2 WHERE id = $1`, [
+      owner.tenantId,
+      `p8i1l1-${uid()}@beyo.test`,
+    ]);
+    const subId = `sub_p8i1l1_${uid()}`;
+    const customerId = `cus_p8i1l1_${uid()}`;
+    const t1 = nowSec();
+    await applyPaymentEvent(createdEvent(subId, customerId, owner.tenantId, t1), query, `evt_p8i1l1_cr_${uid()}`);
+    const spy = vi.spyOn(getNotify(), 'sendEmail').mockResolvedValue(undefined);
+    try {
+      // Both events for the SAME failure, processed concurrently — both
+      // read existingGrace=NULL. Pre-fix: both minted and both dunned.
+      // Post-fix: exactly one minter (atomic mint), only the minter duns.
+      const t2 = t1 + 10;
+      await Promise.all([
+        applyPaymentEvent(
+          {
+            id: `evt_p8i1l1_pf_${uid()}`,
+            type: 'invoice.payment_failed',
+            created: t2,
+            data: { id: `in_p8i1l1_${uid()}`, customer: customerId, subscription: subId, amount_due: 2900 },
+          },
+          query,
+          `evt_p8i1l1_pf_${uid()}`,
+        ),
+        applyPaymentEvent(
+          {
+            id: `evt_p8i1l1_upd_${uid()}`,
+            type: 'customer.subscription.updated',
+            created: t2,
+            data: {
+              id: subId,
+              status: 'past_due',
+              customer: customerId,
+              items: { data: [{ price: { id: PRICE_GROWTH } }] },
+              metadata: { tenantId: owner.tenantId },
+            },
+          },
+          query,
+          `evt_p8i1l1_upd_${uid()}`,
+        ),
+      ]);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const sub = await subRow(owner.tenantId);
+      expect(sub.status).toBe('past_due');
+      expect(sub.grace_until).not.toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('I1-L-2: a failed minting send is re-dunned once by the next retry, then suppressed', async () => {
+    const owner = await signupOwner(app);
+    await query(`UPDATE tenants SET notify_email = $2 WHERE id = $1`, [
+      owner.tenantId,
+      `p8i1l2-${uid()}@beyo.test`,
+    ]);
+    const subId = `sub_p8i1l2_${uid()}`;
+    const customerId = `cus_p8i1l2_${uid()}`;
+    const t1 = nowSec();
+    await applyPaymentEvent(createdEvent(subId, customerId, owner.tenantId, t1), query, `evt_p8i1l2_cr_${uid()}`);
+    const spy = vi
+      .spyOn(getNotify(), 'sendEmail')
+      .mockRejectedValueOnce(new Error('SMTP transient failure'))
+      .mockResolvedValue(undefined);
+    try {
+      // Mint: the single dunning send fails transiently.
+      await applyPaymentEvent(
+        {
+          id: `evt_p8i1l2_pf1_${uid()}`,
+          type: 'invoice.payment_failed',
+          created: t1 + 10,
+          data: { id: `in_p8i1l2_${uid()}`, customer: customerId, subscription: subId, amount_due: 2900 },
+        },
+        query,
+        `evt_p8i1l2_pf1_${uid()}`,
+      );
+      expect(spy).toHaveBeenCalledTimes(1);
+      // Retry during the grace: the episode has no 'sent' dunning email, so
+      // this retry becomes the dunning attempt (at-least-once per episode).
+      await applyPaymentEvent(
+        {
+          id: `evt_p8i1l2_pf2_${uid()}`,
+          type: 'invoice.payment_failed',
+          created: t1 + 86400,
+          data: { id: `in_p8i1l2_${uid()}`, customer: customerId, subscription: subId, amount_due: 2900 },
+        },
+        query,
+        `evt_p8i1l2_pf2_${uid()}`,
+      );
+      expect(spy).toHaveBeenCalledTimes(2);
+      // A further retry: the episode now has its 'sent' email — suppressed.
+      await applyPaymentEvent(
+        {
+          id: `evt_p8i1l2_pf3_${uid()}`,
+          type: 'invoice.payment_failed',
+          created: t1 + 2 * 86400,
+          data: { id: `in_p8i1l2_${uid()}`, customer: customerId, subscription: subId, amount_due: 2900 },
+        },
+        query,
+        `evt_p8i1l2_pf3_${uid()}`,
+      );
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('I1-L-3: concurrent checkouts create only one in-flight session; expiry releases the claim', async () => {
+    const owner = await signupOwner(app);
+    const headers = { authorization: `Bearer ${owner.token}` };
+    const payload = { planId: 'growth', interval: 'monthly' };
+    // Double-click: two overlapping POSTs, no idempotency key.
+    const [r1, r2] = await Promise.all([
+      app.inject({ method: 'POST', url: '/api/v1/billing/checkout', headers, payload }),
+      app.inject({ method: 'POST', url: '/api/v1/billing/checkout', headers, payload }),
+    ]);
+    const ok = [r1, r2].filter((r) => r.statusCode === 200);
+    const conflicts = [r1, r2].filter((r) => r.statusCode === 409);
+    // Exactly one winner: either both 200 with the SAME session URL, or one
+    // 200 and one 409 CHECKOUT_IN_PROGRESS. Never two distinct sessions.
+    expect(ok.length + conflicts.length).toBe(2);
+    expect(ok.length).toBeGreaterThanOrEqual(1);
+    const urls = ok.map((r) => (r.json() as any).url as string);
+    if (urls.length === 2) expect(urls[0]).toBe(urls[1]);
+    if (conflicts.length === 1) {
+      expect(JSON.stringify(conflicts[0].json())).toMatch(/CHECKOUT_IN_PROGRESS/);
+    }
+    const claims = await query(`SELECT COUNT(*)::int c FROM checkout_sessions WHERE tenant_id = $1`, [
+      owner.tenantId,
+    ]);
+    expect(Number(claims.rows[0].c)).toBe(1);
+    // The session expires uncompleted → the claim is released → a fresh
+    // checkout is allowed again (no stale block).
+    await applyPaymentEvent(
+      {
+        id: `evt_p8i1l3_exp_${uid()}`,
+        type: 'checkout.session.expired',
+        created: nowSec(),
+        data: { metadata: { tenantId: owner.tenantId } },
+      },
+      query,
+      `evt_p8i1l3_exp_${uid()}`,
+    );
+    const after = await query(`SELECT COUNT(*)::int c FROM checkout_sessions WHERE tenant_id = $1`, [
+      owner.tenantId,
+    ]);
+    expect(Number(after.rows[0].c)).toBe(0);
+    const r3 = await app.inject({ method: 'POST', url: '/api/v1/billing/checkout', headers, payload });
+    expect(r3.statusCode).toBe(200);
+    expect((r3.json() as any).url).toBeTruthy();
+  });
+
 });

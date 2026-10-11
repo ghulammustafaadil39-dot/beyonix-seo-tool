@@ -7,7 +7,7 @@ import type { PaymentsProvider } from './types.js';
 import { isPlanId, type PlanId } from '../plans.js';
 // F2-L-4: static import is cycle-safe (services/billing.ts only depends on
 // db/notify/plans — it never imports this provider module).
-import { LIVE_SUBSCRIPTION_STATUSES, TERMINAL_SUBSCRIPTION_STATUSES } from '../services/billing.js';
+import { LIVE_SUBSCRIPTION_STATUSES, TERMINAL_SUBSCRIPTION_STATUSES, GRACE_PERIOD_DAYS } from '../services/billing.js';
 
 /**
  * Single source of truth mapping a Stripe price id -> plan, derived from the
@@ -427,6 +427,40 @@ async function resolveTenantForSubscription(
 }
 
 /**
+ * I1-L-2 (pass#9): has the dunning email for this grace episode been sent —
+ * or is one currently in flight? The episode is identified by its
+ * grace_until (mint time ≈ grace_until − GRACE_PERIOD_DAYS). Lets a later
+ * Smart Retry re-dun when the minting send transiently failed:
+ * at-least-once per episode, exactly-once once a send succeeds, without
+ * reintroducing per-retry spam (H1-L-2). A live 'sending' claim counts as
+ * in-flight (the winner of a concurrent mint is mid-send); a stale one
+ * (>10 min — crashed, see the H2-L-1 takeover rule) does not block a retry.
+ */
+async function episodeDunningSent(
+  q: (text: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }>,
+  tenantId: string,
+  graceUntil: string | Date,
+): Promise<boolean> {
+  try {
+    const episodeStart = new Date(new Date(graceUntil).getTime() - GRACE_PERIOD_DAYS * 86400_000);
+    const r = await q(
+      `SELECT 1 FROM notification_log
+       WHERE tenant_id = $1
+         AND notification_type IN ('invoice.payment_failed', 'subscription.past_due')
+         AND created_at >= $2
+         AND (status = 'sent'
+              OR (status = 'sending' AND created_at >= now() - interval '10 minutes'))
+       LIMIT 1`,
+      [tenantId, episodeStart.toISOString()],
+    );
+    return (r.rows?.length ?? 0) > 0;
+  } catch {
+    // notification_log unavailable — preserve the H1-L-2 no-spam default.
+    return true;
+  }
+}
+
+/**
  * Applies a Stripe (or mock) event to our billing tables. Shared by the
  * webhook route + tests. C-01: idempotent via stripe_webhook_events
  * (pass eventId), all period/status/plan values come FROM Stripe, never
@@ -543,6 +577,10 @@ export async function applyPaymentEvent(
     }
     const planId: PlanId = rawPlanId;
     tenantForLedger = tenantId;
+    // I1-L-3 (pass#9): the session completed — release the in-flight
+    // checkout claim so later checkouts (e.g. resubscribe after cancel)
+    // aren't blocked by a stale row.
+    await q(`DELETE FROM checkout_sessions WHERE tenant_id = $1`, [tenantId]).catch(() => undefined);
 
     // C-01: period comes FROM Stripe (the subscription object when the
     // session payload expands it). Mock checkouts have no Stripe object —
@@ -700,6 +738,11 @@ export async function applyPaymentEvent(
   } else if (type === 'checkout.session.expired') {
     // C5-H-1: an abandoned checkout releases its reserved coupon slot so
     // the cap isn't permanently burned by sessions that never paid.
+    // I1-L-3 (pass#9): it also releases the in-flight checkout claim.
+    const expTenant = (data.metadata?.tenantId as string | undefined) ?? null;
+    if (expTenant) {
+      await q(`DELETE FROM checkout_sessions WHERE tenant_id = $1`, [expTenant]).catch(() => undefined);
+    }
     const couponCode: string | undefined =
       data.metadata?.couponCode ?? data.metadata?.coupon;
     if (couponCode) {
@@ -826,7 +869,7 @@ export async function applyPaymentEvent(
       const graceUntil = existingGrace ? new Date(existingGrace) : graceDeadline();
       const pastDuePlan = planFromEvent ?? storedPlan ?? 'starter';
       const recordedStatus = status === 'incomplete' ? 'incomplete' : 'past_due';
-      await q(
+      const upserted = await q(
         `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, plan_id, status,
                                    current_period_start, current_period_end, grace_until)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)
@@ -835,7 +878,8 @@ export async function applyPaymentEvent(
            plan_id = EXCLUDED.plan_id,
            current_period_start = COALESCE(EXCLUDED.current_period_start, subscriptions.current_period_start),
            current_period_end = COALESCE(EXCLUDED.current_period_end, subscriptions.current_period_end),
-           grace_until = COALESCE(subscriptions.grace_until, EXCLUDED.grace_until)`,
+           grace_until = COALESCE(subscriptions.grace_until, EXCLUDED.grace_until)
+         RETURNING grace_until`,
         [tenantId, subId, pastDuePlan, recordedStatus, periodStart, periodEnd, graceUntil],
       );
       // H1-L-2 (pass#8): dun exactly once per episode — only the event that
@@ -844,7 +888,20 @@ export async function applyPaymentEvent(
       // customer.subscription.updated(past_due) (distinct event ids, so the
       // (event_id, type) dedupe never fires); emailing from both spams the
       // customer with identical emails for one failure.
-      if (!existingGrace) {
+      // I1-L-1 (pass#9): ...and exactly one minter when the two events race.
+      // The upsert's COALESCE keeps the race winner's grace (the loser's
+      // upsert blocks on the row lock until the winner commits); the stored
+      // value equals THIS event's computed graceUntil only if this event
+      // minted.
+      const storedGrace = upserted.rows[0]?.grace_until as string | Date | null | undefined;
+      const justMinted =
+        !existingGrace && !!storedGrace && new Date(storedGrace).getTime() === graceUntil.getTime();
+      if (justMinted) {
+        await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil }, eventId });
+      } else if (existingGrace && !(await episodeDunningSent(q, tenantId, graceUntil))) {
+        // I1-L-2 (pass#9): sequential retry, and the episode's dunning email
+        // never went out (transient send failure on the mint) — re-dun.
+        // (A lost mint race stays silent here: the winner duns.)
         await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil }, eventId });
       }
     } else if (status === 'canceled' || status === 'incomplete_expired') {
@@ -1021,18 +1078,40 @@ export async function applyPaymentEvent(
         // restart the downgrade cycle on every failed retry. Just record
         // the invoice; a later invoice.paid recovers via the branch above.
       } else if (!existingGrace) {
-        await q(`UPDATE subscriptions SET status = 'past_due', grace_until = $2 WHERE tenant_id = $1`, [
-          tenantId,
-          graceDeadline(),
-        ]);
-        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });
+        // I1-L-1 (pass#9): mint the grace ATOMICALLY. invoice.payment_failed
+        // and customer.subscription.updated(past_due) for the SAME failure
+        // can be processed concurrently; both used to read existingGrace as
+        // NULL and both minted + dunned. The conditional UPDATE makes
+        // exactly one the minter — only the minter sends the dunning email.
+        const minted = await q(
+          `UPDATE subscriptions SET status = 'past_due', grace_until = $2
+           WHERE tenant_id = $1 AND grace_until IS NULL`,
+          [tenantId, graceDeadline()],
+        );
+        let won = (minted.rowCount ?? 0) > 0;
+        if (!won) {
+          // No subscription row at all (tenant resolved via
+          // customer/metadata): nothing to race on — keep the old emit
+          // behavior.
+          won = (await q(`SELECT 1 FROM subscriptions WHERE tenant_id = $1`, [tenantId])).rows.length === 0;
+        }
+        if (won) {
+          await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });
+        }
       } else {
         // H1-L-2 (pass#8): grace already active — this is a Stripe Smart
-        // Retry for the SAME failed payment. The dunning email went out
-        // when the grace was minted; re-emitting here (distinct event id
-        // per retry, so the (event_id, type) dedupe never fires) spams the
+        // Retry for the SAME failed payment; the dunning email went out when
+        // the grace was minted, so re-emitting here (distinct event id per
+        // retry, so the (event_id, type) dedupe never fires) would spam the
         // customer with 2-3 identical "Payment failed" emails per episode.
+        // I1-L-2 (pass#9): ...unless the episode's dunning email never went
+        // out (transient send failure on the mint). Then this retry becomes
+        // the dunning attempt — at-least-once per episode, exactly-once once
+        // a send succeeds.
         await q(`UPDATE subscriptions SET status = 'past_due' WHERE tenant_id = $1`, [tenantId]);
+        if (!(await episodeDunningSent(q, tenantId, existingGrace))) {
+          await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });
+        }
       }
     }
   } else if (type === 'charge.refunded') {

@@ -320,6 +320,56 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
                   { portal: true },
                 );
               }
+              // I1-L-3 (pass#9): block a second CONCURRENT checkout. Two
+              // overlapping calls both passed the 409 above (neither had a
+              // subscription row yet) and created two Stripe sessions;
+              // completing both billed the tenant twice while E4-H-2 ignored
+              // the second subscription's events. The tenant row is locked
+              // FOR UPDATE here, so the claim check + insert is atomic.
+              // A fresh claim 409s — or hands back the open session's URL
+              // when the plan/interval match (idempotent double-click). A
+              // stale 'creating' claim (>10 min — the creator crashed
+              // mid-flight) is stolen.
+              const cs = await client.query(
+                `SELECT stripe_session_id, checkout_url, plan_id, billing_interval, status, created_at
+                 FROM checkout_sessions WHERE tenant_id = $1`,
+                [tenantId],
+              );
+              const claim = cs.rows[0] as
+                | {
+                    stripe_session_id: string | null;
+                    checkout_url: string | null;
+                    plan_id: string;
+                    billing_interval: string;
+                    status: string;
+                    created_at: string;
+                  }
+                | undefined;
+              const claimStale =
+                !!claim && Date.now() - new Date(claim.created_at).getTime() > 10 * 60_000;
+              if (claim && !claimStale) {
+                await client.query('ROLLBACK');
+                if (
+                  claim.checkout_url &&
+                  claim.plan_id === planId &&
+                  claim.billing_interval === billingInterval
+                ) {
+                  return { url: claim.checkout_url }; // same session — no duplicate
+                }
+                throw new ApiError(
+                  409,
+                  'CHECKOUT_IN_PROGRESS',
+                  'A checkout session is already in progress — complete or abandon it before starting a new one.',
+                );
+              }
+              if (claimStale) {
+                await client.query(`DELETE FROM checkout_sessions WHERE tenant_id = $1`, [tenantId]);
+              }
+              await client.query(
+                `INSERT INTO checkout_sessions (tenant_id, plan_id, billing_interval, status)
+                 VALUES ($1, $2, $3, 'creating')`,
+                [tenantId, planId, billingInterval],
+              );
               if (existing) {
                 // A concurrent checkout won the race — adopt their customer id.
                 // Ours (created above) is orphaned in Stripe; bounded to one
@@ -357,11 +407,24 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
               ...(stripeCouponId ? { stripeCouponId } : {}),
             },
           });
+          // I1-L-3: mark the claim 'open' with the session URL — a
+          // concurrent double-click now reuses it instead of 409ing.
+          await query(
+            `UPDATE checkout_sessions SET stripe_session_id = $2, checkout_url = $3, status = 'open'
+             WHERE tenant_id = $1 AND status = 'creating'`,
+            [tenantId, s.sessionId, s.url],
+          ).catch(() => undefined);
           return { url: s.url };
         } catch (err) {
           // D5-M-3: release exactly once — only when the reservation
           // committed (couponReserved) and the session was never created.
           if (couponReserved) await releaseReservation();
+          // I1-L-3: release our in-flight claim so a retry isn't blocked.
+          // Only the 'creating' row we just made — a stolen/replaced claim
+          // belongs to someone else.
+          await query(`DELETE FROM checkout_sessions WHERE tenant_id = $1 AND status = 'creating'`, [
+            tenantId,
+          ]).catch(() => undefined);
           throw err;
         }
       }),

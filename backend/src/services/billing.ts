@@ -170,7 +170,7 @@ export function registerDefaultBillingHooks(): void {
   });
 }
 
-const GRACE_PERIOD_DAYS = 3;
+export const GRACE_PERIOD_DAYS = 3;
 
 /**
  * D5-H-1: server-side trial length for new signups (LA product decision,
