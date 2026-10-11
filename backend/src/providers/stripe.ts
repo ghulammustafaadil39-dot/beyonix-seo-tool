@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import Stripe from 'stripe';
 import { config, hasStripe } from '../config.js';
-import { query } from '../db.js';
+import { query, pool } from '../db.js';
 import { ApiError } from '../errors.js';
 import type { PaymentsProvider } from './types.js';
 import { isPlanId, type PlanId } from '../plans.js';
@@ -447,6 +447,13 @@ export async function applyPaymentEvent(
   // Direct callers (tests, mock-confirm) carry it on evt.id.
   eventId = eventId ?? (typeof (evt as any).id === 'string' ? (evt as any).id : undefined);
   let tenantForLedger: string | null = null;
+  // H5-H#1 (pass#8): set by the checkout.session.completed branch when the
+  // event carried NO subscription status (case c — unexpanded string id,
+  // true status unknown, fail-closed to 'incomplete'). A status-less write
+  // must neither clobber a live status nor advance the ordering watermark
+  // (its newer `created` would otherwise make the earlier-created
+  // subscription/invoice events look stale and get them dropped).
+  let statusUnknownCheckout = false;
   // B2-L7: the webhook ledger's processed_at must be stamped on EVERY exit
   // path (early returns included) — otherwise handled events show as
   // perpetually unprocessed. tenantForLedger is read at call time.
@@ -574,6 +581,10 @@ export async function applyPaymentEvent(
       status = trialDays > 0 ? 'trialing' : inc ? (subStatus ?? 'incomplete') : 'active';
     } else {
       status = 'incomplete'; // (c) unexpanded string id → fail closed
+      // H5-H#1: this write carries NO status information — mark it so the
+      // upsert below cannot clobber a live status and the watermark below
+      // is not advanced past the status-carrying events.
+      statusUnknownCheckout = true;
     }
     const incomplete = status === 'incomplete' || status === 'incomplete_expired';
     const trialEndsAt = trialDays > 0 ? new Date(Date.now() + trialDays * 86400_000) : null;
@@ -585,7 +596,22 @@ export async function applyPaymentEvent(
        ON CONFLICT (tenant_id) DO UPDATE SET
          stripe_sub_id = EXCLUDED.stripe_sub_id,
          stripe_customer_id = EXCLUDED.stripe_customer_id,
-         plan_id = EXCLUDED.plan_id, status = EXCLUDED.status,
+         plan_id = EXCLUDED.plan_id,
+         -- H5-H#1 (pass#8): a status-LESS checkout write (case c — true
+         -- status unknown, fail-closed to 'incomplete') must never clobber
+         -- a LIVE status established by the earlier subscription/invoice
+         -- events. Real Stripe delivery order is subscription.created →
+         -- invoice.paid → checkout.session.completed, so the checkout
+         -- normally arrives LAST; the old unconditional write stranded a
+         -- fully-paid subscriber at 'incomplete' (day-15 trial-expiry
+         -- lockout while Stripe keeps billing). Keep the stored live
+         -- status; fail closed only when there is no live status to
+         -- protect (the G5-M#1 never-payer case stays closed).
+         status = CASE
+           WHEN $11::boolean AND subscriptions.status IN ('active', 'trialing', 'past_due')
+           THEN subscriptions.status
+           ELSE EXCLUDED.status
+         END,
          current_period_start = EXCLUDED.current_period_start,
          current_period_end = EXCLUDED.current_period_end,
          trial_ends_at = EXCLUDED.trial_ends_at,
@@ -601,7 +627,7 @@ export async function applyPaymentEvent(
            THEN subscriptions.grace_until
            ELSE NULL
          END`,
-      [tenantId, subId ?? `sub_mock_${Date.now()}`, customerId ?? null, planId, status, periodStart, periodEnd, trialEndsAt, interval, couponCode ?? null],
+      [tenantId, subId ?? `sub_mock_${Date.now()}`, customerId ?? null, planId, status, periodStart, periodEnd, trialEndsAt, interval, couponCode ?? null, statusUnknownCheckout],
     );
     // C5-L-2: an incomplete subscription must NOT activate the paid plan —
     // the tenant keeps its current plan until Stripe confirms payment.
@@ -812,7 +838,15 @@ export async function applyPaymentEvent(
            grace_until = COALESCE(subscriptions.grace_until, EXCLUDED.grace_until)`,
         [tenantId, subId, pastDuePlan, recordedStatus, periodStart, periodEnd, graceUntil],
       );
-      await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil }, eventId });
+      // H1-L-2 (pass#8): dun exactly once per episode — only the event that
+      // MINTS the grace sends the "Payment failed" email. A failed payment
+      // produces BOTH invoice.payment_failed and
+      // customer.subscription.updated(past_due) (distinct event ids, so the
+      // (event_id, type) dedupe never fires); emailing from both spams the
+      // customer with identical emails for one failure.
+      if (!existingGrace) {
+        await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil }, eventId });
+      }
     } else if (status === 'canceled' || status === 'incomplete_expired') {
       // Ended subscription -> downgrade now (data kept; read-only if over
       // the starter limits — never deleted).
@@ -993,8 +1027,12 @@ export async function applyPaymentEvent(
         ]);
         await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });
       } else {
+        // H1-L-2 (pass#8): grace already active — this is a Stripe Smart
+        // Retry for the SAME failed payment. The dunning email went out
+        // when the grace was minted; re-emitting here (distinct event id
+        // per retry, so the (event_id, type) dedupe never fires) spams the
+        // customer with 2-3 identical "Payment failed" emails per episode.
         await q(`UPDATE subscriptions SET status = 'past_due' WHERE tenant_id = $1`, [tenantId]);
-        await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });
       }
     }
   } else if (type === 'charge.refunded') {
@@ -1017,14 +1055,63 @@ export async function applyPaymentEvent(
     // embedded in the credit reason); skip the insert when delta <= 0.
     // (Without a charge id — the mock path — keep the old behavior.)
     const cumulativeRefunded = Math.round(Number(data.amount_refunded ?? data.amount ?? 0));
+    const reason = `Refund ${chargeId}${invoiceId ? ` for invoice ${invoiceId}` : ''}`.trim();
     let amount = cumulativeRefunded;
     if (chargeId) {
-      const prev = await q(
-        `SELECT COALESCE(SUM(amount_cents), 0)::int AS c FROM tenant_credits
-         WHERE tenant_id = $1 AND starts_with(reason, $2)`,
-        [tenantId, `Refund ${chargeId}`],
+      // H5-L#1 (pass#8): serialize the delta computation per tenant in an
+      // explicit transaction. The old code did SELECT SUM ... then INSERT
+      // in two auto-commit statements: two concurrent charge.refunded
+      // events for the same charge (distinct event ids — e.g. two partial
+      // refunds delivered concurrently) could both read prev=0 and both
+      // insert the full delta, reintroducing the G5-L#1 over-credit through
+      // concurrency. (A single statement with FOR UPDATE does NOT fix it:
+      // the statement snapshot is taken at statement start, so the SUM
+      // still sees pre-commit state — proven by the regression test, which
+      // failed with 1500 against that formulation.) Here the tenant row
+      // lock is held until COMMIT and every command takes a fresh snapshot
+      // (READ COMMITTED), so the second execution blocks on the lock, then
+      // recomputes the delta against the first's committed credit.
+      // pg_advisory_xact_lock is unusable — the webhook path runs on
+      // auto-commit `query`, where a transaction-scoped lock would release
+      // immediately — hence the dedicated client + row lock.
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, [tenantId]);
+        const prev = await client.query(
+          `SELECT COALESCE(SUM(amount_cents), 0)::int AS c FROM tenant_credits
+           WHERE tenant_id = $1 AND starts_with(reason, $2)`,
+          [tenantId, `Refund ${chargeId}`],
+        );
+        const delta = Math.max(0, cumulativeRefunded - Number(prev.rows[0]?.c ?? 0));
+        let credited = 0;
+        if (delta > 0) {
+          const ins = await client.query(
+            `INSERT INTO tenant_credits (id, tenant_id, amount_cents, reason, webhook_event_id)
+             VALUES (gen_random_uuid(), $1, $2, $3, $4)
+             ON CONFLICT (webhook_event_id) DO NOTHING`,
+            [tenantId, delta, reason, eventId ?? null],
+          );
+          // E4-M-2 crash-retry reprocessing hits the event-id conflict:
+          // nothing new was credited, so report 0 rather than the delta.
+          credited = (ins.rowCount ?? 0) > 0 ? delta : 0;
+        }
+        await client.query('COMMIT');
+        amount = credited;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else if (amount > 0) {
+      // (Without a charge id — the mock path — keep the old behavior.)
+      await q(
+        `INSERT INTO tenant_credits (id, tenant_id, amount_cents, reason, webhook_event_id)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4)
+         ON CONFLICT (webhook_event_id) DO NOTHING`,
+        [tenantId, amount, reason, eventId ?? null],
       );
-      amount = Math.max(0, cumulativeRefunded - Number(prev.rows[0]?.c ?? 0));
     }
     if (invoiceId) {
       await q(`UPDATE invoices SET status = 'refunded' WHERE stripe_invoice_id = $1 AND tenant_id = $2`, [
@@ -1038,19 +1125,9 @@ export async function applyPaymentEvent(
     // (crash-retry, E4-M-2) or concurrently-duplicate-delivered refund must
     // not credit the tenant twice. NULL event ids (mock path without one)
     // never conflict, preserving the old behavior there.
-    if (amount > 0) {
-      await q(
-        `INSERT INTO tenant_credits (id, tenant_id, amount_cents, reason, webhook_event_id)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4)
-         ON CONFLICT (webhook_event_id) DO NOTHING`,
-        [
-          tenantId,
-          amount,
-          `Refund ${chargeId}${invoiceId ? ` for invoice ${invoiceId}` : ''}`.trim(),
-          eventId ?? null,
-        ],
-      );
-    }
+    // (The credit INSERT itself now happens atomically above — the real
+    // path via the serialized H5-L#1 statement, the mock path via the plain
+    // guarded INSERT — so there is nothing left to do here.)
     const { emitBillingEvent } = await import('../services/billing.js');
     await emitBillingEvent({ type: 'charge.refunded', tenantId, detail: { amount, invoiceId }, eventId });
   } else {
@@ -1063,7 +1140,12 @@ export async function applyPaymentEvent(
   // state (it only marks an invoice + records a credit), so it must not
   // advance the watermark; doing so could make a later-delivered,
   // earlier-created subscription event look stale and be dropped.
-  if (eventAt && tenantForLedger && type !== 'charge.refunded') {
+  // H5-H#1: a status-LESS checkout.session.completed is likewise exempt —
+  // it carries no status information, and its newer `created` would
+  // otherwise make the earlier-created (but later-delivered)
+  // subscription.created/updated + invoice.paid events look stale, leaving
+  // the fail-closed 'incomplete' row stranded with no self-healing.
+  if (eventAt && tenantForLedger && type !== 'charge.refunded' && !statusUnknownCheckout) {
     await q(
       `UPDATE subscriptions SET last_event_at = GREATEST(COALESCE(last_event_at, $2), $2)
        WHERE tenant_id = $1`,
