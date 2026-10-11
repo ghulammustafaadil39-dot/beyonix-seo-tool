@@ -27,14 +27,14 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | P0-05 | Security Lead | 1 | in_review | LA review PASSED + merged (521c239). Fail-closed NODE_ENV default; validateSecrets() pure+tested (≥32 chars, placeholder rejection, all non-dev/test envs); signed mock webhooks (MOCK_WEBHOOK_SECRET); mock-confirm disabled in prod. 15 tests pass. Gate re-verification pending |
 | S-01 | Security Lead | 1 | in_review | LA review PASSED + merged. Email verification flow (token/expiry/resend/rate-limit); Google merge requires Google email_verified AND local verified; requireVerifiedEmail preHandlers on paid/spend routes. 21 tests pass |
 | S-02 | Security Lead | 1 | in_review | LA review PASSED + merged. safeFetch rewrite: single-resolve DNS pinning, redirect re-validation, IPv6-transition blocks, size/type caps, test-only loopback bypass (NODE_ENV=test, proven unreachable otherwise). 22 tests pass |
-| S-03 | Security Lead (sess.2) | 1 | pending | trustProxy, Redis rate limits, login lockout — reassigned 2026-10-11 |
-| S-04 | Security Lead (sess.2) | 1 | pending | Redis OAuth state + signed cookie + PKCE (oauthState.ts interface exists) — reassigned |
-| S-05 | Security Lead (sess.2) | 1 | pending | Password reset/change, email change, delete+purge, TOTP, sessions list — reassigned |
-| S-06 | Security Lead (sess.2) | 1 | pending | Cookies/CSRF/helmet/CSP/CORS + Next.js headers (Frontend Lead done — Security owns both sides now) — reassigned |
-| S-07 | Security Lead (sess.2) | 1 | pending | Key versioning (kid) + rotation script — reassigned |
-| S-08 | Security Lead (sess.2) | 1 | pending | Domain verification hardening + weekly re-verify — reassigned |
-| S-09 | Security Lead (sess.2) | 1 | pending | Prompt-injection delimiting + LLM HTML sanitization — reassigned |
-| S-10 | Security Lead (sess.2) | 1 | pending | Container hardening (file review; Trivy in CI Wave 3) — reassigned |
+| S-03 | Security Lead (sess.2) | 1 | verified | trustProxy, Redis rate limits, login lockout + LA Redis-namespace isolation fix |
+| S-04 | Security Lead (sess.2) | 1 | verified | Redis OAuth state + signed cookie + PKCE |
+| S-05 | Security Lead (sess.2) | 1 | verified | Password reset/change, email change, delete+purge, TOTP 2FA, sessions list |
+| S-06 | Security Lead (sess.2) | 1 | verified | Cookies/CSRF/helmet/CSP/CORS + Next.js CSP headers |
+| S-07 | Security Lead (sess.2) | 1 | verified | Key versioning (kid) + rotation script |
+| S-08 | Security Lead (sess.2) | 1 | verified | Domain verification hardening + weekly re-verify |
+| S-09 | Security Lead (sess.2) | 1 | verified | Prompt-injection delimiting + LLM HTML sanitization |
+| S-10 | Security Lead (sess.2) | 1 | verified | Container hardening (file review; Trivy execution in CI = Q-02 Wave 3) |
 
 ### Wave 1 additions (from baseline hostile audit 2026-10-11)
 
@@ -125,3 +125,5 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 - Security↔Backend auth-pattern conflict (2026-10-11): resolved in favor of Backend's `await authPlugin(app)` (no fp); Security's S-01 branch had DROPPED token_version signing in its signup/login rewrite — caught and fixed during LA rebase (combined both). requireVerifiedEmail preHandlers preserved.
 - Integration fallout fixed by LA (2026-10-11): S-01 used removed `badRequest` → switched to `validationError`; QA fixture test updated for S-02 test-only loopback bypass; n-qa-1 webhook test updated for P0-05 signed mock webhooks.
 - Security Lead session 1 completed P0-05/S-01/S-02 + Backend review (final report contained review only; own items verified by LA: 58/58 tests + tsc). Session 2 spawned for S-03..S-10.
+
+- 2026-10-11 ~02:00 PKT — LA: S-03..S-10 merged to main and VERIFIED (Wave 1 complete). Security sess.2 delivered all 8 items; LA review found + fixed a cross-run Redis test-isolation flake (S-03/S-04 keys now namespaced via BSEO_REDIS_PREFIX, flushed per run; unit project serialized singleFork). Full gate on main: 307 passed / 9 skipped / 0 failed, tsc clean, frontend build OK. Wave 1 phase gate: PASS.
