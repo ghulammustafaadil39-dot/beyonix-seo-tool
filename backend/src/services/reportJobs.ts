@@ -4,6 +4,7 @@ import { query as defaultQuery } from '../db.js';
 import { requireSite } from './sites.js';
 import { generateReport } from './reporter.js';
 import { getNotify } from '../providers/notify.js';
+import { runPluginHooks } from './plugins.js';
 
 /** Monday of the week containing `d`, as YYYY-MM-DD (UTC). */
 export function weekStart(d: Date | string = new Date()): string {
@@ -62,6 +63,11 @@ export async function reportProcessor(job: Job): Promise<unknown> {
     [tenantId, siteId, periodStart, periodEnd, summary, JSON.stringify(highlights)],
   );
   const reportId = inserted.rows[0].id as string;
+
+  // W-06: plugin hooks around report generation (errors isolated).
+  void runPluginHooks('report.ready', { tenantId, siteId, resourceId: reportId, payload: { periodStart, periodEnd } }).catch((e) =>
+    console.error('[plugin] report.ready hooks failed:', e.message),
+  );
 
   try {
     const t = await q(
