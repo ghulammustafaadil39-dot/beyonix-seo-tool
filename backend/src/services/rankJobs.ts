@@ -17,6 +17,7 @@ import { getSerpSnapshot, type SnapshotOpts } from './serpSnapshots.js';
 import { assertDataBudget } from '../metering.js';
 import { getNotify } from '../providers/notify.js';
 import { emitAlert } from './crawlJobs.js';
+import { scanKeywordAnomaly } from './rankAnomaly.js';
 
 /**
  * Pure helper: is a rank check due for a keyword last checked at
@@ -129,6 +130,11 @@ export async function rankCheckProcessor(job: Job): Promise<unknown> {
         ],
       );
       checked++;
+      // W-02: anomaly detection vs rolling history (z-score |delta|>=10 rule included);
+      // anomalous moves persist rank_alerts rows with anomaly=TRUE.
+      void scanKeywordAnomaly(tenantId, siteId, kw.id, q).catch((e) =>
+        console.error('[rank-check] anomaly scan failed:', e.message),
+      );
       // Alert on moves of >= 10 positions, including falling out of / entering the top 100.
       const delta = prev !== null && snap.position !== null ? prev - snap.position
         : prev !== null && snap.position === null ? -100
