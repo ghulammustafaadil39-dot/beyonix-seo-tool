@@ -14,7 +14,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { config } from '../config.js';
-import { getRedis } from '../redis.js';
+import { getRedis, redisKeyPrefix } from '../redis.js';
 
 export const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 export const OAUTH_STATE_COOKIE = 'bseo_oauth_state';
@@ -42,7 +42,7 @@ interface StateOpts {
   keyPrefix?: string;
 }
 
-const prefixOf = (o?: StateOpts): string => o?.keyPrefix ?? 'bseo:';
+const prefixOf = (o?: StateOpts): string => o?.keyPrefix ?? redisKeyPrefix();
 const stateKey = (prefix: string, flow: string, state: string): string =>
   `${prefix}oauth:${flow}:${state}`;
 

@@ -8,6 +8,7 @@
 // cannot be used to enumerate registered emails.
 import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
+import { redisKeyPrefix } from '../redis.js';
 
 export interface LockoutOptions {
   maxAttempts: number;
@@ -98,7 +99,7 @@ function optsOf(o?: Partial<LockoutOptions>): LockoutOptions {
     baseLockoutMs: o?.baseLockoutMs ?? d.baseLockoutMs,
     maxLockoutMs: o?.maxLockoutMs ?? d.maxLockoutMs,
     windowMs: o?.windowMs ?? d.windowMs,
-    keyPrefix: o?.keyPrefix ?? 'bseo:',
+    keyPrefix: o?.keyPrefix ?? redisKeyPrefix(),
   };
 }
 
@@ -151,6 +152,6 @@ export async function clearLoginAttempts(
   ip: string,
   o?: Partial<LockoutOptions>,
 ): Promise<void> {
-  const prefix = o?.keyPrefix ?? 'bseo:';
+  const prefix = o?.keyPrefix ?? redisKeyPrefix();
   await redis.del(emailKey(email, prefix), ipKey(ip, prefix));
 }

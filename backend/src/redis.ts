@@ -29,3 +29,12 @@ export async function closeRedis(): Promise<void> {
     client = null;
   }
 }
+
+/**
+ * Base prefix for all bseo Redis keys (rate limits, lockouts, OAuth state).
+ * Overridable via BSEO_REDIS_PREFIX so tests can namespace (and flush) their
+ * own keyspace instead of colliding with other suites or stale prior runs.
+ */
+export function redisKeyPrefix(): string {
+  return process.env.BSEO_REDIS_PREFIX ?? 'bseo:';
+}

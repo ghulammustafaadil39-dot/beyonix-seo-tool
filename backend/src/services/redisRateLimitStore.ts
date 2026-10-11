@@ -10,6 +10,7 @@
 // Both use one Lua script (atomic INCR + fixed-window TTL).
 import type { Redis } from 'ioredis';
 import { ApiError } from '../errors.js';
+import { redisKeyPrefix } from '../redis.js';
 
 const RATE_LIMIT_LUA = `
 local current = redis.call('INCR', KEYS[1])
@@ -53,13 +54,14 @@ interface StoreIncrResult {
  * The plugin instantiates it with the global params and calls child() per
  * route, so each route gets its own key prefix.
  */
-export function createRateLimitStore(redis: Redis, keyPrefix = 'bseo:rl:') {
+export function createRateLimitStore(redis: Redis, keyPrefix?: string) {
+  const prefix = keyPrefix ?? `${redisKeyPrefix()}rl:`;
   const r = withScript(redis);
   return class RedisRateLimitStore {
     private prefix: string;
     private timeWindow: number;
     constructor(options: StoreCtorOptions = {}) {
-      this.prefix = `${keyPrefix}${options.nameSpace ?? ''}`;
+      this.prefix = `${prefix}${options.nameSpace ?? ''}`;
       this.timeWindow = typeof options.timeWindow === 'number' ? options.timeWindow : 60_000;
     }
     child(routeOptions: any): RedisRateLimitStore {
@@ -103,7 +105,7 @@ export interface TenantRateLimitOptions {
  */
 export function tenantRateLimit(opts: TenantRateLimitOptions) {
   const r = withScript(opts.redis);
-  const prefix = opts.keyPrefix ?? 'bseo:acct-rl:';
+  const prefix = opts.keyPrefix ?? `${redisKeyPrefix()}acct-rl:`;
   const keyFn =
     opts.keyFn ??
     ((req: any) => (req.tenant?.tenantId ? `tenant:${req.tenant.tenantId}` : `ip:${req.ip ?? 'unknown'}`));

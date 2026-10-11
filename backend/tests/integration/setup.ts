@@ -38,6 +38,25 @@ if (isStripe) {
     'whsec_test_integration_000000000000000000000000';
 }
 
+// LA (S-03 test-isolation fix): namespace this run's S-03/S-04 Redis keys and
+// flush the namespace, mirroring tests/setup.ts (unit). Integration uses
+// Redis DB 1, so this never touches the unit keyspace.
+process.env.BSEO_REDIS_PREFIX ??= `bseo:integration:${process.pid}:`;
+{
+  const { Redis } = await import('ioredis');
+  const redis = new Redis(process.env.REDIS_URL as string, {
+    maxRetriesPerRequest: 3,
+    connectTimeout: 5000,
+  });
+  try {
+    const prefix = process.env.BSEO_REDIS_PREFIX as string;
+    const keys = await redis.keys(`${prefix}*`);
+    if (keys.length > 0) await redis.del(...keys);
+  } finally {
+    redis.disconnect();
+  }
+}
+
 const { ensureMigrated } = await import('./helpers/db.js');
 const { FakeSmtpCatcher, FakeWebhookCatcher, registerFakes } = await import('./helpers/fakes.js');
 

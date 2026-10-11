@@ -2,7 +2,7 @@
 // Use as a route-level preHandler AFTER requireVerifiedEmail (the instance
 // auth hook runs first, so req.tenant is available for the tenant key).
 import { tenantExpensiveLimit } from '../config.js';
-import { getRedis } from '../redis.js';
+import { getRedis, redisKeyPrefix } from '../redis.js';
 import { tenantRateLimit } from '../services/redisRateLimitStore.js';
 
 /**
@@ -16,6 +16,6 @@ export function expensiveTenantLimit() {
     redis: getRedis(),
     max: () => tenantExpensiveLimit(),
     windowMs: 60 * 60 * 1000,
-    keyPrefix: 'bseo:acct-rl:expensive:',
+    keyPrefix: `${redisKeyPrefix()}acct-rl:expensive:`,
   });
 }
