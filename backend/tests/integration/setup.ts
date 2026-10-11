@@ -43,7 +43,12 @@ if (isStripe) {
 // LA (S-03 test-isolation fix): namespace this run's S-03/S-04 Redis keys and
 // flush the namespace, mirroring tests/setup.ts (unit). Integration uses
 // Redis DB 1, so this never touches the unit keyspace.
-process.env.BSEO_REDIS_PREFIX ??= `bseo:integration:${process.pid}:`;
+// LA (Wave-2 gate flake fix): per-FILE namespace — see tests/setup.ts.
+// singleFork shares one process across files; a per-pid prefix made all
+// integration files share one per-IP rate-limit bucket.
+if (process.env.BSEO_REDIS_PREFIX_LOCKED !== '1') {
+  process.env.BSEO_REDIS_PREFIX = `bseo:integration:${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}:`;
+}
 {
   const { Redis } = await import('ioredis');
   const redis = new Redis(process.env.REDIS_URL as string, {

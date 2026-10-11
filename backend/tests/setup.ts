@@ -10,7 +10,17 @@ process.env.ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef
 // lockout, OAuth state) previously used the fixed 'bseo:' prefix, so stale
 // keys from earlier runs (lockouts live up to an hour) flaked later suites.
 // Namespace this run's keys and flush the namespace for a clean slate.
-process.env.BSEO_REDIS_PREFIX ??= `bseo:unit:${process.pid}:`;
+// LA (Wave-2 gate flake fix): per-FILE namespace. The unit project runs
+// singleFork — every file shares ONE process, so a per-pid prefix still
+// gave the whole suite ONE per-IP rate-limit bucket (300/min) → random
+// 429 flakes once the suite grew past ~500 tests (bb-f03 bulk-import was
+// the visible victim; standalone runs always passed). setup.ts executes
+// once per test file, so minting a fresh prefix per execution isolates
+// each file's bucket. Set BSEO_REDIS_PREFIX_LOCKED=1 + BSEO_REDIS_PREFIX
+// to pin a namespace for manual debugging.
+if (process.env.BSEO_REDIS_PREFIX_LOCKED !== '1') {
+  process.env.BSEO_REDIS_PREFIX = `bseo:unit:${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}:`;
+}
 {
   const { Redis } = await import('ioredis');
   const redis = new Redis(process.env.REDIS_URL as string, {
