@@ -5,6 +5,15 @@ process.env.DATABASE_URL ??= 'postgres://bseo:bseo@localhost:5432/bseo_test';
 process.env.REDIS_URL ??= 'redis://localhost:6379';
 // S-07: unit tests exercise the real AES path (not the dev-only plain:
 // fallback). Same throwaway test key as tests/integration/setup.ts.
+// LA (Wave-2 gate flake fix #2): scrub live-tunable limiter env vars that
+// individual test files mutate (s-03 sets TENANT_EXPENSIVE_LIMIT_PER_HOUR='3'
+// inside a test; the expensive limiter re-reads it live per request). With
+// singleFork, process.env persists across files, so a mutation leaked into
+// whichever file ran next (bb-f04's 4th expensive call got 429). Files that
+// need these set them again after setup (module/beforeAll), so scrubbing
+// here is safe.
+delete process.env.TENANT_EXPENSIVE_LIMIT_PER_HOUR;
+delete process.env.AUTH_RATE_LIMIT_PER_MIN;
 process.env.ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 // LA (S-03 test-isolation fix): S-03/S-04 Redis keys (rate limits, login
 // lockout, OAuth state) previously used the fixed 'bseo:' prefix, so stale
