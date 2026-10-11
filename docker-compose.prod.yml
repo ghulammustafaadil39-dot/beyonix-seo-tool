@@ -154,9 +154,19 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # caddy waits on web:service_healthy, so web needs an explicit
+    # healthcheck (a service without one is version-dependent here).
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
     read_only: true
-    tmpfs: ["/tmp"]
+    # Next.js standalone writes its fetch/ISR cache under /app/.next/cache at
+    # runtime; with a read-only rootfs that needs an explicit writable mount.
+    tmpfs: ["/tmp", "/app/.next/cache"]
     deploy:
       resources:
         limits: { cpus: '1.0', memory: 1G }
@@ -187,6 +197,14 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # Fail fast at `compose config` time: without APP_HOST both Caddyfile
+      # site blocks default to `localhost` and Caddy refuses to start with
+      # "duplicate site address". API_HOST may stay empty only when the api
+      # block is commented out (single-hostname alternative, see Caddyfile).
+      APP_HOST: ${APP_HOST:?set APP_HOST in .env}
+      API_HOST: ${API_HOST:-}
+      APP_TLS_EMAIL: ${APP_TLS_EMAIL:-}
     volumes:
       - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - caddydata:/data
@@ -204,23 +222,30 @@ services:
       driver: json-file
       options: { max-size: "20m", max-file: "3" }
 
-  # Backup sidecar: nightly pg_dump to a local volume + optional S3 sync.
-  # Restore procedure: see RUNBOOK.md ("Backups & restore").
+  # Backup sidecar: pg_dump (custom format, verified with pg_restore --list)
+  # to the pgbackups volume. Runs once at startup (after migrations), then
+  # every 24h. Restore procedure: see RUNBOOK.md ("Backups & restore").
+  # Off-site copy of /backups is the operator's job — see DEPLOY.md.
   backup:
     image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
-      AWS_ACCESS_KEY_ID: ${BACKUP_S3_KEY:-}
-      AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET:-}
+      # backup.sh REQUIRES DATABASE_URL (fails fast without it) and splits
+      # it into PG* vars via _pg_env.sh — PGPASSWORD alone is not enough
+      # (pg_dump would still try localhost instead of host `postgres`).
+      DATABASE_URL: postgres://bseo:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/bseo
     volumes:
       - pgbackups:/backups
       - ./backend/scripts/backup.sh:/usr/local/bin/backup.sh:ro
       - ./backend/scripts/restore.sh:/usr/local/bin/restore.sh:ro
-    entrypoint: ["sh", "-c", "while true; do sleep 86400; /usr/local/bin/backup.sh /backups/bseo-$$(date +%F).dump; done"]
+      # backup.sh sources $(dirname $0)/_pg_env.sh — it must be mounted
+      # next to the scripts, otherwise every backup run fails.
+      - ./backend/scripts/_pg_env.sh:/usr/local/bin/_pg_env.sh:ro
+    entrypoint: ["sh", "-c", "/usr/local/bin/backup.sh /backups/bseo-$$(date +%F).dump; while true; do sleep 86400; /usr/local/bin/backup.sh /backups/bseo-$$(date +%F).dump; done"]
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     deploy:
       resources:

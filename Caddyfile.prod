@@ -1,10 +1,19 @@
 # Q-05: Caddy reverse proxy for production.
-# Set APP_HOST / API_HOST in .env (e.g. app.example.com, api.example.com).
-# Caddy obtains/renews TLS automatically via ACME (ports 80/443 must be open).
+# APP_HOST is REQUIRED (docker-compose.prod.yml fails fast at `compose
+# config` time without it). API_HOST is required too, unless you use the
+# single-hostname alternative below — never leave both unset: both blocks
+# would resolve to `localhost` and Caddy refuses to start with
+# "duplicate site address".
+# Example: APP_HOST=app.example.com API_HOST=api.example.com
+# Caddy obtains/renews TLS automatically via ACME (ports 80/443 must be open
+# and both DNS A records must point at this host before first boot).
+# APP_TLS_EMAIL is the ACME account email (optional but recommended).
 #
-# Alternative: serve both from one hostname — comment the api block and let
-# the Next.js same-origin /api proxy route (app/api/[...path]/route.ts)
-# forward to the API. One hostname = no CORS/Cookie-SameSite split concerns.
+# Alternative: serve both from one hostname — comment out the api block, set
+# only APP_HOST, and let the Next.js same-origin /api proxy route
+# (frontend/app/api/[...path]/route.ts, reads API_INTERNAL_URL per request)
+# forward to the API. One hostname = no CORS/Cookie-SameSite split concerns
+# (keep COOKIE_SAMESITE=lax in .env).
 
 {$APP_HOST:localhost} {
 	tls {$APP_TLS_EMAIL:}

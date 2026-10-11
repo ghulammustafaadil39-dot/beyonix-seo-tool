@@ -62,22 +62,54 @@ offline-testable). Mock mode is the default and the whole app works in it.
 
 ## What's mock vs real (honest list)
 
-- **Real, no keys needed:** auth/JWT (+TOTP 2FA), multi-tenancy + team roles,
-  plans + metering + 402 limits, site verification (meta/file/DNS),
-  the audit **crawler + rule engine + health score** (cheerio, robots.txt
-  respected), GEO formatting of content, HTML/Markdown/DOCX/PDF export,
-  BullMQ jobs (retry/backoff, idempotent, per-tenant rate limits, dead-letter
-  queue), weekly report generation, Stripe **flow** (checkout → webhook →
-  subscription row → plan upgrade), public API + webhooks, admin back-office.
-- **Mock until keys are added:** Stripe (in-memory-feeling mock with a local
-  confirm URL — full subscribe flow testable; **disabled in production**),
-  Google/GSC/GA4 (sample queries + backlinks + traffic), DataForSEO
-  (deterministic seeded volume/difficulty/SERP, labeled `dataSource: 'mock'`),
-  LLM (structured template drafts — clearly labeled), email/Telegram (logged
-  to console).
-- **Simulated by design:** GEO "AI citation" checks use our LLM to simulate a
-  platform answer, then detect brand mentions. Honest and labeled
-  (`simulated: true`); swap in native platform APIs later.
+The rule holds everywhere: **anything left empty runs in mock mode.**
+
+**Real, no keys needed:** auth/JWT (+TOTP 2FA), multi-tenancy + team roles,
+plans + metering + 402 limits, site verification (meta/file/DNS),
+the audit **crawler + rule engine + health score** (real HTTP via safeFetch,
+robots.txt respected — no JS execution; Playwright mode deferred),
+HTML/Markdown/DOCX/PDF export, BullMQ jobs (retry/backoff, idempotent,
+per-tenant rate limits, dead-letter queue), weekly report generation,
+Stripe **flow** (checkout → webhook → subscription row → plan upgrade),
+outbound signed webhooks, public API, admin back-office.
+
+| Integration | Real when… | Mock/fallback behavior | Env config | Code |
+|---|---|---|---|---|
+| **Stripe billing** | `STRIPE_SECRET_KEY` (+ webhook secret, `STRIPE_PRICE_*`) → real checkout, portal, webhook verification | Dev/test: mock provider with local mock-confirm URL; mock webhooks signed with `MOCK_WEBHOOK_SECRET`. **Production without keys → 503 `BILLING_NOT_CONFIGURED` (fail-closed).** | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_*` (+ `_ANNUAL`) | `backend/src/providers/stripe.ts` |
+| **DataForSEO** | `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD` → real volume, organic difficulty, SERP, competitor keywords; cached **30d (metrics) / 7d (SERP)** | Deterministic seeded mock, responses labeled `dataSource: 'mock'` | `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD` | `backend/src/providers/dataforseo.ts`, `backend/src/services/keywordCache.ts` |
+| **LLM** | `GEMINI_API_KEY` → real Gemini; `OPENAI_API_KEY` → real OpenAI; tenant BYOK honored (`llm_provider` + encrypted `llm_api_key_enc`) | Structured template drafts (labeled). **Fail-closed: a BYOK key with no explicit provider is never sent anywhere.** | `GEMINI_API_KEY`/`OPENAI_API_KEY`, `LLM_PROVIDER` | `backend/src/providers/llm.ts` |
+| **Google OAuth/GSC/GA4** | `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` → real OAuth (PKCE), real GSC queries/backlinks, GA4 data | Sample data — **only in test/development** (`isMockGoogleAllowed()` fails closed in production) | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | `backend/src/providers/google.ts` |
+| **Email (SMTP)** | `SMTP_HOST` etc. → real delivery | Logged to console | `SMTP_*` | `backend/src/providers/notify.ts` |
+| **Telegram** | `TELEGRAM_BOT_TOKEN` → real `sendMessage` | Logged to console | `TELEGRAM_BOT_TOKEN` | `backend/src/providers/notify.ts` |
+| **Slack** | Tenant webhook URL in notification settings → real POST via safeFetch | "not configured" error | notification settings (per tenant) | `backend/src/services/notifications.ts` |
+| **Outbound webhooks** | Real: HMAC-signed (`X-BSEO-Signature`) POSTs, retries + replay | — | tenant webhook subscriptions | `backend/src/services/webhookDelivery.ts` |
+| **CMS publish** | `CMS_PUBLISH_ENABLED=true` + credentials → real WordPress/Webflow | `{ ok: true, mock: true }`, **zero network calls** | `CMS_PUBLISH_ENABLED`, `CMS_WP_*`, `CMS_WEBFLOW_*` | `backend/src/services/publishConnector.ts` |
+| **GEO / AI visibility** | — | **Simulated by design:** our LLM generates a platform-style answer, then we detect brand mentions; every row labeled `simulated: true` | follows LLM config | `backend/src/services/geoService.ts` |
+| **CAPTCHA** | `CAPTCHA_PROVIDER=hcaptcha` + secret → real hCaptcha, fail-closed | `none` default; `test` provider **refused in production** | `CAPTCHA_PROVIDER`, `CAPTCHA_SECRET` | `backend/src/providers/captcha.ts` |
+| **PageSpeed** | Real Google PageSpeed API v5 (free), cached 7d, quota-guarded | — | — | `backend/src/services/pagespeed.ts` |
+| **Backlinks** | Real via GSC when Google is configured | GSC samples otherwise; DataForSEO backlinks API **not wired** | follows Google config | `backend/src/services/backlinkJobs.ts` |
+
+### Access control & security (verified in code)
+
+- **Team roles on mutations:** mutating routes are role/scoped. `PATCH
+  /settings` requires `owner`/`admin` (whole-route gate — a viewer cannot
+  change the LLM cost cap or overwrite a BYOK key)
+  (`backend/src/routes/settings.ts`). Tenant users carry scopes checked by
+  `requireScope`/`requireRole` (`backend/src/middleware/access.ts`).
+- **BYOK fail-closed:** a tenant API key stored without an explicit
+  `llm_provider` is never routed to a guessed provider — the request throws
+  instead (`backend/src/providers/llm.ts`, A2-H1).
+- **Impersonation (admin):** `POST /api/v1/admin/impersonate` returns a
+  5-minute owner-token as JSON; the Next.js same-origin route
+  `/api/admin/impersonate` forwards the admin's session cookies + CSRF to the
+  API and returns the token to the browser **only as an httpOnly
+  Set-Cookie** — no token in JS, URL, or response body. Every impersonation
+  is audit-logged and registered as a revocable session
+  (`backend/src/routes/admin.ts`,
+  `frontend/app/api/admin/impersonate/route.ts`).
+- **Billing portal scope:** `POST /billing/portal` requires `owner`/`admin`
+  or the `billing:write` scope — a read-only user cannot mint a portal
+  session (`backend/src/routes/billing.ts`, B1-M2).
 
 ## Architecture
 
