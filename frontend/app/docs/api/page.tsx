@@ -24,7 +24,12 @@ const WEBHOOKS = [
   { event: 'audit.completed', desc: 'An audit finished — includes the new health score.' },
   { event: 'rank.changed', desc: 'A tracked keyword moved significantly.' },
   { event: 'report.ready', desc: 'A scheduled or manual report was generated.' },
-  { event: 'limit.reached', desc: 'A plan usage limit hit 80% or 100%.' },
+  { event: 'limit.near', desc: 'A plan usage limit hit 80% or 100%.' },
+  { event: 'invoice.paid', desc: 'An invoice was paid.' },
+  { event: 'invoice.payment_failed', desc: 'An invoice payment failed.' },
+  { event: 'subscription.updated', desc: 'A subscription changed (plan, status, renewal).' },
+  { event: 'site.down', desc: 'A site was unreachable during a crawl.' },
+  { event: 'issue.critical', desc: 'A crawl found a critical issue.' },
 ];
 
 function Code({ children }: { children: string }) {
@@ -36,8 +41,10 @@ function Code({ children }: { children: string }) {
 }
 
 /**
- * F-13 — public API docs page (OpenAPI served at /api/v1/openapi.json
- * by the backend; this page is the human-readable companion).
+ * F-13 — public API docs page. The machine-readable OpenAPI 3.1 spec is
+ * the source of truth and is served live by the backend at
+ * GET /api/v1/openapi.json (linked below); this page is the
+ * human-readable companion and a summary — not a hand-maintained copy.
  */
 export default function ApiDocsPage() {
   return (
@@ -52,13 +59,40 @@ export default function ApiDocsPage() {
         </p>
 
         <section className="mt-10">
+          <h2 className="text-xl font-bold text-white">OpenAPI spec</h2>
+          <p className="mt-3 text-sm leading-relaxed text-white/65">
+            The complete, generated OpenAPI 3.1 specification is the source of
+            truth for every endpoint, schema, and scope:
+          </p>
+          <div className="mt-3">
+            <Code>{`GET /api/v1/openapi.json`}</Code>
+          </div>
+          <p className="mt-3 text-sm">
+            <a href="/api/v1/openapi.json" className="bx-link">
+              Download openapi.json ↗
+            </a>{' '}
+            <span className="text-white/40">
+              — import it into Postman, Insomnia, or your client generator.
+            </span>
+          </p>
+        </section>
+
+        <section className="mt-10">
           <h2 className="text-xl font-bold text-white">Authentication</h2>
           <p className="mt-3 text-sm leading-relaxed text-white/65">
             Create a key in <span className="font-mono text-xs">Dashboard → API keys</span> and send it
-            as a Bearer token. Keys are scoped — a key can only call what its scopes allow.
+            either as a Bearer token or in the <code className="font-mono text-xs">x-api-key</code> header.
+            Keys are scoped — a key can only call what its scopes allow, and a{' '}
+            <code className="font-mono text-xs">:write</code> scope also covers the matching{' '}
+            <code className="font-mono text-xs">:read</code>. A key that lacks a scope gets{' '}
+            <code className="font-mono text-xs">403 INSUFFICIENT_SCOPE</code> with the missing scopes listed.
           </p>
           <div className="mt-3">
-            <Code>{`curl -H "Authorization: Bearer bseo_sk_..." \\
+            <Code>{`curl -H "Authorization: Bearer bseo_..." \\
+  https://app.beyonixseo.com/api/v1/sites
+
+# or equivalently:
+curl -H "x-api-key: bseo_..." \\
   https://app.beyonixseo.com/api/v1/sites`}</Code>
           </div>
         </section>
@@ -72,7 +106,11 @@ export default function ApiDocsPage() {
         </section>
 
         <section className="mt-10">
-          <h2 className="text-xl font-bold text-white">Endpoints</h2>
+          <h2 className="text-xl font-bold text-white">Endpoints (summary)</h2>
+          <p className="mt-3 text-sm leading-relaxed text-white/65">
+            A short summary — the full list lives in the{' '}
+            <a href="/api/v1/openapi.json" className="bx-link">OpenAPI spec</a>.
+          </p>
           <div className="mt-4 space-y-2">
             {ENDPOINTS.map((e) => (
               <div key={e.path + e.method} className="bx-panel">
@@ -94,7 +132,9 @@ export default function ApiDocsPage() {
           <h2 className="text-xl font-bold text-white">Webhooks</h2>
           <p className="mt-3 text-sm leading-relaxed text-white/65">
             Register a URL in <span className="font-mono text-xs">Dashboard → Notifications</span> to
-            receive signed event deliveries with automatic retries.
+            receive signed event deliveries (header{' '}
+            <code className="font-mono text-xs">X-BSEO-Signature: sha256=…</code>) with automatic
+            retries and manual replay.
           </p>
           <div className="mt-4 space-y-2">
             {WEBHOOKS.map((w) => (
@@ -113,10 +153,9 @@ export default function ApiDocsPage() {
             upgrade guidance.
           </p>
           <div className="mt-3">
-            <Code>{`{ "ok": false, "error": {
-  "code": "LIMIT_REACHED",
+            <Code>{`{ "error": {
+  "code": "LIMIT_EXCEEDED",
   "message": "AI words limit reached",
-  "requestId": "req_abc123",
   "upgrade": true, "used": 5000, "limit": 5000
 } }`}</Code>
           </div>

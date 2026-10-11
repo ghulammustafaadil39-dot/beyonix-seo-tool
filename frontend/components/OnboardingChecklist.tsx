@@ -6,10 +6,10 @@ import { loadOnboarding, type OnboardingStep, type OnboardingStatus } from '@/li
 
 /**
  * F-01 — guided onboarding checklist shown on the site dashboard.
- * Progress state comes from GET /api/v1/sites/:id/onboarding; while that
- * endpoint is being built, progress is computed locally from real APIs
- * (verify/GSC flags, audits, keywords, reports) and the panel notes the
- * contract endpoint as pending.
+ * Progress state comes from the real backend endpoint
+ * GET /api/v1/account/sites/:id/onboarding (see lib/onboarding.ts);
+ * locally-derived progress is used only as a fallback when the API is
+ * unreachable, and the panel says so when that happens.
  */
 const STATUS_STYLE: Record<OnboardingStatus, string> = {
   done: 'bx-pill-ok',
@@ -130,7 +130,7 @@ export default function OnboardingChecklist({ siteId }: { siteId: string }) {
       </ol>
       {pendingBackend && (
         <p className="mt-3 font-mono text-[11px] text-white/30">
-          progress computed locally — server checklist endpoint pending
+          progress computed locally — checklist service unreachable right now
         </p>
       )}
     </section>

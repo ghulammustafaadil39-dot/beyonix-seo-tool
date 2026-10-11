@@ -1,41 +1,78 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { withMockFallback, notLandedYet } from '@/lib/mock';
-import {
-  mockApiKeys,
-  mockCreateKey,
-  API_SCOPES,
-  type ApiKey,
-} from '@/lib/mock/apikeys';
+import { useCallback, useEffect, useState } from 'react';
+import { apiKeysApi, ApiError, type ApiKeyRecord } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
-import MockBanner from '@/components/MockBanner';
 import Modal from '@/components/Modal';
 
 /**
- * F-13 — Public API key management: create keys with scopes, see usage,
- * revoke keys. Fully mock-backed (bannered) until the endpoints land.
- * The new secret is shown exactly once.
+ * Fallback scope catalog (mirrors backend API_SCOPES minus 'admin').
+ * The live catalog is fetched from GET /api/v1/apikeys/scopes; the
+ * 'admin' scope is NEVER offered — the backend rejects it with
+ * 400 SCOPE_NOT_ALLOWED because an admin-scoped key could mint more keys.
+ */
+const FALLBACK_SCOPES = [
+  'sites:read',
+  'sites:write',
+  'audits:read',
+  'audits:write',
+  'keywords:read',
+  'keywords:write',
+  'ranks:read',
+  'content:read',
+  'content:write',
+  'geo:read',
+  'backlinks:read',
+  'reports:read',
+  'reports:write',
+  'billing:read',
+  'webhooks:read',
+  'webhooks:write',
+];
+
+/**
+ * F-13 — Public API key management (WIRED, Wave 2): real CRUD against
+ * /api/v1/apikeys. The raw key is shown exactly once at creation; only
+ * its prefix is visible afterwards. Revocation is a soft-revoke on the
+ * server (the key stops working immediately).
  */
 export default function ApiKeysPage() {
   const { report } = useErrorReporter();
-  const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [keys, setKeys] = useState<ApiKeyRecord[] | null>(null);
+  const [scopeCatalog, setScopeCatalog] = useState<string[]>(FALLBACK_SCOPES);
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<string[]>(['sites:read']);
   const [busy, setBusy] = useState(false);
+  const [createErr, setCreateErr] = useState('');
   const [newSecret, setNewSecret] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await apiKeysApi.list();
+    setKeys(res.data);
+  }, []);
 
   useEffect(() => {
     (async () => {
       try {
-        const { data } = await withMockFallback(
-          () => notLandedYet<ApiKey[]>(),
-          mockApiKeys,
-        );
-        setKeys(data);
+        await load();
+        const cat = await apiKeysApi.scopes().catch(() => null);
+        if (cat && cat.scopes.length > 0) {
+          // Never offer 'admin' even though the catalog lists it.
+          setScopeCatalog(cat.scopes.filter((s) => s !== 'admin'));
+        }
       } catch (e) {
-        report(e);
+        // A session created via an API key gets 403 HUMAN_SESSION_REQUIRED
+        // here; browser sessions should never see it, but handle it
+        // honestly instead of a generic failure.
+        if (e instanceof ApiError && e.code === 'HUMAN_SESSION_REQUIRED') {
+          setKeys([]);
+          report(
+            new Error('API keys can only be managed from a signed-in user session, not with an API key.'),
+          );
+        } else {
+          report(e);
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -47,26 +84,37 @@ export default function ApiKeysPage() {
   const create = async () => {
     if (!name.trim() || scopes.length === 0) return;
     setBusy(true);
+    setCreateErr('');
     try {
-      const { data } = await withMockFallback(
-        () => notLandedYet<ApiKey & { secret: string }>(),
-        () => mockCreateKey(name.trim(), scopes),
-      );
-      setKeys((prev) => [data, ...prev]);
-      setNewSecret((data as ApiKey & { secret: string }).secret);
+      const created = await apiKeysApi.create({ name: name.trim(), scopes });
+      setNewSecret(created.key);
       setCreateOpen(false);
       setName('');
       setScopes(['sites:read']);
+      await load();
     } catch (e) {
-      report(e);
+      if (e instanceof ApiError && e.code === 'SCOPE_NOT_ALLOWED') {
+        setCreateErr("The 'admin' scope can't be granted to an API key — pick resource scopes instead.");
+      } else if (e instanceof ApiError && e.code === 'HUMAN_SESSION_REQUIRED') {
+        setCreateErr('API keys can only be created from a signed-in user session.');
+      } else if (e instanceof ApiError) {
+        setCreateErr(e.message);
+      } else {
+        report(e);
+      }
     } finally {
       setBusy(false);
     }
   };
 
-  const revoke = (id: string) => {
-    if (!confirm('Revoke this API key? Integrations using it will stop working.')) return;
-    setKeys((prev) => prev.filter((k) => k.id !== id));
+  const revoke = async (k: ApiKeyRecord) => {
+    if (!confirm(`Revoke "${k.name}"? Integrations using it will stop working immediately.`)) return;
+    try {
+      await apiKeysApi.revoke(k.id);
+      await load();
+    } catch (e) {
+      report(e);
+    }
   };
 
   return (
@@ -80,7 +128,6 @@ export default function ApiKeysPage() {
           Create key
         </button>
       </div>
-      <div><MockBanner label="API key management" /></div>
 
       {newSecret && (
         <div className="bx-alert-warn" role="alert">
@@ -102,7 +149,9 @@ export default function ApiKeysPage() {
 
       <div className="bx-card">
         <p className="bx-micro mb-3">~/ keys</p>
-        {keys.length === 0 ? (
+        {keys === null ? (
+          <p className="font-mono text-sm text-white/40">$ loading keys…</p>
+        ) : keys.length === 0 ? (
           <div className="bx-empty">
             <p className="text-sm font-medium text-white">No API keys yet</p>
             <p className="mt-1 text-sm text-white/50">
@@ -114,19 +163,29 @@ export default function ApiKeysPage() {
             {keys.map((k) => (
               <div key={k.id} className="bx-panel flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-semibold text-white">{k.name}</p>
+                  <p className="flex items-center gap-2 text-sm font-semibold text-white">
+                    {k.name}
+                    {k.revoked_at && (
+                      <span className="bx-pill bx-pill-err">
+                        <span className="bx-dot" />
+                        revoked
+                      </span>
+                    )}
+                  </p>
                   <p className="font-mono text-xs text-white/40">
-                    {k.prefix} · {k.scopes.join(', ')}
+                    {k.key_prefix}… · {k.scopes.join(', ')}
                   </p>
                   <p className="mt-1 font-mono text-[11px] text-white/30">
                     created {new Date(k.created_at).toLocaleDateString()} ·
                     last used {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'} ·
-                    {k.requests_30d.toLocaleString()} requests / 30d
+                    limit {k.rate_limit_per_min}/min
                   </p>
                 </div>
-                <button onClick={() => revoke(k.id)} className="bx-btn-xs-danger">
-                  Revoke
-                </button>
+                {!k.revoked_at && (
+                  <button onClick={() => revoke(k)} className="bx-btn-xs-danger">
+                    Revoke
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -136,10 +195,11 @@ export default function ApiKeysPage() {
       <div className="bx-card">
         <p className="bx-micro mb-2">~/ rate limits</p>
         <p className="text-sm text-white/70">
-          API keys are rate-limited per tenant (see{' '}
-          <a href="/docs/api" className="bx-link">API docs</a>). Exceeding the
-          limit returns <code className="font-mono text-xs">429</code> with a{' '}
-          <code className="font-mono text-xs">Retry-After</code> header.
+          Each key has its own per-minute rate limit (shown on the key). Exceeding
+          it returns <code className="font-mono text-xs">429</code> — back off and
+          retry. Full endpoint reference:{' '}
+          <a href="/docs/api" className="bx-link">API docs</a> ·{' '}
+          <a href="/api/v1/openapi.json" className="bx-link">OpenAPI spec</a>.
         </p>
       </div>
 
@@ -158,7 +218,7 @@ export default function ApiKeysPage() {
           <div className="mt-4">
             <p className="bx-label">Scopes</p>
             <div className="flex flex-wrap gap-1.5">
-              {API_SCOPES.map((s) => (
+              {scopeCatalog.map((s) => (
                 <button
                   key={s}
                   onClick={() => toggleScope(s)}
@@ -173,7 +233,13 @@ export default function ApiKeysPage() {
                 </button>
               ))}
             </div>
+            <p className="bx-hint">
+              A <span className="font-mono">:write</span> scope also covers the matching{' '}
+              <span className="font-mono">:read</span>. The <span className="font-mono">admin</span>{' '}
+              scope is never available to API keys.
+            </p>
           </div>
+          {createErr && <p className="bx-alert-err mt-4" role="alert">{createErr}</p>}
           <div className="mt-5 flex justify-end gap-2">
             <button onClick={() => setCreateOpen(false)} className="bx-btn-secondary">
               Cancel

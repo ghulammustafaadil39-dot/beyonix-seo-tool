@@ -8,17 +8,9 @@ import {
   type Subscription,
   type UsageInfo,
   type Invoice,
-  type CancellationResult,
 } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
-import { withMockFallback } from '@/lib/mock';
-import {
-  mockInvoices,
-  mockBillingEmail,
-  mockScheduleCancellation,
-} from '@/lib/mock/billing';
 import UsageMeter from '@/components/UsageMeter';
-import MockBanner from '@/components/MockBanner';
 import Modal from '@/components/Modal';
 import PlanCards, { type PlanId } from '@/components/PlanCards';
 
@@ -44,35 +36,35 @@ function formatMoney(amount: number, currency: string): string {
   }).format(amount / 100);
 }
 
-const CANCEL_REASONS = [
-  'Too expensive',
-  'Not using it enough',
-  'Missing a feature I need',
-  'Switching to another tool',
-  'Technical issues',
-  'Other',
-];
+const INVOICE_PILL: Record<Invoice['status'], string> = {
+  paid: 'bx-pill-ok',
+  open: 'bx-pill-warn',
+  failed: 'bx-pill-err',
+  refunded: 'bx-pill-info',
+  void: 'bx-pill-info',
+};
 
+/**
+ * Cancellation (F-11 wired): the backend has no DELETE-subscription
+ * endpoint — cancellation is completed in the Stripe customer portal,
+ * which flips `cancel_at_period_end` via webhook. This flow keeps the
+ * retention steps, then hands off to the portal honestly instead of
+ * pretending a cancellation was recorded here.
+ */
 function CancelFlow({ onClose }: { onClose: () => void }) {
   const { report } = useErrorReporter();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2>(1);
   const [reason, setReason] = useState('');
   const [other, setOther] = useState('');
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<(CancellationResult & { mock: boolean }) | null>(null);
 
-  const confirm = async () => {
+  const goToPortal = async () => {
     setBusy(true);
     try {
-      const { data, mock } = await withMockFallback(
-        () => billingApi.cancelSubscription(reason === 'Other' ? other : reason),
-        () => mockScheduleCancellation(reason === 'Other' ? other : reason),
-      );
-      setResult({ ...data, mock });
-      setStep(3);
+      const { url } = await billingApi.portal();
+      window.location.href = url;
     } catch (e) {
       report(e);
-    } finally {
       setBusy(false);
     }
   };
@@ -85,7 +77,14 @@ function CancelFlow({ onClose }: { onClose: () => void }) {
             We&rsquo;re sorry to see you go. What&rsquo;s the main reason?
           </p>
           <div className="mt-4 space-y-2" role="radiogroup" aria-label="Cancellation reason">
-            {CANCEL_REASONS.map((r) => (
+            {[
+              'Too expensive',
+              'Not using it enough',
+              'Missing a feature I need',
+              'Switching to another tool',
+              'Technical issues',
+              'Other',
+            ].map((r) => (
               <label
                 key={r}
                 className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition ${
@@ -147,39 +146,20 @@ function CancelFlow({ onClose }: { onClose: () => void }) {
           </div>
           <p className="mt-4 text-sm text-white/60">
             Cancellation takes effect at the end of your current billing period.
-            Your data stays exportable, and nothing is deleted immediately.
+            You&rsquo;ll finish the cancellation in the secure Stripe billing
+            portal — your data stays exportable, and nothing is deleted
+            immediately.
           </p>
           <div className="mt-5 flex justify-end gap-2">
             <button onClick={() => setStep(1)} className="bx-btn-secondary" disabled={busy}>
               Back
             </button>
             <button
-              onClick={confirm}
+              onClick={goToPortal}
               disabled={busy}
               className="bx-btn-xs-danger !px-4 !py-2 !text-sm"
             >
-              {busy ? 'Working…' : 'Confirm cancellation'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === 3 && result && (
-        <div>
-          {result.mock && <MockBanner label="cancellation" />}
-          <div className="bx-alert-ok mt-3">
-            <p className="font-medium">
-              Cancellation scheduled for{' '}
-              {new Date(result.cancel_at).toLocaleDateString()}.
-            </p>
-            <p className="mt-1 text-xs">
-              You keep full access until then. Changed your mind? Just resubscribe
-              from this page.
-            </p>
-          </div>
-          <div className="mt-5 text-right">
-            <button onClick={onClose} className="bx-btn-primary">
-              Done
+              {busy ? 'Opening portal…' : 'Continue to portal to cancel'}
             </button>
           </div>
         </div>
@@ -193,15 +173,15 @@ export default function BillingPage() {
   const [sub, setSub] = useState<Subscription | null>(null);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
   const [invoices, setInvoices] = useState<Invoice[] | null>(null);
-  const [invoicesMock, setInvoicesMock] = useState(false);
   const [billingEmail, setBillingEmail] = useState<string | null>(null);
   const [emailDraft, setEmailDraft] = useState('');
-  const [emailMock, setEmailMock] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [portalBusy, setPortalBusy] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [emailSaved, setEmailSaved] = useState(false);
+  const [annual, setAnnual] = useState(false);
+  const [coupon, setCoupon] = useState('');
   const [notice, setNotice] = useState<{ kind: 'success' | 'info'; text: string } | null>(null);
 
   useEffect(() => {
@@ -214,6 +194,7 @@ export default function BillingPage() {
       // Arrived from the public pricing page with a chosen plan.
       const plan = params.get('plan');
       const billing = params.get('billing') === 'annual' ? 'annual' : 'monthly';
+      if (billing === 'annual') setAnnual(true);
       if (plan && ['starter', 'growth', 'pro'].includes(plan)) {
         setNotice({
           kind: 'info',
@@ -224,22 +205,19 @@ export default function BillingPage() {
     window.history.replaceState(null, '', window.location.pathname);
     (async () => {
       try {
-        const [s, u] = await Promise.all([billingApi.subscription(), settingsApi.usage()]);
+        const [s, u, inv, settings] = await Promise.all([
+          billingApi.subscription(),
+          settingsApi.usage(),
+          billingApi.invoices(),
+          settingsApi.get(),
+        ]);
         setSub(s);
         setUsage(u);
-        const inv = await withMockFallback(
-          () => billingApi.invoices().then((r) => r.data),
-          mockInvoices,
-        );
         setInvoices(inv.data);
-        setInvoicesMock(inv.mock);
-        const em = await withMockFallback(
-          () => billingApi.billingEmail(),
-          mockBillingEmail,
-        );
-        setBillingEmail(em.data.billing_email);
-        setEmailDraft(em.data.billing_email ?? '');
-        setEmailMock(em.mock);
+        // No dedicated billing-email field exists in the backend: receipts
+        // and dunning go to the tenant notification email (settings).
+        setBillingEmail(settings.notify_email);
+        setEmailDraft(settings.notify_email ?? '');
       } catch (e) {
         report(e);
       } finally {
@@ -252,7 +230,10 @@ export default function BillingPage() {
   const checkout = async (planId: string) => {
     setBusyPlan(planId);
     try {
-      const { url } = await billingApi.checkout(planId);
+      const { url } = await billingApi.checkout(planId, {
+        interval: annual ? 'annual' : 'monthly',
+        couponCode: coupon.trim() ? coupon.trim().toUpperCase() : undefined,
+      });
       window.location.href = url;
     } catch (e) {
       report(e);
@@ -274,12 +255,10 @@ export default function BillingPage() {
 
   const saveBillingEmail = async () => {
     try {
-      const { data, mock } = await withMockFallback(
-        () => billingApi.updateBillingEmail(emailDraft.trim() || null),
-        async () => ({ billing_email: emailDraft.trim() || null }),
-      );
-      setBillingEmail(data.billing_email);
-      setEmailMock(mock);
+      const updated = await settingsApi.update({
+        notify_email: emailDraft.trim() || null,
+      });
+      setBillingEmail(updated.notify_email);
       setEmailSaved(true);
       setTimeout(() => setEmailSaved(false), 3000);
     } catch (e) {
@@ -289,9 +268,9 @@ export default function BillingPage() {
 
   if (loading) return <p className="font-mono text-sm text-white/40">$ loading billing…</p>;
 
-  const currentPlan = (sub?.plan_id ?? null) as PlanId | null;
+  const currentPlan = sub && sub.status !== 'none' ? (sub.plan_id as PlanId) : null;
   const limits = usage?.limits ?? {};
-  const hasSubscription = Boolean(sub);
+  const hasSubscription = Boolean(sub && sub.status !== 'none');
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -332,21 +311,43 @@ export default function BillingPage() {
         </p>
         <p className="mt-1 font-mono text-xs text-white/40">
           status: {sub?.status ?? '—'}
+          {sub?.billing_interval && ` · ${sub.billing_interval}`}
           {sub?.current_period_end &&
-            ` · renews ${new Date(sub.current_period_end).toLocaleDateString()}`}
+            ` · ${sub.cancel_at_period_end ? 'cancels' : 'renews'} ${new Date(sub.current_period_end).toLocaleDateString()}`}
+          {sub?.trial_ends_at &&
+            sub.status === 'trialing' &&
+            ` · trial ends ${new Date(sub.trial_ends_at).toLocaleDateString()}`}
+          {sub?.coupon_code && ` · coupon ${sub.coupon_code}`}
         </p>
+        {sub?.status === 'past_due' && (
+          <p className="bx-alert-err mt-3" role="alert">
+            Your last payment failed.
+            {sub.grace_until &&
+              ` Your plan stays active until ${new Date(sub.grace_until).toLocaleDateString()} — please update your payment method in the portal.`}
+          </p>
+        )}
+        {sub?.cancel_at_period_end && (
+          <p className="bx-alert-warn mt-3">
+            Cancellation is scheduled — you keep full access until{' '}
+            {sub.current_period_end
+              ? new Date(sub.current_period_end).toLocaleDateString()
+              : 'the end of this period'}
+            . Resubscribe from the portal to undo it.
+          </p>
+        )}
         <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={openPortal} disabled={portalBusy} className="bx-btn-secondary">
             {portalBusy ? 'Opening…' : 'Manage subscription (upgrade / downgrade)'}
           </button>
-          {hasSubscription && (
+          {hasSubscription && !sub?.cancel_at_period_end && (
             <button onClick={() => setCancelOpen(true)} className="bx-btn-xs-danger !px-3 !py-2 !text-sm">
               Cancel subscription
             </button>
           )}
         </div>
         <p className="bx-hint">
-          Plan changes and billing-cadence switches are handled in the secure Stripe customer portal.
+          Plan changes, billing-cadence switches, and cancellation are completed in the
+          secure Stripe customer portal.
         </p>
       </div>
 
@@ -371,9 +372,9 @@ export default function BillingPage() {
         <p className="bx-micro mb-3">~/ plans</p>
         <PlanCards
           currentPlan={currentPlan}
-          annual={false}
-          onToggleAnnual={() => {}}
-          showToggle={false}
+          annual={annual}
+          onToggleAnnual={setAnnual}
+          showToggle
           action={(plan, isCurrent) =>
             isCurrent ? (
               <p className="bx-btn-primary w-full cursor-default">Current plan</p>
@@ -392,47 +393,77 @@ export default function BillingPage() {
             )
           }
         />
-        <p className="mt-3 text-center text-xs text-white/40">
-          Have a coupon code? Enter it on the Stripe checkout page — it&rsquo;s
-          applied before you pay.
-        </p>
+        {!hasSubscription && (
+          <div className="mx-auto mt-4 max-w-sm">
+            <label htmlFor="coupon-code" className="bx-label">
+              Coupon code (optional)
+            </label>
+            <input
+              id="coupon-code"
+              value={coupon}
+              onChange={(e) => setCoupon(e.target.value)}
+              placeholder="e.g. LAUNCH20"
+              className="bx-input font-mono uppercase"
+              autoComplete="off"
+            />
+            <p className="bx-hint">
+              Applied at checkout and validated before you pay — an invalid code
+              stops checkout with an explanation, no charge is made.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Invoices */}
       <div className="bx-card">
         <p className="bx-micro mb-4">~/ invoices</p>
-        {invoicesMock && <div className="mb-3"><MockBanner label="invoices" /></div>}
-        {invoices && invoices.length > 0 ? (
+        {invoices === null ? (
+          <p className="text-sm text-white/40">Loading invoices…</p>
+        ) : invoices.length > 0 ? (
           <div className="bx-table-wrap">
-            <table className="w-full min-w-[480px] text-sm">
+            <table className="w-full min-w-[520px] text-sm">
               <thead>
                 <tr className="border-b border-white/10">
                   <th className="bx-th">Invoice</th>
                   <th className="bx-th">Period</th>
                   <th className="bx-th">Amount</th>
                   <th className="bx-th">Status</th>
+                  <th className="bx-th">Receipt</th>
                 </tr>
               </thead>
               <tbody className="bx-tbody">
                 {invoices.map((inv) => (
                   <tr key={inv.id}>
-                    <td className="px-4 py-3 font-mono text-white/80">{inv.number}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-white/80">
+                      {inv.stripe_invoice_id ?? inv.id.slice(0, 8)}
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs text-white/50">
-                      {new Date(inv.period_start).toLocaleDateString()} →{' '}
-                      {new Date(inv.period_end).toLocaleDateString()}
+                      {inv.period_start && inv.period_end
+                        ? `${new Date(inv.period_start).toLocaleDateString()} → ${new Date(inv.period_end).toLocaleDateString()}`
+                        : new Date(inv.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3 font-mono text-white/80">
-                      {formatMoney(inv.amount, inv.currency)}
+                      {formatMoney(inv.amount_due_cents, inv.currency)}
                     </td>
                     <td className="px-4 py-3">
-                      <span
-                        className={`bx-pill ${
-                          inv.status === 'paid' ? 'bx-pill-ok' : inv.status === 'open' ? 'bx-pill-warn' : 'bx-pill-info'
-                        }`}
-                      >
+                      <span className={`bx-pill ${INVOICE_PILL[inv.status] ?? 'bx-pill-info'}`}>
                         <span className="bx-dot" />
                         {inv.status}
                       </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {inv.hosted_invoice_url ? (
+                        <a
+                          href={inv.hosted_invoice_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="bx-link text-xs"
+                        >
+                          View ↗
+                        </a>
+                      ) : (
+                        <span className="text-xs text-white/30">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -444,13 +475,14 @@ export default function BillingPage() {
         )}
       </div>
 
-      {/* Billing email */}
+      {/* Billing email — backed by the tenant notification email, which is
+          where receipts and dunning notices are actually sent. */}
       <div className="bx-card">
         <p className="bx-micro mb-2">~/ billing email</p>
         <p className="bx-body mb-3">
-          Receipts and payment alerts go here (defaults to your account email).
+          Receipts, payment-failure alerts, and weekly reports go to your account
+          notification email.
         </p>
-        {emailMock && <div className="mb-3"><MockBanner label="billing email" /></div>}
         <div className="flex flex-wrap items-end gap-2">
           <div className="min-w-[240px] flex-1">
             <label htmlFor="billing-email" className="bx-label">
