@@ -88,7 +88,10 @@ export interface GoogleProvider {
   name: string;
   isMock: boolean;
   getAuthUrl(state: string, opts?: { codeChallenge?: string }): string;
-  exchangeCode(code: string): Promise<{ refreshToken: string }>;
+  // S-04: codeVerifier is OPTIONAL (backwards-compatible addition to the
+  // frozen interface): PKCE flows pass the verifier stored with the OAuth
+  // state; the mock provider ignores it.
+  exchangeCode(code: string, codeVerifier?: string): Promise<{ refreshToken: string }>;
   /** Email/profile for the user who completed OAuth (used for signup/login via Google). */
   getProfile(code: string, codeVerifier?: string): Promise<GoogleProfile>;
   searchQueries(refreshToken: string, siteUrl: string, days?: number): Promise<GscQuery[]>;

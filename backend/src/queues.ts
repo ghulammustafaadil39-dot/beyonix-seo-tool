@@ -34,6 +34,7 @@ export const Jobs = {
   WEEKLY_REPORT: 'weekly-report',
   GENERATE_CONTENT: 'generate-content',
   BACKLINK_REFRESH: 'backlink-refresh',
+  REVERIFY_SITE: 'reverify-site',
 } as const;
 
 const queues = new Map<string, Queue>();

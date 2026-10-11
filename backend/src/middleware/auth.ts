@@ -1,9 +1,13 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
 import { query } from '../db.js';
 import { unauthorized } from '../errors.js';
+import { isSessionActive, touchSession } from '../services/sessions.js';
+import { CSRF_COOKIE } from './csrf.js';
+import { authCookieOptions, csrfCookieOptions } from '../services/securityHeaders.js';
 import type { PlanId } from '../plans.js';
 
 export interface TenantContext {
@@ -14,6 +18,8 @@ export interface TenantContext {
   name: string;
   /** S-01: false until the user completes email verification. */
   emailVerified: boolean;
+  /** S-05: the token's jti (undefined for pre-S-05 legacy tokens). */
+  jti?: string;
 }
 
 declare module 'fastify' {
@@ -24,22 +30,45 @@ declare module 'fastify' {
 
 const COOKIE_NAME = 'bseo_token';
 
-export function signToken(userId: string, tenantId: string, tokenVersion = 0): string {
-  return jwt.sign({ uid: userId, tid: tenantId, tv: tokenVersion }, config.jwtSecret, { expiresIn: '7d' });
+export { COOKIE_NAME, CSRF_COOKIE };
+
+export interface SignTokenOpts {
+  /** 'auth' for API sessions, 'totp' for the short-lived 2FA challenge token. */
+  purpose?: 'auth' | 'totp';
+  expiresIn?: string;
+}
+
+/**
+ * S-05: every token carries a jti (registered in user_sessions for
+ * per-session revocation) and a purpose. The 'totp' purpose marks the
+ * 5-minute 2FA challenge token, which authPlugin rejects for API access.
+ */
+export function signToken(
+  userId: string,
+  tenantId: string,
+  tokenVersion = 0,
+  opts: SignTokenOpts = {},
+): string {
+  return jwt.sign(
+    { uid: userId, tid: tenantId, tv: tokenVersion, jti: randomUUID(), purpose: opts.purpose ?? 'auth' },
+    config.jwtSecret,
+    { expiresIn: (opts.expiresIn ?? '7d') as any },
+  );
 }
 
 export function setAuthCookie(reply: any, token: string) {
-  reply.setCookie(COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: config.nodeEnv === 'production',
-    path: '/',
-    maxAge: 7 * 24 * 3600,
-  });
+  // S-06: flags from config (SameSite strategy + Secure), not hardcoded.
+  reply.setCookie(COOKIE_NAME, token, authCookieOptions());
+}
+
+/** Sets the readable CSRF double-submit cookie alongside the auth cookie. */
+export function setCsrfCookie(reply: any, csrfToken: string) {
+  reply.setCookie(CSRF_COOKIE, csrfToken, csrfCookieOptions());
 }
 
 export function clearAuthCookie(reply: any) {
   reply.clearCookie(COOKIE_NAME, { path: '/' });
+  reply.clearCookie(CSRF_COOKIE, { path: '/' });
 }
 
 export async function hashPassword(pw: string): Promise<string> {
@@ -85,6 +114,20 @@ export async function authPlugin(fastify: FastifyInstance) {
     if (Number(row.token_version ?? 0) !== Number(payload.tv ?? 0)) {
       throw unauthorized('Session revoked — please log in again');
     }
+    // S-05: the 2FA challenge token is single-purpose — it can only be
+    // exchanged at POST /auth/totp/verify, never used for API access.
+    if (payload.purpose && payload.purpose !== 'auth') {
+      throw unauthorized('Authentication required');
+    }
+    // S-05: per-session revocation. Tokens minted before S-05 have no jti
+    // and skip this check (they still die on token_version bumps and expire
+    // within 7 days).
+    if (payload.jti) {
+      const active = await isSessionActive(payload.uid as string, payload.jti as string);
+      if (!active) throw unauthorized('Session revoked — please log in again');
+      // Throttled last-seen touch (one write per 10 min per session).
+      touchSession(payload.jti as string).catch(() => {});
+    }
     req.tenant = {
       userId: row.user_id,
       tenantId: row.tenant_id,
@@ -92,8 +135,7 @@ export async function authPlugin(fastify: FastifyInstance) {
       email: row.email,
       name: row.name,
       emailVerified: row.email_verified_at != null,
+      jti: typeof payload.jti === 'string' ? payload.jti : undefined,
     };
   });
 }
-
-export { COOKIE_NAME };

@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import dns from 'node:dns';
 import net from 'node:net';
 import type { FastifyInstance } from 'fastify';
 import { query } from '../db.js';
@@ -7,7 +6,10 @@ import { ApiError, conflict, notFound } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
 import { assertLimit, checkLimit } from '../metering.js';
 import { requireSite, toPublicSite } from '../services/sites.js';
-import { safeFetch } from '../services/safeFetch.js';
+import {
+  checkVerifyToken,
+  verifySiteDomain,
+} from '../services/domainVerification.js';
 
 const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
 
@@ -105,29 +107,7 @@ function verifyInstructions(method: 'meta' | 'file' | 'dns', token: string, doma
   }
 }
 
-/** Checks all three verification methods; returns true if any matches. */
-async function checkVerifyToken(domain: string, token: string): Promise<boolean> {
-  // SSRF-protected fetch (safeFetch validates host + redirect hops).
-  const get = async (url: string): Promise<string | null> => {
-    try {
-      const res = await safeFetch(url, undefined, 8000);
-      if (!res.ok) return null;
-      return await res.text();
-    } catch {
-      return null;
-    }
-  };
-  // meta tag
-  const html = await get(`https://${domain}`);
-  if (html !== null && html.includes('bseo-verify') && html.includes(token)) return true;
-  // verification file
-  const file = await get(`https://${domain}/bseo-verify.txt`);
-  if (file !== null && file.includes(token)) return true;
-  // DNS TXT
-  const records = await dns.promises.resolveTxt(domain);
-  if (records.flat().some((r) => r.includes(token))) return true;
-  return false;
-}
+/** S-08: hardened checks live in services/domainVerification.ts (exact parse). */
 
 export async function registerSitesRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
@@ -211,17 +191,13 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
         ]);
       }
       // Attempt verification on every submit (the wizard's "Check verification"
-      // button re-POSTs here).
+      // button re-POSTs here). verifySiteDomain sets verified_at and maps the
+      // one-domain-one-tenant conflict (23505) to 409.
       let verified = site.verified;
       if (!verified) {
-        try {
-          verified = await checkVerifyToken(site.domain, token);
-        } catch {
-          verified = false;
-        }
-        if (verified) {
-          await query('UPDATE sites SET verified = true WHERE id = $1 AND tenant_id = $2', [id, req.tenant.tenantId]);
-        }
+        verified = await verifySiteDomain(query, id, req.tenant.tenantId, () =>
+          checkVerifyToken(site.domain, token),
+        );
       }
       return {
         token,
@@ -237,14 +213,9 @@ export async function registerSitesRoutes(fastify: FastifyInstance) {
       if (site.verified) return { verified: true };
       let ok = false;
       if (site.verify_token) {
-        try {
-          ok = await checkVerifyToken(site.domain, site.verify_token);
-        } catch {
-          ok = false;
-        }
-      }
-      if (ok) {
-        await query('UPDATE sites SET verified = true WHERE id = $1 AND tenant_id = $2', [id, req.tenant.tenantId]);
+        ok = await verifySiteDomain(query, id, req.tenant.tenantId, () =>
+          checkVerifyToken(site.domain, site.verify_token as string),
+        );
       }
       return { verified: ok };
     });

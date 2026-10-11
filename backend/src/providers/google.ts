@@ -28,8 +28,13 @@ class RealGoogleProvider implements GoogleProvider {
     });
   }
 
-  async exchangeCode(code: string): Promise<{ refreshToken: string }> {
-    const { tokens } = await oauthClient().getToken(code);
+  async exchangeCode(code: string, codeVerifier?: string): Promise<{ refreshToken: string }> {
+    const client = oauthClient();
+    // S-04 PKCE: the auth URL carried our S256 challenge, so the exchange
+    // must present the verifier or Google rejects the code.
+    const { tokens } = codeVerifier
+      ? await client.getToken({ code, codeVerifier })
+      : await client.getToken(code);
     if (!tokens.refresh_token) throw new Error('Google did not return a refresh token');
     return { refreshToken: tokens.refresh_token };
   }

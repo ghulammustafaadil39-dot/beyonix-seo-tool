@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { config, hasGoogle } from '../config.js';
 import { encrypt } from '../crypto.js';
@@ -6,6 +5,14 @@ import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
 import { getGoogle } from '../providers/google.js';
+import {
+  OAUTH_STATE_COOKIE,
+  clearOAuthStateCookie,
+  consumeGa4State,
+  createGa4State,
+  setOAuthStateCookie,
+  verifyOAuthStates,
+} from '../services/oauthState.js';
 import { requireSite } from '../services/sites.js';
 
 const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
@@ -41,12 +48,6 @@ const connectBodySchema = {
   additionalProperties: false,
 } as const;
 
-interface Ga4State {
-  tenantId: string;
-  siteId: string;
-  exp: number;
-}
-
 /**
  * Validates a user-supplied GA4 property id against the property list of the
  * connected Google account, so a forged id can never be stored.
@@ -58,17 +59,9 @@ export function isKnownGa4Property(
   return properties.some((p) => p.id === propertyId);
 }
 
-/** state -> {tenantId, siteId, exp} for the GA4 OAuth flow. */
-const ga4States = new Map<string, Ga4State>();
-const GA4_STATE_TTL_MS = 15 * 60 * 1000;
-
-function sweepGa4States() {
-  if (ga4States.size < 500) return;
-  const now = Date.now();
-  for (const [k, v] of ga4States) {
-    if (v.exp < now) ga4States.delete(k);
-  }
-}
+// S-04: GA4 OAuth state now lives in the shared Redis-backed oauthState
+// module (was a route-local in-memory map) — same browser binding + PKCE as
+// the GSC flow.
 
 export async function registerGa4Routes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
@@ -76,16 +69,17 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
 
     // Google OAuth for GA4. The consent screen already requests
     // analytics.readonly, so this shares the stored Google refresh token.
-    authed.get('/sites/:id/ga4/auth-url', { schema: { params: idParamSchema } }, async (req) => {
+    authed.get('/sites/:id/ga4/auth-url', { schema: { params: idParamSchema } }, async (req, reply) => {
       const { id } = req.params as { id: string };
       await requireSite(req.tenant.tenantId, id);
-      const state = randomBytes(16).toString('hex');
-      sweepGa4States();
-      ga4States.set(state, { tenantId: req.tenant.tenantId, siteId: id, exp: Date.now() + GA4_STATE_TTL_MS });
+      // S-04: Redis state + signed-cookie browser binding + PKCE (was a
+      // route-local in-memory map).
+      const { state, codeChallenge } = await createGa4State({ tenantId: req.tenant.tenantId, siteId: id });
+      setOAuthStateCookie(reply, state, req);
       const google = getGoogle();
       const url = google.isMock
         ? `${config.apiUrl}/api/v1/ga4/mock-consent?state=${encodeURIComponent(state)}`
-        : google.getAuthUrl(state);
+        : google.getAuthUrl(state, { codeChallenge });
       return { url };
     });
 
@@ -148,17 +142,22 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
 
   fastify.get('/ga4/callback', { schema: callbackQuerySchema }, async (req, reply) => {
     const { code, state } = req.query as { code?: string; state?: string };
-    const s = state ? ga4States.get(state) : undefined;
-    if (state) ga4States.delete(state);
-    if (!state || !s || s.exp < Date.now() || !code) {
+    // S-04: browser binding first (login-CSRF defense), then one-time consume.
+    const cookieVal = (req as any).cookies?.[OAUTH_STATE_COOKIE] as string | undefined;
+    if (!state || !verifyOAuthStates(cookieVal, state)) {
       throw new ApiError(400, 'INVALID_STATE', 'Invalid or expired OAuth state');
     }
-    const { refreshToken } = await getGoogle().exchangeCode(code);
+    const s = await consumeGa4State(state);
+    if (!s || !code) {
+      throw new ApiError(400, 'INVALID_STATE', 'Invalid or expired OAuth state');
+    }
+    const { refreshToken } = await getGoogle().exchangeCode(code, s.codeVerifier);
     await query(
       'UPDATE sites SET gsc_refresh_token_enc = $1 WHERE id = $2 AND tenant_id = $3',
-      [encrypt(refreshToken), s.siteId, s.tenantId],
+      [encrypt(refreshToken), s.data.siteId, s.data.tenantId],
     );
-    return reply.redirect(`${config.appUrl}/dashboard/sites/${s.siteId}?ga4=1`);
+    clearOAuthStateCookie(reply);
+    return reply.redirect(`${config.appUrl}/dashboard/sites/${s.data.siteId}?ga4=1`);
   });
 
   // Mock consent page exists ONLY when Google is not configured.

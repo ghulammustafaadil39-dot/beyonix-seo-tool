@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/index.js';
 import { query } from '../src/db.js';
-import { createSigninState } from '../src/services/oauthState.js';
+import { createSigninState, OAUTH_STATE_COOKIE, signOAuthStates } from '../src/services/oauthState.js';
 import {
   authHeaders,
   createTestSite,
@@ -47,7 +47,7 @@ describe('auth scoping regression (fp encapsulation)', () => {
     const signup = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'scoping@example.com', password: 'Password123!' },
+      payload: { email: 'scoping@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(signup.statusCode).toBe(201);
     const token = (signup.json() as any).token as string;
@@ -55,7 +55,7 @@ describe('auth scoping regression (fp encapsulation)', () => {
     const login = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
-      payload: { email: 'scoping@example.com', password: 'Password123!' },
+      payload: { email: 'scoping@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(login.statusCode).toBe(200);
 
@@ -77,7 +77,7 @@ describe('S-01 email verification flow', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'newbie@example.com', password: 'Password123!', name: 'Newbie' },
+      payload: { email: 'newbie@example.com', password: 'J7#kP9!mV2@qX5$zR8&', name: 'Newbie' },
     });
     expect(res.statusCode).toBe(201);
     const body = res.json() as any;
@@ -100,7 +100,7 @@ describe('S-01 email verification flow', () => {
     const signup = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'verifyme@example.com', password: 'Password123!' },
+      payload: { email: 'verifyme@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     const rawToken = (signup.json() as any).verifyToken as string;
     const userId = (signup.json() as any).user.id as string;
@@ -133,7 +133,7 @@ describe('S-01 email verification flow', () => {
     const signup = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'expired@example.com', password: 'Password123!' },
+      payload: { email: 'expired@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     const rawToken = (signup.json() as any).verifyToken as string;
     await query(`UPDATE email_verification_tokens SET expires_at = now() - interval '1 minute'`);
@@ -252,9 +252,15 @@ describe('S-01 unverified accounts cannot use paid/crawl features', () => {
 });
 
 describe('S-01 Google merge rules (pre-account-hijack defense)', () => {
+  // S-04: the test browser carries the signed state cookie, like a real one.
   async function googleCallback() {
-    const state = createSigninState();
-    return app.inject({ method: 'GET', url: `/api/v1/auth/google/callback?code=mock&state=${state}` });
+    const { state } = await createSigninState();
+    const cookie = signOAuthStates([state]);
+    return app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/google/callback?code=mock&state=${state}`,
+      headers: { cookie: `${OAUTH_STATE_COOKIE}=${cookie}` },
+    });
   }
 
   it('verified Google + unverified local account -> links, verifies, drops untrusted password, revokes sessions', async () => {
@@ -327,12 +333,18 @@ describe('S-01 Google merge rules (pre-account-hijack defense)', () => {
 
   it('OAuth state is one-time: replaying a state fails', async () => {
     process.env.MOCK_GOOGLE_EMAIL_VERIFIED = 'true';
-    const state = createSigninState();
-    const first = await app.inject({ method: 'GET', url: `/api/v1/auth/google/callback?code=mock&state=${state}` });
+    const { state } = await createSigninState();
+    const headers = { cookie: `${OAUTH_STATE_COOKIE}=${signOAuthStates([state])}` };
+    const first = await app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/google/callback?code=mock&state=${state}`,
+      headers,
+    });
     expect(first.statusCode).toBe(302);
     const replay = await app.inject({
       method: 'GET',
       url: `/api/v1/auth/google/callback?code=mock&state=${state}`,
+      headers,
     });
     expect(replay.statusCode).toBe(400);
   });

@@ -93,5 +93,18 @@ export function startScheduler() {
     }
   });
 
+  // S-08: weekly domain re-verification — Saturdays 04:30 UTC.
+  // Re-checks ownership proof for every verified site; sites whose token is
+  // gone (or whose domain no longer exists) are unverified. Transient check
+  // failures keep the current state and retry the following week.
+  cron.schedule('30 4 * * 6', async () => {
+    const r = await query(`SELECT id, tenant_id FROM sites WHERE verified = TRUE`);
+    for (const s of r.rows) {
+      await enqueue(QUEUES.crawl, Jobs.REVERIFY_SITE,
+        { siteId: s.id, tenantId: s.tenant_id },
+        { idempotencyKey: `reverify:${s.id}:${isoWeek()}` });
+    }
+  });
+
   console.log('[scheduler] cron schedules registered');
 }

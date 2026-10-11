@@ -6,6 +6,10 @@ import rateLimit from '@fastify/rate-limit';
 import { config } from './config.js';
 import { pool, runMigrations } from './db.js';
 import { Redis } from 'ioredis';
+import { getRedis } from './redis.js';
+import { createRateLimitStore } from './services/redisRateLimitStore.js';
+import { apiSecurityHeaders, parseCorsOrigins } from './services/securityHeaders.js';
+import { csrfGuard } from './middleware/csrf.js';
 import { errorEnvelope } from './errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerBillingRoutes } from './routes/billing.js';
@@ -25,6 +29,11 @@ import { registerSettingsRoutes } from './routes/settings.js';
 export async function buildApp() {
   const app = Fastify({
     logger: config.nodeEnv !== 'test',
+    // S-03: TRUST_PROXY from env. Default false (fail closed) — req.ip comes
+    // from the socket unless the operator explicitly trusts their proxy.
+    // (Fastify's types omit `number`, but proxy-addr underneath accepts a
+    // hop count — the cast is runtime-safe.)
+    trustProxy: config.trustProxy as unknown as boolean | string,
     // N-A1-2: every request gets an id (honors a client-supplied
     // x-request-id); it is echoed on responses and included in every error
     // body via errorEnvelope, and fastify logs carry it as `requestId`.
@@ -38,12 +47,30 @@ export async function buildApp() {
     reply.header('x-request-id', req.id);
   });
 
+  // S-06: helmet-style hardening headers on every API response.
+  const HARDENING_HEADERS = apiSecurityHeaders();
+  app.addHook('onSend', async (_req, reply, payload) => {
+    for (const [k, v] of Object.entries(HARDENING_HEADERS)) {
+      if (!reply.hasHeader(k)) reply.header(k, v);
+    }
+    return payload;
+  });
+
   await app.register(cookie);
+  // S-06: CORS allow-list comes from CORS_ORIGINS env ONLY (comma-separated);
+  // falls back to the configured app URL. Never '*'.
   await app.register(cors, {
-    origin: [config.appUrl],
+    origin: parseCorsOrigins(config.corsOrigins, config.appUrl),
     credentials: true,
   });
-  await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
+  // S-03: per-IP limits are Redis-backed (shared across API instances) —
+  // the old in-memory store let an attacker get N x limit by hitting each
+  // instance. Keyed on req.ip, which respects trustProxy above.
+  await app.register(rateLimit, {
+    max: config.globalRateLimitPerMin,
+    timeWindow: '1 minute',
+    store: createRateLimitStore(getRedis()),
+  });
 
   app.setErrorHandler((err, req, reply) => {
     const { status, body } = errorEnvelope(err, req.id);
@@ -86,6 +113,10 @@ export async function buildApp() {
 
   await app.register(
     async (v1) => {
+      // S-06: CSRF double-submit guard, scoped to /api/v1 (encapsulated —
+      // never lifted to the app root). Only cookie-authenticated mutations
+      // are checked; Bearer clients and safe methods are exempt.
+      v1.addHook('preHandler', csrfGuard);
       // NOTE: every inner register MUST be awaited. Fire-and-forget here
       // deadlocks avvio: the outer `await app.register(...)` never resolves
       // and the API server never finishes booting (found by audit smoke test).

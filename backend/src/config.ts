@@ -15,13 +15,46 @@ export const config = {
   port: parseInt(opt('PORT', '4000'), 10),
   databaseUrl: opt('DATABASE_URL', 'postgres://bseo:bseo@localhost:5432/bseo'),
   redisUrl: opt('REDIS_URL', 'redis://localhost:6379'),
+  // S-03: which proxies to trust for req.ip / X-Forwarded-For. Default FALSE
+  // (fail closed): behind a proxy the operator sets TRUST_PROXY=true (or a
+  // hop count like "1") so per-IP rate limits key on the real client IP
+  // instead of the proxy's. Trusting a proxy you don't control lets an
+  // attacker spoof X-Forwarded-For and dodge IP rate limits.
+  trustProxy: parseTrustProxy(opt('TRUST_PROXY', '')),
+  // S-03: global per-IP rate limit (Redis-backed, shared across instances).
+  globalRateLimitPerMin: parseInt(opt('RATE_LIMIT_PER_MIN', '300'), 10),
+  // S-03: login lockout with exponential backoff (Redis-backed).
+  loginLockout: {
+    maxAttempts: parseInt(opt('LOGIN_LOCKOUT_MAX_ATTEMPTS', '5'), 10),
+    baseLockoutMin: parseInt(opt('LOGIN_LOCKOUT_BASE_MIN', '5'), 10),
+    maxLockoutMin: parseInt(opt('LOGIN_LOCKOUT_MAX_MIN', '60'), 10),
+  },
+  // S-03: signup abuse protection.
+  disposableEmailBlock: opt('DISPOSABLE_EMAIL_BLOCK', 'false') === 'true',
+  captchaProvider: opt('CAPTCHA_PROVIDER', 'none'),
+  captchaSecret: opt('CAPTCHA_SECRET', ''),
+  captchaSiteKey: opt('CAPTCHA_SITEKEY', ''),
+  // S-03: per-tenant hourly budget for expensive endpoints
+  // (keyword research, content generation). Re-read per request via a live
+  // env fallback so tests/ops can tune it without a reboot.
+  tenantExpensiveLimitPerHour: parseInt(opt('TENANT_EXPENSIVE_LIMIT_PER_HOUR', '30'), 10),
+  // S-06: cookie/CSRF/CORS hardening knobs.
+  cookieSameSite: opt('COOKIE_SAMESITE', 'lax'),
+  corsOrigins: opt('CORS_ORIGINS', ''),
   jwtSecret: opt('JWT_SECRET', 'dev-only-jwt-secret-change-me'),
+  // S-04: HMAC secret for the signed OAuth-state binding cookie. Falls back
+  // to the JWT secret so the binding is never unsigned by misconfiguration —
+  // but operators should set a dedicated value (see .env.example).
+  cookieSecret: opt('COOKIE_SECRET', ''),
   // Local signing secret for the mock Stripe webhook (dev/test only).
   // Mock webhooks are rejected when this is unset, and always in production.
   mockWebhookSecret: opt('MOCK_WEBHOOK_SECRET', ''),
   appUrl: opt('APP_URL', 'http://localhost:3000').replace(/\/$/, ''),
   apiUrl: opt('API_URL', 'http://localhost:4000').replace(/\/$/, ''),
   encryptionKey: opt('ENCRYPTION_KEY', ''),
+  // S-07: key versioning — "kid:hex,kid:hex,...", first entry is primary.
+  // When set, it takes precedence over the legacy single ENCRYPTION_KEY.
+  encryptionKeys: opt('ENCRYPTION_KEYS', ''),
 
   stripeSecretKey: opt('STRIPE_SECRET_KEY'),
   stripeWebhookSecret: opt('STRIPE_WEBHOOK_SECRET'),
@@ -66,6 +99,27 @@ if (config.stripeSecretKey && !config.stripeWebhookSecret) {
   throw new Error('FATAL: STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is set');
 }
 
+// S-03: parses TRUST_PROXY. 'true' -> true (trust all hops — only behind a
+// proxy you control), a hop count ('1', '2') -> that number, anything else
+// (including '') -> false (fail closed: X-Forwarded-For is ignored).
+export function parseTrustProxy(raw: string): boolean | number {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === 'true') return true;
+  if (v === 'false' || v === '') return false;
+  if (/^\d+$/.test(v)) {
+    const n = parseInt(v, 10);
+    return n > 0 ? n : false;
+  }
+  return false;
+}
+
+/** S-03: live re-read of the per-tenant expensive-endpoint budget. */
+export function tenantExpensiveLimit(): number {
+  const v = parseInt(process.env.TENANT_EXPENSIVE_LIMIT_PER_HOUR ?? '', 10);
+  if (Number.isFinite(v) && v > 0) return v;
+  return config.tenantExpensiveLimitPerHour;
+}
+
 // (old production-only check superseded by validateSecrets below)
 
 // Secrets every operator has seen: the in-repo dev default and the
@@ -87,6 +141,8 @@ export const KNOWN_PLACEHOLDER_SECRETS = new Set(
 export interface SecretsEnv {
   jwtSecret?: string;
   encryptionKey?: string;
+  /** S-07: raw ENCRYPTION_KEYS value ("kid:hex,kid:hex,..."). */
+  encryptionKeys?: string;
 }
 
 /**
@@ -108,7 +164,19 @@ export function validateSecrets(nodeEnv: string, secrets: SecretsEnv): void {
     throw new Error('FATAL: JWT_SECRET is a known placeholder value — set a real random secret');
   }
   const enc = (secrets.encryptionKey ?? '').trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(enc)) {
+  const encKeys = (secrets.encryptionKeys ?? '').trim();
+  if (encKeys) {
+    // S-07: versioned key set — every entry must be kid:32-byte-hex.
+    const bad = encKeys.split(',').some((part) => {
+      const idx = part.indexOf(':');
+      return idx === -1 || !/^[A-Za-z0-9_-]{1,64}$/.test(part.slice(0, idx).trim()) || !/^[0-9a-fA-F]{64}$/.test(part.slice(idx + 1).trim());
+    });
+    if (bad) {
+      throw new Error(
+        `FATAL: ENCRYPTION_KEYS must be "kid:hex,kid:hex,..." with 32-byte hex keys in ${nodeEnv}.`,
+      );
+    }
+  } else if (!/^[0-9a-fA-F]{64}$/.test(enc)) {
     throw new Error(
       `FATAL: ENCRYPTION_KEY must be a 32-byte hex string in ${nodeEnv}. Generate with: openssl rand -hex 32`,
     );
@@ -121,4 +189,5 @@ export function validateSecrets(nodeEnv: string, secrets: SecretsEnv): void {
 validateSecrets(config.nodeEnv, {
   jwtSecret: process.env.JWT_SECRET,
   encryptionKey: process.env.ENCRYPTION_KEY,
+  encryptionKeys: process.env.ENCRYPTION_KEYS,
 });

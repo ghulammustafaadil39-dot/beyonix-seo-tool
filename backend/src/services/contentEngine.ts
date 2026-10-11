@@ -1,4 +1,5 @@
 import { renderPrompt } from './prompt.js';
+import { sanitizeJsonLdForScript } from './promptSafety.js';
 import { generateMetered } from './llmMetered.js';
 import type { QueryFn } from '../db.js';
 import { query as defaultQuery } from '../db.js';
@@ -164,7 +165,9 @@ export function buildGeoHtml(markdown: string, title: string): string {
         acceptedAnswer: { '@type': 'Answer', text: f.a },
       })),
     };
-    faqScript = `<script type="application/ld+json">${JSON.stringify(schema)}</script>`;
+    // S-09: model output is embedded in a <script> element — escape "<" as
+    // \u003c (valid JSON) so a drafted "</script>" cannot break out.
+    faqScript = `<script type="application/ld+json">${sanitizeJsonLdForScript(JSON.stringify(schema))}</script>`;
   }
 
   return (

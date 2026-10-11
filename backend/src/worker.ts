@@ -9,8 +9,9 @@ import { keywordRefreshProcessor } from './services/keywordJobs.js';
 import { geoCheckProcessor } from './services/geoJobs.js';
 import { reportProcessor } from './services/reportJobs.js';
 import { contentProcessor } from './services/contentJobs.js';
+import { reverifyProcessor } from './services/verifyJobs.js';
 
-/** The crawl queue carries crawl + light-check + backlink-refresh jobs; dispatch by name. */
+/** The crawl queue carries crawl + light-check + backlink-refresh + reverify jobs; dispatch by name. */
 async function crawlQueueProcessor(job: Job) {
   switch (job.name) {
     case Jobs.CRAWL_SITE:
@@ -18,6 +19,8 @@ async function crawlQueueProcessor(job: Job) {
       return crawlProcessor(job);
     case Jobs.BACKLINK_REFRESH:
       return backlinkProcessor(job);
+    case Jobs.REVERIFY_SITE:
+      return reverifyProcessor(job);
     default:
       throw new Error(`unknown job on crawl queue: ${job.name}`);
   }
