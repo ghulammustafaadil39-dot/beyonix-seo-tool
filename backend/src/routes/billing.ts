@@ -327,9 +327,16 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
               // the second subscription's events. The tenant row is locked
               // FOR UPDATE here, so the claim check + insert is atomic.
               // A fresh claim 409s — or hands back the open session's URL
-              // when the plan/interval match (idempotent double-click). A
-              // stale 'creating' claim (>10 min — the creator crashed
-              // mid-flight) is stolen.
+              // when the plan/interval match (idempotent double-click).
+              // J1-LOW-1 (pass#10): the steal is STATUS-AWARE. A stale
+              // 'creating' claim (>10 min — the creator crashed mid-flight,
+              // its Stripe session URL never delivered so it can never be
+              // paid) is stolen. A stale 'open' claim is a LIVE, payable
+              // Stripe session (valid 24h) — stealing it and creating a
+              // second session reopens the double-subscription shape via
+              // abandonment, so it keeps the 409/URL-reuse; only an 'open'
+              // claim older than 25h (session definitively expired, its
+              // expired webhook lost) is stolen.
               const cs = await client.query(
                 `SELECT stripe_session_id, checkout_url, plan_id, billing_interval, status, created_at
                  FROM checkout_sessions WHERE tenant_id = $1`,
@@ -345,15 +352,24 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
                     created_at: string;
                   }
                 | undefined;
-              const claimStale =
-                !!claim && Date.now() - new Date(claim.created_at).getTime() > 10 * 60_000;
-              if (claim && !claimStale) {
+              const claimAgeMs = claim ? Date.now() - new Date(claim.created_at).getTime() : 0;
+              const stealable =
+                !!claim &&
+                ((claim.status === 'creating' && claimAgeMs > 10 * 60_000) ||
+                  (claim.status === 'open' && claimAgeMs > 25 * 60 * 60_000));
+              if (claim && !stealable) {
                 await client.query('ROLLBACK');
                 if (
                   claim.checkout_url &&
                   claim.plan_id === planId &&
                   claim.billing_interval === billingInterval
                 ) {
+                  // J5-LOW-2 (pass#10): reusing the open session creates no
+                  // new Stripe session, so the coupon slot reserved above
+                  // would leak (never redeemed, never released — capped
+                  // promos erode). Release it; the completing session
+                  // redeems exactly once.
+                  if (couponReserved) await releaseReservation();
                   return { url: claim.checkout_url }; // same session — no duplicate
                 }
                 throw new ApiError(
@@ -362,8 +378,11 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
                   'A checkout session is already in progress — complete or abandon it before starting a new one.',
                 );
               }
-              if (claimStale) {
-                await client.query(`DELETE FROM checkout_sessions WHERE tenant_id = $1`, [tenantId]);
+              if (stealable) {
+                await client.query(`DELETE FROM checkout_sessions WHERE tenant_id = $1 AND status = $2`, [
+                  tenantId,
+                  claim!.status,
+                ]);
               }
               await client.query(
                 `INSERT INTO checkout_sessions (tenant_id, plan_id, billing_interval, status)

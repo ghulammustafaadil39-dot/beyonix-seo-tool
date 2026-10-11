@@ -327,7 +327,7 @@ export interface Report {
  */
 export interface Subscription {
   plan_id: string;
-  status: string; // active|trialing|past_due|canceled|mock|none
+  status: string; // active|trialing|past_due|incomplete|canceled|mock|none
   stripe_sub_id?: string | null;
   current_period_start?: string | null;
   current_period_end?: string | null;

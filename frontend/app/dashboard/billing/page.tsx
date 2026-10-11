@@ -184,15 +184,21 @@ export default function BillingPage() {
   const [emailSaved, setEmailSaved] = useState(false);
   const [annual, setAnnual] = useState(false);
   const [coupon, setCoupon] = useState('');
-  const [notice, setNotice] = useState<{ kind: 'success' | 'info'; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ kind: 'success' | 'warn' | 'info'; text: string } | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('success') === '1') {
-      setNotice({ kind: 'success', text: 'Payment successful — your plan is now active.' });
-    } else if (params.get('canceled') === '1') {
+    // J3-M-1 (pass#10): the ?success=1 notice MUST NOT promise an active
+    // plan before the subscription is fetched — the backend fail-closes a
+    // fresh Stripe subscription to 'incomplete' (G5-M#1) until the first
+    // payment actually succeeds, and BILLABLE statuses exclude 'incomplete'
+    // (the tenant is read-only). The notice text is chosen AFTER the fetch
+    // below, based on the real subscription status.
+    const successParam = params.get('success') === '1';
+    const canceledParam = params.get('canceled') === '1';
+    if (canceledParam) {
       setNotice({ kind: 'info', text: 'Checkout was canceled — no charge was made. You can retry anytime.' });
-    } else {
+    } else if (!successParam) {
       // Arrived from the public pricing page with a chosen plan.
       const plan = params.get('plan');
       const billing = params.get('billing') === 'annual' ? 'annual' : 'monthly';
@@ -220,6 +226,30 @@ export default function BillingPage() {
         // and dunning go to the tenant notification email (settings).
         setBillingEmail(settings.notify_email);
         setEmailDraft(settings.notify_email ?? '');
+        // J3-M-1: gate the success notice on the FETCHED subscription state.
+        if (successParam) {
+          const st = s?.status;
+          if (st === 'active' || st === 'trialing') {
+            setNotice({ kind: 'success', text: 'Payment successful — your plan is now active.' });
+          } else if (st === 'incomplete') {
+            setNotice({
+              kind: 'warn',
+              text: 'Checkout completed, but your payment hasn\u2019t succeeded yet — your plan isn\u2019t active. Complete the payment in the billing portal below to activate it.',
+            });
+          } else if (st === 'past_due') {
+            setNotice({
+              kind: 'warn',
+              text: 'Your first payment failed — update your payment method in the billing portal below to keep your plan.',
+            });
+          } else {
+            // 'none' (webhook not processed yet) or any other state: the
+            // subscription isn't confirmed — never claim it is active.
+            setNotice({
+              kind: 'info',
+              text: 'Checkout completed — we\u2019re confirming your subscription now. If this page doesn\u2019t update within a minute, refresh it.',
+            });
+          }
+        }
       } catch (e) {
         report(e);
       } finally {
@@ -301,12 +331,15 @@ export default function BillingPage() {
           className={`flex items-center justify-between rounded-xl border px-4 py-3 ${
             notice.kind === 'success'
               ? 'border-teal-400/20 bg-teal-400/10'
-              : 'border-white/10 bg-white/5'
+              : notice.kind === 'warn'
+                ? 'border-amber-400/25 bg-amber-400/10'
+                : 'border-white/10 bg-white/5'
           }`}
+          role={notice.kind === 'warn' ? 'alert' : undefined}
         >
           <p
             className={`text-sm font-medium ${
-              notice.kind === 'success' ? 'text-teal-200' : 'text-white/70'
+              notice.kind === 'success' ? 'text-teal-200' : notice.kind === 'warn' ? 'text-amber-200' : 'text-white/70'
             }`}
           >
             {notice.text}
@@ -365,6 +398,22 @@ export default function BillingPage() {
               ` Your plan stays active until ${new Date(sub.grace_until).toLocaleDateString()} — please update your payment method in the portal.`}
           </p>
         )}
+        {/* J3-M-1 (pass#10): 'incomplete' is fail-closed (G5-M#1) — payment
+            has NOT succeeded, the plan is NOT active, and the tenant is
+            read-only until it does. Surface the recovery path (complete the
+            payment via the portal) instead of leaving a bare "Current plan"
+            badge with no way forward. */}
+        {sub?.status === 'incomplete' && (
+          <div className="bx-alert-warn mt-3" role="alert">
+            <p>
+              Your payment hasn&rsquo;t completed yet — your plan isn&rsquo;t active and your
+              account is read-only until the payment succeeds.
+            </p>
+            <button onClick={openPortal} disabled={portalBusy} className="bx-btn-secondary mt-2">
+              {portalBusy ? 'Opening…' : 'Complete payment in the billing portal'}
+            </button>
+          </div>
+        )}
         {sub?.cancel_at_period_end && (
           <p className="bx-alert-warn mt-3">
             Cancellation is scheduled — you keep full access until{' '}
@@ -415,7 +464,14 @@ export default function BillingPage() {
           onToggleAnnual={setAnnual}
           showToggle
           action={(plan, isCurrent) =>
-            isCurrent ? (
+            // J3-M-1 (pass#10): an 'incomplete' subscription is fail-closed —
+            // the plan is NOT active. Don't show the dead "Current plan"
+            // badge; surface the portal recovery CTA instead.
+            isCurrent && sub?.status === 'incomplete' ? (
+              <button onClick={openPortal} disabled={portalBusy} className="bx-btn-primary w-full">
+                {portalBusy ? 'Opening…' : 'Complete payment to activate'}
+              </button>
+            ) : isCurrent ? (
               <p className="bx-btn-primary w-full cursor-default">Current plan</p>
             ) : !hasSubscription ? (
               <button

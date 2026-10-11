@@ -224,8 +224,12 @@ export async function enqueueDeduped(
   // D2-M-1: the dedupe claim runs on the bounded limiter client — on the
   // BullMQ connection (maxRetriesPerRequest: null) it would retry forever
   // during a Redis outage. A failed claim fails fast instead of hanging.
+  // J2-LOW-3 (pass#10): claim with a SHORT TTL first. If the process
+  // crashes between the claim and Queue.add, the phantom claim self-heals
+  // in 60s instead of the full window (up to 7 days for reports/generate).
+  // On successful enqueue the claim is extended to the full window.
   const claimed = await withCommandTimeout(
-    limiterRedis().set(mapKey, '1', 'EX', ttlSec, 'NX'),
+    limiterRedis().set(mapKey, '1', 'EX', 60, 'NX'),
     LIMITER_REDIS_TIMEOUT_MS,
     'dedupe claim',
   );
@@ -236,6 +240,8 @@ export async function enqueueDeduped(
     // Redis claim above (not the jobId) is the dedupe arbiter.
     const jobId = `${idempotencyKey.replaceAll(':', '-')}-${randomUUID()}`;
     await enqueue(queueName, jobName, data, { idempotencyKey: jobId });
+    // The job exists — extend the claim to the full dedupe window.
+    await limiterRedis().expire(mapKey, ttlSec).catch(() => {});
   } catch (err) {
     // Release the claim on the bounded client (best effort) so the next
     // click can retry — a failed enqueue must not burn the window.

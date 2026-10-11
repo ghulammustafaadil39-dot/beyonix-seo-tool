@@ -239,10 +239,14 @@ describe('P0-04 checkout plan guard', () => {
       data: { metadata: { tenantId: 't-victim', planId }, subscription: 'sub_mock_x' },
     });
     await applyPaymentEvent(evt('pro'), q as any);
-    // subscriptions INSERT + tenants UPDATE, both carrying the validated plan
-    expect(writes.length).toBe(2);
-    expect((writes[0][1] as unknown[])[3]).toBe('pro');
-    expect((writes[1][1] as unknown[])[1]).toBe('pro');
+    // checkout claim-release DELETE + subscriptions INSERT + tenants UPDATE.
+    // J2-LOW-2 (pass#10): the DELETE is scoped to the completing session id
+    // (NULL here — the mock event carries no session id — so tenant-wide);
+    // only the INSERT/UPDATE carry plans, both validated.
+    expect(writes.length).toBe(3);
+    expect(writes[0][0]).toMatch(/DELETE FROM checkout_sessions/);
+    expect((writes[1][1] as unknown[])[3]).toBe('pro');
+    expect((writes[2][1] as unknown[])[1]).toBe('pro');
     writes.length = 0;
     await applyPaymentEvent(evt('enterprise'), q as any);
     expect(writes.length).toBe(0);

@@ -182,6 +182,20 @@ migration that added a NOT NULL column** (RUNBOOK.md).
   (webhook event id, billing event type), so a reprocessed webhook cannot send
   the same dunning/refund email twice. Backward-compatible; no operator
   action.
+- **050** adds `checkout_sessions` (one row per tenant, `tenant_id` PK):
+  an in-flight checkout claim that closes the double-checkout race (two
+  overlapping `POST /billing/checkout` calls creating two Stripe sessions).
+  Lifecycle: inserted `'creating'` under the tenant row lock → marked
+  `'open'` with the Stripe session id + URL → released by
+  `checkout.session.completed` / `checkout.session.expired` (scoped to the
+  completing session id) or the route's failure path. A second checkout
+  while a live claim exists gets 409 `CHECKOUT_IN_PROGRESS` — or the open
+  session's URL when plan/interval match (idempotent double-click). Steal
+  rule (status-aware): a `'creating'` claim older than 10 min (creator
+  crashed mid-flight) is stolen by the next attempt; a live `'open'` claim
+  is never stolen (its Stripe session is payable for 24h); an `'open'`
+  claim older than 25h (session definitively expired, webhook lost) is
+  stolen. No operator action; see RUNBOOK.md for the 409's meaning.
 
 Note: `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_SITE_URL` are **baked into the
 frontend at build time** (`.env.example` "Frontend / same-origin API proxy"

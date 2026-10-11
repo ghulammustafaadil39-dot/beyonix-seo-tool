@@ -436,6 +436,35 @@ async function resolveTenantForSubscription(
  * in-flight (the winner of a concurrent mint is mid-send); a stale one
  * (>10 min — crashed, see the H2-L-1 takeover rule) does not block a retry.
  */
+/**
+ * J1-LOW-2 / J2-LOW-4 (pass#10): was a dunning email sent very recently?
+ * The no-row invoice.payment_failed "vacuous" dun has no grace episode yet,
+ * so episodeDunningSent (anchored at mint time) can't see it. This covers
+ * the seconds/minutes-before-mint window: the later minter stays silent,
+ * and repeated no-row retries don't re-dun vacuously every time.
+ */
+async function recentDunningSent(
+  q: (text: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }>,
+  tenantId: string,
+  minutes = 15,
+): Promise<boolean> {
+  try {
+    const r = await q(
+      `SELECT 1 FROM notification_log
+       WHERE tenant_id = $1
+         AND notification_type IN ('invoice.payment_failed', 'subscription.past_due')
+         AND created_at >= now() - ($2 || ' minutes')::interval
+         AND (status = 'sent'
+              OR (status = 'sending' AND created_at >= now() - interval '10 minutes'))
+       LIMIT 1`,
+      [tenantId, String(minutes)],
+    );
+    return (r.rows?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function episodeDunningSent(
   q: (text: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }>,
   tenantId: string,
@@ -583,7 +612,15 @@ export async function applyPaymentEvent(
     // I1-L-3 (pass#9): the session completed — release the in-flight
     // checkout claim so later checkouts (e.g. resubscribe after cancel)
     // aren't blocked by a stale row.
-    await q(`DELETE FROM checkout_sessions WHERE tenant_id = $1`, [tenantId]).catch(() => undefined);
+    // J2-LOW-2 (pass#10): scope the release to the COMPLETING session — a
+    // tenant-wide DELETE could wipe a NEWER claim created after a steal,
+    // reopening the double-session shape. Mock-confirm carries no session
+    // id, so NULL falls back to the tenant-wide delete (load-bearing there).
+    const completedSessionId = (data.id as string | undefined) ?? null;
+    await q(
+      `DELETE FROM checkout_sessions WHERE tenant_id = $1 AND (stripe_session_id = $2 OR $2 IS NULL)`,
+      [tenantId, completedSessionId],
+    ).catch(() => undefined);
 
     // C-01: period comes FROM Stripe (the subscription object when the
     // session payload expands it). Mock checkouts have no Stripe object —
@@ -742,9 +779,15 @@ export async function applyPaymentEvent(
     // C5-H-1: an abandoned checkout releases its reserved coupon slot so
     // the cap isn't permanently burned by sessions that never paid.
     // I1-L-3 (pass#9): it also releases the in-flight checkout claim.
+    // J2-LOW-2 (pass#10): scope to the expiring session (see the
+    // checkout.session.completed release above for the rationale).
     const expTenant = (data.metadata?.tenantId as string | undefined) ?? null;
     if (expTenant) {
-      await q(`DELETE FROM checkout_sessions WHERE tenant_id = $1`, [expTenant]).catch(() => undefined);
+      const expiredSessionId = (data.id as string | undefined) ?? null;
+      await q(
+        `DELETE FROM checkout_sessions WHERE tenant_id = $1 AND (stripe_session_id = $2 OR $2 IS NULL)`,
+        [expTenant, expiredSessionId],
+      ).catch(() => undefined);
     }
     const couponCode: string | undefined =
       data.metadata?.couponCode ?? data.metadata?.coupon;
@@ -913,7 +956,14 @@ export async function applyPaymentEvent(
         !!storedGrace &&
         !!graceUntil &&
         new Date(storedGrace).getTime() === graceUntil.getTime();
-      if (justMinted) {
+      // J1-LOW-2 / J2-LOW-4 (pass#10): the no-row invoice.payment_failed
+      // fallback duns WITHOUT minting ("vacuous win"); when the
+      // subscription event for the same failure arrives later and really
+      // mints, this minter must not dun a second time — the identical
+      // email went out seconds/minutes ago. recentDunningSent (not the
+      // episode-anchored check: the vacuous dun predates the mint) sees it.
+      // The genuine first-failure path (no prior send) is unaffected.
+      if (justMinted && !(await recentDunningSent(q, tenantId))) {
         await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil }, eventId });
       } else if (existingGrace && !(await episodeDunningSent(q, tenantId, graceUntil))) {
         // I1-L-2 (pass#9): sequential retry, and the episode's dunning email
@@ -1032,7 +1082,19 @@ export async function applyPaymentEvent(
       // old recover behavior rather than stranding a payer.
       const invMatchesTracked =
         !invSubId || invSubId === (curSub.rows[0]?.stripe_sub_id as string | undefined);
-      if ((curStatus === 'past_due' || curStatus === 'incomplete') && invMatchesTracked) {
+      // J5-LOW-1 (pass#10): a $0 invoice.paid (Stripe auto-"pays" $0 invoices
+      // on finalization — e.g. a proration netting to $0 after a portal plan
+      // change) must NOT revive a consumed-grace past_due row to paid
+      // 'active': that grants paid limits + scheduler spend while the
+      // original balance is unpaid and Stripe still says past_due. Require
+      // amount_paid > 0 for the past_due revival. The 'incomplete' path
+      // keeps the old behavior — a 100%-off coupon's $0 first invoice IS
+      // the legitimate payment there.
+      const paidInFull = amount > 0;
+      if (
+        ((curStatus === 'past_due' && paidInFull) || curStatus === 'incomplete') &&
+        invMatchesTracked
+      ) {
         // G5-M#2: revive the PAID plan, not just the status. After grace
         // expiry, downgradeTenant() set tenants.plan_id='starter' (and
         // possibly read_only=TRUE) while the row stayed 'past_due' — and
@@ -1120,8 +1182,12 @@ export async function applyPaymentEvent(
         if (!won) {
           // No subscription row at all (tenant resolved via
           // customer/metadata): nothing to race on — keep the old emit
-          // behavior.
-          won = (await q(`SELECT 1 FROM subscriptions WHERE tenant_id = $1`, [tenantId])).rows.length === 0;
+          // behavior, but J1-LOW-2 (pass#10): don't re-dun vacuously on
+          // every Smart Retry while the row is still missing — one
+          // recent dun for this failure is enough.
+          won =
+            (await q(`SELECT 1 FROM subscriptions WHERE tenant_id = $1`, [tenantId])).rows.length === 0 &&
+            !(await recentDunningSent(q, tenantId));
         }
         if (won) {
           await emitBillingEvent({ type: 'invoice.payment_failed', tenantId, detail: { invoiceId, amount }, eventId });

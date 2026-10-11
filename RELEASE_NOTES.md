@@ -258,6 +258,19 @@ honest load proof (10 tenants, 18 jobs/s, fairness measured), chaos DLQ
    running past the 30-minute TTL; the global provider-spend circuit
    breaker backstops real money. Documented, not fixed — the audit loop
    froze the tree for verification.
+10. **Pass#10 LOW residuals, documented not fixed (all narrow, email-only
+    or crash-window):** (a) J1-LOW-3 — `justMinted`'s exact-millisecond
+    timestamp comparison could double-dun if two *distinct* concurrent
+    `customer.subscription.updated(past_due)` events computed
+    `graceDeadline()` within the same millisecond (vanishingly narrow,
+    email-only); (b) J1-LOW-4 — two concurrent Smart-Retry
+    `invoice.payment_failed` deliveries can both pass the
+    `episodeDunningSent` check before either sends when the minting send
+    failed transiently (needs the transient failure *plus* concurrency,
+    email-only); (c) J2-LOW-1 — if the report-notification winner crashes
+    between INSERT and notify, that week's email/Telegram/`report.ready`
+    never goes out (the report itself is in the dashboard; at-most-once
+    with no healer for a ~ms crash window).
 
 ---
 

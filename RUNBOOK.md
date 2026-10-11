@@ -105,6 +105,7 @@ the same key-versioning as server keys — rotate `ENCRYPTION_KEYS` and run
 | Suspected rogue admin session | `/admin` audit log shows every impersonation (`impersonate` rows with `asUserId`); impersonation tokens are 5-min JWTs registered as sessions — revoke the session to kill it immediately |
 | High provider cost | `/admin/spend` (provider_spend trailing 30d); per-tenant spend in `provider_spend` |
 | Auth failures spike | login-lockout counters (Redis); check `RATE_LIMIT_PER_MIN` / `AUTH_RATE_LIMIT_PER_MIN` tuning |
+| Customer reports "checkout blocked" / 409 `CHECKOUT_IN_PROGRESS` | Normal: a `checkout_sessions` row exists for the tenant (in-flight or abandoned checkout). It self-heals — completed/expired webhooks release it; a crashed `'creating'` claim is stolen by the next attempt after 10 min; a live `'open'` claim is never stolen (reuses the session URL). Only investigate if it persists >25h (then the claim row + Stripe dashboard state deserve a look) |
 
 ## Zero-downtime deploy
 
