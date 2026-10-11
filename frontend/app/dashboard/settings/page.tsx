@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { settingsApi, type Settings } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
 import { PageHeaderSkeleton, SkeletonLines } from '@/components/Skeleton';
+import SecuritySection from '@/components/SecuritySection';
 
 export default function SettingsPage() {
   const { report } = useErrorReporter();
@@ -170,6 +171,9 @@ export default function SettingsPage() {
           {saving ? 'Saving…' : 'Save settings'}
         </button>
       </form>
+
+      {/* G3-M-1: account-security self-service — 2FA enrollment + password change. */}
+      <SecuritySection />
     </div>
   );
 }

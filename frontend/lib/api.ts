@@ -394,6 +394,62 @@ export const authApi = {
    */
   me: () =>
     api<{ user: User; tenant: Tenant; plan: Record<string, unknown> }>('/api/v1/auth/me'),
+  // ---------- Account security (G3-M-1) ----------
+  /**
+   * S-05: TOTP setup — generates a fresh (not yet enabled) secret. Returns
+   * the base32 secret + otpauth:// URL for the QR step. Throws ApiError with
+   * code TOTP_ALREADY_ENABLED when 2FA is already on — used as the
+   * "is 2FA enabled?" probe (no dedicated status endpoint exists).
+   */
+  totpSetup: () =>
+    api<{ secret: string; otpauthUrl: string }>('/api/v1/auth/totp/setup', {
+      method: 'POST',
+    }),
+  /**
+   * S-05: verifies the 6-digit code against the pending secret, enables 2FA
+   * and returns one-time backup codes (shown ONCE — store the hashes only).
+   * Throws INVALID_CODE when the code doesn't match.
+   */
+  totpEnable: (code: string) =>
+    api<{ ok: boolean; backupCodes: string[] }>('/api/v1/auth/totp/enable', {
+      method: 'POST',
+      body: { code },
+    }),
+  /**
+   * S-05: disables 2FA. Requires the account password (INVALID_CREDENTIALS
+   * when it doesn't match).
+   */
+  totpDisable: (password: string) =>
+    api<{ ok: boolean }>('/api/v1/auth/totp/disable', { method: 'POST', body: { password } }),
+  /**
+   * S-05: changes the password. Requires the current password; revokes ALL
+   * sessions (including the caller's) — the UI must send the user back to
+   * the login page afterwards.
+   */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    api<{ ok: boolean }>('/api/v1/auth/password/change', {
+      method: 'POST',
+      body: { currentPassword, newPassword },
+    }),
+  /**
+   * S-05: requests a password-reset email. ALWAYS resolves (the backend
+   * returns success even for unknown emails) — the UI must never reveal
+   * whether the address is registered.
+   */
+  requestPasswordReset: (email: string) =>
+    api<{ ok: boolean }>('/api/v1/auth/password/reset-request', {
+      method: 'POST',
+      body: { email },
+    }),
+  /**
+   * S-05: consumes a reset token and sets the new password. Throws
+   * INVALID_TOKEN when the link is invalid/expired. All sessions revoked.
+   */
+  resetPassword: (token: string, password: string) =>
+    api<{ ok: boolean }>('/api/v1/auth/password/reset', {
+      method: 'POST',
+      body: { token, password },
+    }),
 };
 
 export const sitesApi = {

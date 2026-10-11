@@ -281,9 +281,13 @@ export default function BillingPage() {
       </div>
     );
 
-  const currentPlan = sub && sub.status !== 'none' ? (sub.plan_id as PlanId) : null;
+  // G3-L-1: a fully-canceled subscription is NOT a live subscription. Churned
+  // tenants must get the direct "Subscribe" checkout CTA on every plan card
+  // (the backend allows fresh checkout for canceled tenants); the Stripe
+  // portal alone is not a clean resubscribe path for them.
+  const hasSubscription = Boolean(sub && sub.status !== 'none' && sub.status !== 'canceled');
+  const currentPlan = hasSubscription && sub ? (sub.plan_id as PlanId) : null;
   const limits = usage?.limits ?? {};
-  const hasSubscription = Boolean(sub && sub.status !== 'none');
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -320,7 +324,11 @@ export default function BillingPage() {
       <div className="bx-card">
         <p className="bx-micro mb-2">~/ current plan</p>
         <p className="mt-1 bg-gradient-to-r from-cyan-300 to-teal-400 bg-clip-text text-lg font-bold text-transparent">
-          {currentPlan ? (PLAN_NAMES[currentPlan] ?? currentPlan) : 'No subscription yet'}
+          {currentPlan
+            ? (PLAN_NAMES[currentPlan] ?? currentPlan)
+            : sub?.status === 'canceled'
+              ? 'Subscription canceled'
+              : 'No subscription yet'}
         </p>
         <p className="mt-1 font-mono text-xs text-white/55">
           status: {sub?.status ?? '—'}
