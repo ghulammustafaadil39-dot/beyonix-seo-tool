@@ -71,12 +71,22 @@ export const SCHEDULES: ScheduleDef[] = [
   {
     name: 'weekly-crawl',
     cron: '0 2 * * 0', // Sundays 02:00 UTC
-    run: () => enqueueForVerifiedSites(QUEUES.crawl, Jobs.CRAWL_SITE, (id) => `crawl:${id}:${isoWeek()}`),
+    // C2-L6: one week key per tick — a tick spanning a UTC midnight must not
+    // give sites different idempotency keys.
+    run: () => {
+      const week = isoWeek();
+      return enqueueForVerifiedSites(QUEUES.crawl, Jobs.CRAWL_SITE, (id) => `crawl:${id}:${week}`);
+    },
   },
   {
     name: 'rank-checks',
     cron: '0 3 * * *', // daily 03:00 UTC; weekly-plan sites only on Sunday
     run: async () => {
+      // C2-L6: compute the idempotency date key ONCE per tick. Building it
+      // per row inside the loop meant a tick spanning a UTC midnight gave
+      // sites different date keys and could enqueue the same site twice
+      // for two "days".
+      const today = new Date().toISOString().slice(0, 10);
       const isSunday = new Date().getUTCDay() === 0;
       const r = await query(
         `SELECT s.id AS site_id, s.tenant_id, t.plan_id
@@ -90,7 +100,7 @@ export const SCHEDULES: ScheduleDef[] = [
             QUEUES.rankCheck,
             Jobs.RANK_CHECK,
             { siteId: row.site_id, tenantId: row.tenant_id },
-            { idempotencyKey: `rank:${row.site_id}:${new Date().toISOString().slice(0, 10)}`, rateLimit: false },
+            { idempotencyKey: `rank:${row.site_id}:${today}`, rateLimit: false },
           );
         }
       }
@@ -99,42 +109,60 @@ export const SCHEDULES: ScheduleDef[] = [
   {
     name: 'weekly-reports',
     cron: '0 8 * * 1', // Mondays 08:00 UTC
-    run: () => enqueueForVerifiedSites(QUEUES.report, Jobs.WEEKLY_REPORT, (id) => `report:${id}:${isoWeek()}`),
+    run: () => {
+      const week = isoWeek(); // C2-L6: one key per tick
+      return enqueueForVerifiedSites(QUEUES.report, Jobs.WEEKLY_REPORT, (id) => `report:${id}:${week}`);
+    },
   },
   {
     name: 'daily-light-check',
     cron: '0 6 * * *', // 06:00 UTC — catches sudden breakage between crawls
-    run: () =>
-      enqueueForVerifiedSites(
+    // C2-L6: one date key per tick (same midnight-split class as rank-checks).
+    run: () => {
+      const today = new Date().toISOString().slice(0, 10);
+      return enqueueForVerifiedSites(
         QUEUES.crawl,
         Jobs.LIGHT_CHECK,
-        (id) => `light:${id}:${new Date().toISOString().slice(0, 10)}`,
-      ),
+        (id) => `light:${id}:${today}`,
+      );
+    },
   },
   {
     name: 'monthly-keyword-refresh',
     cron: '0 4 1 * *', // 1st of month 04:00 UTC
-    run: () =>
-      enqueueForVerifiedSites(
+    // C2-L6: one month key per tick.
+    run: () => {
+      const month = new Date().toISOString().slice(0, 7);
+      return enqueueForVerifiedSites(
         QUEUES.keywordRefresh,
         Jobs.KEYWORD_REFRESH,
-        (id) => `kwrefresh:${id}:${new Date().toISOString().slice(0, 7)}`,
-      ),
+        (id) => `kwrefresh:${id}:${month}`,
+      );
+    },
   },
   {
     name: 'weekly-geo-checks',
     cron: '0 5 * * 3', // Wednesdays 05:00 UTC
-    run: () => enqueueForVerifiedSites(QUEUES.geoCheck, Jobs.GEO_CHECK, (id) => `geo:${id}:${isoWeek()}`),
+    run: () => {
+      const week = isoWeek(); // C2-L6: one key per tick
+      return enqueueForVerifiedSites(QUEUES.geoCheck, Jobs.GEO_CHECK, (id) => `geo:${id}:${week}`);
+    },
   },
   {
     name: 'weekly-backlink-sweep',
     cron: '0 6 * * 4', // Thursdays 06:00 UTC
-    run: () => enqueueForVerifiedSites(QUEUES.crawl, Jobs.BACKLINK_REFRESH, (id) => `blsweep:${id}:${isoWeek()}`),
+    run: () => {
+      const week = isoWeek(); // C2-L6: one key per tick
+      return enqueueForVerifiedSites(QUEUES.crawl, Jobs.BACKLINK_REFRESH, (id) => `blsweep:${id}:${week}`);
+    },
   },
   {
     name: 'weekly-domain-reverify',
     cron: '30 4 * * 6', // Saturdays 04:30 UTC (S-08)
-    run: () => enqueueForVerifiedSites(QUEUES.crawl, Jobs.REVERIFY_SITE, (id) => `reverify:${id}:${isoWeek()}`),
+    run: () => {
+      const week = isoWeek(); // C2-L6: one key per tick
+      return enqueueForVerifiedSites(QUEUES.crawl, Jobs.REVERIFY_SITE, (id) => `reverify:${id}:${week}`);
+    },
   },
   {
     name: 'billing-grace',

@@ -365,18 +365,24 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
       async (req) => {
         const { tenantId } = req.tenant;
         const list = await requireList(tenantId, req.params.listId);
-        let added = 0;
-        for (const kwId of req.body.keywordIds) {
-          const kw = await defaultQuery(`SELECT id FROM keywords WHERE id = $1 AND tenant_id = $2`, [kwId, tenantId]);
-          if (kw.rows.length === 0) continue;
-          const r = await defaultQuery(
-            `INSERT INTO keyword_list_members (id, tenant_id, list_id, keyword_id)
-             VALUES (gen_random_uuid(), $1, $2, $3) ON CONFLICT (list_id, keyword_id) DO NOTHING RETURNING id`,
-            [tenantId, list.id, kwId],
-          );
-          if (r.rows.length > 0) added++;
-        }
-        return { added };
+        // C1-L(batch): batched add — one SELECT to validate ownership and one
+        // INSERT ... SELECT ... unnest(...) instead of a SELECT+INSERT pair
+        // per keyword (up to 500 ids => ~1,000 round-trips before).
+        const ids = [...new Set(req.body.keywordIds)];
+        const kw = await defaultQuery(`SELECT id FROM keywords WHERE id = ANY($1) AND tenant_id = $2`, [
+          ids,
+          tenantId,
+        ]);
+        const valid = new Set((kw.rows as Array<{ id: string }>).map((r) => r.id));
+        const targets = ids.filter((id) => valid.has(id));
+        if (targets.length === 0) return { added: 0 };
+        const r = await defaultQuery(
+          `INSERT INTO keyword_list_members (id, tenant_id, list_id, keyword_id)
+           SELECT gen_random_uuid(), $1, $2, unnest($3::uuid[])
+           ON CONFLICT (list_id, keyword_id) DO NOTHING RETURNING id`,
+          [tenantId, list.id, targets],
+        );
+        return { added: r.rows.length };
       },
     );
 
