@@ -428,5 +428,7 @@ on boot.
 - Migration 030 (`030_stripe_event_ordering.sql`, Backend-A): adds `subscriptions.last_event_at`; stale Stripe events (created < last_event_at) are skipped but ledger-recorded. (010–019 and 020–029 ranges were both fully consumed; 030 sits in the frozen Backend-Lead 010–039 range.)
 - Idempotency-Key semantics: key claimed BEFORE handler execution; concurrent duplicate replays the stored response or gets 409 `IDEMPOTENCY_IN_PROGRESS`; different-body reuse → 422.
 - API-key management endpoints require a human session: API-key-authenticated calls → 403 `HUMAN_SESSION_REQUIRED`. The `admin` scope can never be granted to an API key (400 `SCOPE_NOT_ALLOWED`).
-- Invitation create for an email registered to ANOTHER tenant → 202 generic (no enumeration); same-tenant member → 409 `USER_EXISTS`.
+- Invitation create → ALWAYS 202 `{ ok, message }` generic for new and cross-tenant emails alike (no enumeration oracle); debug fields (`id, email, role, expires_at, token`) are included ONLY when mail is in mock mode / non-production, identically in both cases (signup verifyToken precedent). Same-tenant member → 409 `USER_EXISTS`.
 - Invite accept refuses (409 `INVITE_WOULD_ORPHAN_DATA`) when the shell tenant has any subscriptions/invoices/tenant_credits rows (cascade-delete hazard).
+- Invite accept is transactional: guard counts rows across SHELL_TENANT_TABLES (29 tenant-scoped tables); any row → 409 `INVITE_WOULD_ORPHAN_DATA`, invitation not burned.
+- Idempotency pending claims older than 5 min (same request hash) are abandoned/reclaimable; retention sweep reaps them. Webhook deliveries carry a 30s overall deadline. `charge.refunded` does not advance `subscriptions.last_event_at`.
