@@ -425,3 +425,8 @@ on boot.
 - Admin: non-admins get 404 (not 403); impersonation = 5-min token, session-registered, always writes an admin audit row.
 - `GET /api/v1/settings/providers` → `{ providers: [{ name, impl, mode: mock|real }] }`; `GET /api/v1/openapi.json` serves generated OpenAPI 3.1.
 - Retention windows: usage 13mo, audits 12mo, webhook deliveries/DLQ 90d, activity log 24mo; soft-deleted sites hard-purged after 30d. Pending webhook retries are never swept; only resolved DLQ rows swept.
+- Migration 030 (`030_stripe_event_ordering.sql`, Backend-A): adds `subscriptions.last_event_at`; stale Stripe events (created < last_event_at) are skipped but ledger-recorded. (010–019 and 020–029 ranges were both fully consumed; 030 sits in the frozen Backend-Lead 010–039 range.)
+- Idempotency-Key semantics: key claimed BEFORE handler execution; concurrent duplicate replays the stored response or gets 409 `IDEMPOTENCY_IN_PROGRESS`; different-body reuse → 422.
+- API-key management endpoints require a human session: API-key-authenticated calls → 403 `HUMAN_SESSION_REQUIRED`. The `admin` scope can never be granted to an API key (400 `SCOPE_NOT_ALLOWED`).
+- Invitation create for an email registered to ANOTHER tenant → 202 generic (no enumeration); same-tenant member → 409 `USER_EXISTS`.
+- Invite accept refuses (409 `INVITE_WOULD_ORPHAN_DATA`) when the shell tenant has any subscriptions/invoices/tenant_credits rows (cascade-delete hazard).
