@@ -233,7 +233,10 @@ describe('P0-04 checkout plan guard', () => {
     };
     const evt = (planId: unknown) => ({
       type: 'checkout.session.completed',
-      data: { metadata: { tenantId: 't-victim', planId }, subscription: 'sub_x' },
+      // G5-M#1: the mock-confirm flow generates `sub_mock_`-prefixed ids
+      // (treated as paid); a bare string id would fail closed to
+      // 'incomplete' and take the stripe_customer_id-only tenants update.
+      data: { metadata: { tenantId: 't-victim', planId }, subscription: 'sub_mock_x' },
     });
     await applyPaymentEvent(evt('pro'), q as any);
     // subscriptions INSERT + tenants UPDATE, both carrying the validated plan

@@ -20,6 +20,14 @@ export interface BillingEvent {
     | 'checkout.completed';
   tenantId: string;
   detail?: Record<string, unknown>;
+  /**
+   * G1-L-1: the originating webhook event id (stripe.ts threads it
+   * through). The email-sending hook dedupes on (event_id, type) so an
+   * E4-M-2 crash-retry or concurrent duplicate delivery cannot send the
+   * same lifecycle email twice. Absent for direct (non-webhook) callers —
+   * no dedupe there, as before.
+   */
+  eventId?: string;
 }
 
 export type BillingEventHook = (e: BillingEvent) => Promise<void> | void;
@@ -75,18 +83,40 @@ export function registerDefaultBillingHooks(): void {
     const name = t.rows[0]?.name ?? 'there';
     const notify = getNotify();
     const send = async (subject: string, html: string) => {
+      // G1-L-1: dedupe customer lifecycle emails on (event_id, type). An
+      // E4-M-2 reprocess (crash before markProcessed) or a concurrent
+      // duplicate delivery re-runs the whole webhook handler — the money
+      // paths are event-id-guarded (coupon_redemptions,
+      // tenant_credits.webhook_event_id) but this notification path was
+      // not, so the customer got the same email twice. Check before send,
+      // record the event id after send; a reprocess finds the 'sent' row
+      // and skips. (A 'failed' row does NOT suppress — the email never
+      // went out, so a retry should send it.) No event id (direct
+      // callers), or a missing table/event_id column → send as before.
+      if (e.eventId) {
+        try {
+          const dup = await defaultQuery(
+            `SELECT 1 FROM notification_log
+             WHERE event_id = $1 AND notification_type = $2 AND status = 'sent' LIMIT 1`,
+            [e.eventId, e.type],
+          );
+          if ((dup.rowCount ?? 0) > 0) return;
+        } catch {
+          /* table or event_id column missing → no dedupe, send as before */
+        }
+      }
       try {
         await notify.sendEmail(to, subject, html);
         await defaultQuery(
-          `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail)
-           VALUES (gen_random_uuid(), $1, $2, 'email', 'sent', $3)`,
-          [e.tenantId, e.type, subject],
+          `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail, event_id)
+           VALUES (gen_random_uuid(), $1, $2, 'email', 'sent', $3, $4)`,
+          [e.tenantId, e.type, subject, e.eventId ?? null],
         ).catch(() => {});
       } catch (err) {
         await defaultQuery(
-          `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail)
-           VALUES (gen_random_uuid(), $1, $2, 'email', 'failed', $3)`,
-          [e.tenantId, e.type, String((err as Error)?.message ?? err)],
+          `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail, event_id)
+           VALUES (gen_random_uuid(), $1, $2, 'email', 'failed', $3, $4)`,
+          [e.tenantId, e.type, String((err as Error)?.message ?? err), e.eventId ?? null],
         ).catch(() => {});
       }
     };
@@ -172,7 +202,7 @@ export async function downgradeTenant(
   tenantId: string,
   reason: string,
   q: QueryFn = defaultQuery,
-  opts: { subscriptionStatus?: 'canceled' | 'past_due' } = {},
+  opts: { subscriptionStatus?: 'canceled' | 'past_due'; eventId?: string } = {},
 ): Promise<{ readOnly: boolean }> {
   const starter = getPlan('starter');
   const sites = Number(
@@ -197,7 +227,12 @@ export async function downgradeTenant(
       tenantId,
     ]);
   }
-  await emitBillingEvent({ type: 'subscription.downgraded', tenantId, detail: { reason, readOnly: overLimit } });
+  await emitBillingEvent({
+    type: 'subscription.downgraded',
+    tenantId,
+    detail: { reason, readOnly: overLimit },
+    eventId: opts.eventId,
+  });
   return { readOnly: overLimit };
 }
 

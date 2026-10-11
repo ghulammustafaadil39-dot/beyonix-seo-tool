@@ -256,7 +256,10 @@ describe.runIf(HAS_TEST_DB)('C-01 billing completeness', () => {
       type: 'checkout.session.completed',
       data: {
         customer: 'cus_trial',
-        subscription: 'sub_trial',
+        // G5-M#1: the mock-confirm flow generates `sub_mock_`-prefixed ids;
+        // those keep the old treated-as-paid behavior. A bare string id
+        // (the real Stripe path) fails closed to 'incomplete'.
+        subscription: `sub_mock_trial_${Date.now()}`,
         metadata: { tenantId: u.tenantId, planId: 'growth', trialDays: '14' },
       },
     });

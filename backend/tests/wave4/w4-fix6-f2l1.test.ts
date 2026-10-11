@@ -48,11 +48,24 @@ it('F2-L-1a: reprocessing the same refund event (E4-M-2 path) credits exactly on
   expect(await creditCount()).toBe(1); // ...but the guard held: no double credit
 });
 
-it('F2-L-1b: a distinct refund event still credits (guard is per-event, not per-tenant)', async () => {
+it('F2-L-1b: a distinct refund event for the same charge credits only the delta (G5-L#1)', async () => {
+  // G5-L#1: amount_refunded is cumulative. A distinct event with the same
+  // cumulative total means nothing new was refunded → no new credit row.
   const before = await creditCount();
-  const res = await applyPaymentEvent(refundEvt(), query, 'evt_f2l1_refund_distinct');
-  expect(res.deduplicated).toBe(false);
+  await applyPaymentEvent(refundEvt(), query, 'evt_f2l1_refund_same_total');
+  expect(await creditCount()).toBe(before);
+  // A higher cumulative total credits only the delta (8000 - 5000 = 3000).
+  const higher = {
+    type: 'charge.refunded',
+    data: { id: 'ch_f2l1', amount_refunded: 8000, metadata: { tenantId } },
+  };
+  await applyPaymentEvent(higher, query, 'evt_f2l1_refund_higher_total');
   expect(await creditCount()).toBe(before + 1);
+  const sum = await query(
+    `SELECT COALESCE(SUM(amount_cents), 0)::int AS s FROM tenant_credits WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  expect(Number(sum.rows[0].s)).toBe(8000); // 5000 + 3000 delta, not 13000
 });
 
 it('F2-L-1c: already-processed redelivery is still deduped with no new credit', async () => {
