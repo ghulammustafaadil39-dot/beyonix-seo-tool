@@ -49,6 +49,11 @@ class GeminiProvider implements LLMProvider {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      // C1-L-13: never follow redirects with the key in the query string —
+      // native fetch does not strip query params on cross-origin redirect,
+      // so a DNS-hijacked provider endpoint could 302 the key to an
+      // attacker host. A 3xx here fails closed (res.ok === false).
+      redirect: 'manual',
       // B2-M5: a stalled provider (hung TLS, black-holed host) must not hang
       // the caller until the server kills the socket — the breaker only
       // counts THROWN errors, and a hung socket throws nothing by itself.
@@ -135,7 +140,21 @@ export async function getLLMForTenant(tenantId: string): Promise<LLMProvider> {
       try {
         byokKey = decrypt(row.llm_api_key_enc) || undefined;
       } catch {
-        /* corrupted key — fall through to account provider */
+        // C2-M-2: fail closed. A corrupted/undecryptable BYOK key with an
+        // EXPLICIT tenant provider must 502 — silently falling back to the
+        // operator's server key would bill the operator for the tenant's
+        // usage (and hide the breakage). With no explicit provider the key
+        // was unusable anyway (A2-H1), so the account-provider fallback is
+        // unchanged there.
+        if (row?.llm_provider === 'gemini' || row?.llm_provider === 'openai') {
+          const { ApiError } = await import('../errors.js');
+          throw new ApiError(
+            502,
+            'LLM_KEY_DECRYPT_FAILED',
+            'Your saved LLM API key could not be decrypted. Re-save it in Settings to continue.',
+          );
+        }
+        /* no explicit provider — fall through to account provider */
       }
     }
     if (row?.llm_provider === 'gemini' || row?.llm_provider === 'openai') {
@@ -151,7 +170,11 @@ export async function getLLMForTenant(tenantId: string): Promise<LLMProvider> {
           'ignoring the BYOK key (fail closed, A2-H1); set llm_provider to use it.',
       );
     }
-  } catch {
+  } catch (err) {
+    // C2-M-2: the decrypt-failure 502 must propagate — only genuine DB
+    // failures fall through to the account-level provider selection.
+    const { ApiError } = await import('../errors.js');
+    if (err instanceof ApiError) throw err;
     /* DB unavailable (unit tests) — fall through */
   }
   return getLLM();

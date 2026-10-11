@@ -5,8 +5,9 @@ import { pool, query, type QueryFn } from '../db.js';
 import { ApiError, validationError } from '../errors.js';
 import { authPlugin, signToken, setAuthCookie, setCsrfCookie } from '../middleware/auth.js';
 import { issueCsrfToken } from '../middleware/csrf.js';
-import { actorUserId, canAssignRole, humanUserId, requireHumanSession, requireRole, requireScope } from '../middleware/access.js';
-import { DEFAULT_RETENTION_POLICIES } from '../services/retention.js';
+import { actorUserId, canAssignRole, humanUserId, requireHumanSession, requireRole, requireRoleOrScope, requireScope } from '../middleware/access.js';
+import { DEFAULT_RETENTION_POLICIES, softDeleteSite } from '../services/retention.js';
+import { recomputeReadOnly } from '../services/billing.js';
 import { getQueue, QUEUES } from '../queues.js';
 import { requireVerifiedEmail } from '../middleware/requireVerified.js';
 import { getNotify } from '../providers/notify.js';
@@ -892,23 +893,31 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       };
     });
 
-    authed.put('/account/sites/:siteId/onboarding', { schema: onboardingSchema }, async (req) => {
-      const siteId = assertUuid((req.params as any).siteId, 'siteId');
-      const site = await query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [siteId, t(req)]);
-      if (site.rows.length === 0) throw new ApiError(404, 'NOT_FOUND', 'Site not found');
-      const { step, completed } = req.body as { step: string; completed: boolean };
-      const r = await query(
-        `INSERT INTO onboarding_state (tenant_id, site_id, step, completed, completed_at, updated_at)
-         VALUES ($1, $2, $3, $4, CASE WHEN $4 THEN now() ELSE NULL END, now())
-         ON CONFLICT (tenant_id, site_id, step) DO UPDATE SET
-           completed = EXCLUDED.completed,
-           completed_at = CASE WHEN EXCLUDED.completed THEN now() ELSE NULL END,
-           updated_at = now()
-         RETURNING step, completed, completed_at`,
-        [t(req), siteId, step, completed],
-      );
-      return r.rows[0];
-    });
+    // C1-L-1: this was the only account write with no gate — any viewer
+    // session or zero-scope API key could write onboarding state. Writes
+    // deserve the role gate: owner/admin/editor sessions, account:read for
+    // API keys (matching the GET endpoint's scope).
+    authed.put(
+      '/account/sites/:siteId/onboarding',
+      { schema: onboardingSchema, preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'account:read') },
+      async (req) => {
+        const siteId = assertUuid((req.params as any).siteId, 'siteId');
+        const site = await query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [siteId, t(req)]);
+        if (site.rows.length === 0) throw new ApiError(404, 'NOT_FOUND', 'Site not found');
+        const { step, completed } = req.body as { step: string; completed: boolean };
+        const r = await query(
+          `INSERT INTO onboarding_state (tenant_id, site_id, step, completed, completed_at, updated_at)
+           VALUES ($1, $2, $3, $4, CASE WHEN $4 THEN now() ELSE NULL END, now())
+           ON CONFLICT (tenant_id, site_id, step) DO UPDATE SET
+             completed = EXCLUDED.completed,
+             completed_at = CASE WHEN EXCLUDED.completed THEN now() ELSE NULL END,
+             updated_at = now()
+           RETURNING step, completed, completed_at`,
+          [t(req), siteId, step, completed],
+        );
+        return r.rows[0];
+      },
+    );
 
     // ---- Tenant data export (C-06 / GDPR) ----
     authed.get(
@@ -982,6 +991,57 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       },
     );
 
+    // C5-M-5: read-only self-recovery. A read-only tenant (downgraded with
+    // excess usage) is told to "remove excess resources", but product
+    // DELETEs are blocked by enforceTenantState — so this explicit recovery
+    // path lives under /account/* (allowlisted for read-only tenants) and
+    // trims usage down to the current plan's limits, then clears read-only
+    // when back under limits. Chosen over punching DELETE holes through
+    // enforceTenantState (middleware/auth.ts, B1-owned): one auditable
+    // endpoint instead of re-opening every destructive route.
+    authed.post('/account/recover', { preHandler: requireRole('owner', 'admin') }, async (req) => {
+      const tenantId = t(req);
+      const planId = req.tenant.plan as PlanId;
+      const plan = getPlan(planId);
+      const removed = { sites: [] as string[], keywordsUntracked: 0 };
+
+      // Newest extras are trimmed first — the tenant's original resources
+      // are kept.
+      const sitesR = await query(
+        `SELECT id, domain FROM sites WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC`,
+        [tenantId],
+      );
+      const excessSites = sitesR.rows.slice(plan.max_sites);
+      for (const s of excessSites) {
+        const ok = await softDeleteSite(tenantId, s.id as string, query);
+        if (ok) removed.sites.push(s.domain as string);
+      }
+
+      const kwsR = await query(
+        `SELECT id FROM keywords WHERE tenant_id = $1 AND tracked = TRUE ORDER BY created_at ASC`,
+        [tenantId],
+      );
+      const excessKws = kwsR.rows.slice(plan.max_keywords_tracked);
+      if (excessKws.length > 0) {
+        const ids = excessKws.map((k: any) => k.id as string);
+        const u = await query(`UPDATE keywords SET tracked = FALSE WHERE tenant_id = $1 AND id = ANY($2)`, [
+          tenantId,
+          ids,
+        ]);
+        removed.keywordsUntracked = u.rowCount ?? 0;
+      }
+
+      const stillOver = await recomputeReadOnly(tenantId, planId, query);
+      await logActivity(tenantId, {
+        userId: actorUserId(req),
+        action: 'account.recovered',
+        entityType: 'tenant',
+        entityId: tenantId,
+        meta: { removed, readOnly: stillOver },
+      });
+      return { ok: true, removed, read_only: stillOver };
+    });
+
     // W-07: GDPR ERASE — hard-deletes the tenant and every row it owns.
     // Guardrails: owner/admin human session ONLY (no API keys — a stolen key
     // must never be able to erase the account), explicit {confirm:'ERASE'}
@@ -998,6 +1058,13 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       async (req) => {
         const tenantId = t(req);
         const userId = u(req);
+        // C1-H-2: cancel the Stripe subscription(s) BEFORE any rows are
+        // deleted. On failure cancelTenantBilling throws 502 and the erase
+        // aborts — the customer is never left being charged with no
+        // account. tenant_credits (money owed) are tombstoned in the
+        // surviving audit row below, never silently hard-deleted.
+        const { cancelTenantBilling } = await import('../providers/stripe.js');
+        const { canceled, creditsCents } = await cancelTenantBilling(tenantId);
         const deleted: Record<string, number> = {};
         const client = await pool.connect();
         try {
@@ -1009,7 +1076,21 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
           await q(
             `INSERT INTO admin_audit_log (id, actor_user_id, actor_tenant_id, action, target_tenant_id, meta)
              VALUES (gen_random_uuid(), $1, $2, 'account.erased', $2, $3)`,
-            [userId, tenantId, JSON.stringify({ erasedTenantId: tenantId })],
+            [
+              userId,
+              tenantId,
+              JSON.stringify({
+                erasedTenantId: tenantId,
+                subscriptionsCanceled: canceled,
+                creditsForfeitedCents: creditsCents,
+                ...(creditsCents > 0
+                  ? {
+                      creditNote:
+                        'outstanding credit balance forfeited on erase; contact support to claim a refund',
+                    }
+                  : {}),
+              }),
+            ],
           );
           for (const table of SHELL_TENANT_TABLES) {
             const exists = await q(`SELECT to_regclass($1) AS cls`, [`public.${table}`]);
@@ -1056,7 +1137,14 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
             purged[name] = -1; // Redis unavailable in this path — job rows age out via BullMQ retention
           }
         }
-        return { ok: true, erasedTenantId: tenantId, deleted, queuesPurged: purged };
+        return {
+          ok: true,
+          erasedTenantId: tenantId,
+          deleted,
+          queuesPurged: purged,
+          subscriptionsCanceled: canceled.length,
+          creditsForfeitedCents: creditsCents,
+        };
       },
     );
   });

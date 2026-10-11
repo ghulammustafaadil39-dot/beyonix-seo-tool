@@ -74,33 +74,74 @@ async function validateCoupon(code: string): Promise<void> {
  * locked (FOR UPDATE) so concurrent checkouts can't create duplicate
  * Stripe coupons for the same code; the id is stored back on the row for
  * reuse. In mock mode the local code passes through (no Stripe involved).
+ *
+ * C5-H-1 / C1-M-6: the redemption slot is RESERVED here, atomically, in
+ * the same locked transaction — BEFORE the Stripe discount is attached to
+ * the session. The conditional UPDATE increments reserved_count only when
+ * redeemed+reserved is still under max_redemptions, so N concurrent
+ * checkouts can never overshoot the cap (the old lock-free validateCoupon
+ * let every checkout through and only capped the local counter later,
+ * after Stripe had already granted the discounts). Slots are released on
+ * checkout.session.expired and converted to redeemed_count on
+ * checkout.session.completed.
  */
 async function resolveStripeCoupon(code: string): Promise<string> {
+  const upper = code.toUpperCase();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     try {
+      // Atomic check-and-reserve under the row lock: 0 rows means the
+      // coupon is unknown, inactive, or the cap is already fully reserved.
       const r = await client.query(
-        `SELECT percent_off, amount_off_cents, duration, stripe_coupon_id
-         FROM billing_coupons WHERE code = $1 FOR UPDATE`,
-        [code.toUpperCase()],
+        `UPDATE billing_coupons
+         SET reserved_count = reserved_count + 1
+         WHERE code = $1 AND active
+           AND (max_redemptions IS NULL OR redeemed_count + reserved_count < max_redemptions)
+         RETURNING percent_off, amount_off_cents, duration, stripe_coupon_id`,
+        [upper],
       );
-      if (r.rows.length === 0) throw new ApiError(400, 'INVALID_COUPON', `Unknown coupon code: ${code}`);
+      if (r.rows.length === 0) {
+        const why = await client.query(
+          `SELECT active, max_redemptions, redeemed_count, reserved_count
+           FROM billing_coupons WHERE code = $1`,
+          [upper],
+        );
+        await client.query('ROLLBACK');
+        const row = why.rows[0];
+        if (!row || !row.active) {
+          throw new ApiError(400, 'INVALID_COUPON', `Unknown or inactive coupon code: ${code}`);
+        }
+        throw new ApiError(400, 'COUPON_EXHAUSTED', 'This coupon has reached its redemption limit');
+      }
       const row = r.rows[0];
       if (row.stripe_coupon_id) {
         await client.query('COMMIT');
         return row.stripe_coupon_id as string;
       }
+      // C1-L-3: collision guard — with the hash-suffixed namespace
+      // (C5-M-6) this is near-impossible, but a collision must fail loudly,
+      // never silently attach another code's discount.
+      const candidateId = (await import('../providers/stripe.js')).stripeCouponIdFor(upper);
+      const clash = await client.query(
+        `SELECT code FROM billing_coupons WHERE stripe_coupon_id = $1 AND code <> $2`,
+        [candidateId, upper],
+      );
+      if (clash.rows.length > 0) {
+        await client.query('ROLLBACK');
+        throw new ApiError(
+          409,
+          'COUPON_ID_COLLISION',
+          `Coupon ${upper} collides with ${clash.rows[0].code} in the Stripe namespace — refusing to attach a discount`,
+        );
+      }
       const stripeId = await getPayments().ensureCoupon({
-        code: code.toUpperCase(),
+        code: upper,
         percentOff: row.percent_off as number | null,
         amountOffCents: row.amount_off_cents as number | null,
         duration: row.duration as string,
       });
-      await client.query(`UPDATE billing_coupons SET stripe_coupon_id = $2 WHERE code = $1`, [
-        code.toUpperCase(),
-        stripeId,
-      ]);
+      await client.query(`UPDATE billing_coupons SET stripe_coupon_id = $2 WHERE code = $1`, [upper, stripeId]);
       await client.query('COMMIT');
       return stripeId;
     } catch (err) {
@@ -144,6 +185,14 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
         // C-01 ordering guard: thread Stripe's top-level `created` through
         // (the frozen provider interface drops it from the parsed event).
         if (typeof parsed.created === 'number' && parsed.created > 0) eventCreated = parsed.created;
+        // C5-L-4: a mock payload without a top-level id was replayable
+        // within the tolerance window. Derive a deterministic synthetic id
+        // from the payload hash so identical replays hit the idempotency
+        // ledger instead of being applied twice.
+        if (!eventId && getPayments().isMock) {
+          const { createHash } = await import('node:crypto');
+          eventId = `mock-payload:${createHash('sha256').update(raw).digest('hex').slice(0, 24)}`;
+        }
       } catch {
         /* unsigned/invalid payloads are rejected by constructWebhookEvent */
       }
@@ -198,67 +247,82 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
         // and logged; the old code additionally serialized ALL concurrent
         // billing mutations for the tenant on Stripe latency).
         const tenantId = (req as any).tenant.tenantId as string;
-        const preRead = await query(`SELECT stripe_customer_id FROM tenants WHERE id = $1`, [tenantId]);
-        let customerId: string | null = (preRead.rows[0]?.stripe_customer_id as string | null) ?? null;
-        if (!customerId) {
-          const created = await getPayments().createCustomer((req as any).tenant.email, tenantId);
-          customerId = created.customerId;
-        }
-        const client = await pool.connect();
+        // C5-H-1: a coupon slot was reserved above; if anything below fails
+        // before the Stripe session is created, release the hold so the
+        // cap isn't burned by failed checkouts.
+        const releaseReservation = async () => {
+          if (!couponCode) return;
+          await query(
+            `UPDATE billing_coupons SET reserved_count = GREATEST(reserved_count - 1, 0) WHERE code = $1`,
+            [couponCode.toUpperCase()],
+          ).catch(() => undefined);
+        };
         try {
-          await client.query('BEGIN');
-          try {
-            const t = await client.query(`SELECT stripe_customer_id FROM tenants WHERE id = $1 FOR UPDATE`, [tenantId]);
-            const existing: string | null = (t.rows[0]?.stripe_customer_id as string | null) ?? null;
-            const sub = await client.query(`SELECT status FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
-            const status: string | undefined = sub.rows[0]?.status;
-            if (status && ACTIVE_SUBSCRIPTION_STATUSES.includes(status)) {
-              await client.query('ROLLBACK');
-              throw new ApiError(
-                409,
-                'ALREADY_SUBSCRIBED',
-                'You already have an active subscription — use the billing portal to change plans.',
-                { portal: true },
-              );
-            }
-            if (existing) {
-              // A concurrent checkout won the race — adopt their customer id.
-              // Ours (created above) is orphaned in Stripe; bounded to one
-              // per race and surfaced in logs for manual cleanup.
-              if (existing !== customerId) {
-                console.warn(`[billing] checkout race: adopting existing customer for tenant ${tenantId}`);
-                customerId = existing;
-              }
-            } else {
-              await client.query(`UPDATE tenants SET stripe_customer_id = $1 WHERE id = $2`, [customerId, tenantId]);
-            }
-            await client.query('COMMIT');
-          } catch (err) {
-            try {
-              await client.query('ROLLBACK');
-            } catch {
-              /* already rolled back */
-            }
-            throw err;
+          const preRead = await query(`SELECT stripe_customer_id FROM tenants WHERE id = $1`, [tenantId]);
+          let customerId: string | null = (preRead.rows[0]?.stripe_customer_id as string | null) ?? null;
+          if (!customerId) {
+            const created = await getPayments().createCustomer((req as any).tenant.email, tenantId);
+            customerId = created.customerId;
           }
-        } finally {
-          client.release();
-        }
+          const client = await pool.connect();
+          try {
+            await client.query('BEGIN');
+            try {
+              const t = await client.query(`SELECT stripe_customer_id FROM tenants WHERE id = $1 FOR UPDATE`, [tenantId]);
+              const existing: string | null = (t.rows[0]?.stripe_customer_id as string | null) ?? null;
+              const sub = await client.query(`SELECT status FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+              const status: string | undefined = sub.rows[0]?.status;
+              if (status && ACTIVE_SUBSCRIPTION_STATUSES.includes(status)) {
+                await client.query('ROLLBACK');
+                throw new ApiError(
+                  409,
+                  'ALREADY_SUBSCRIBED',
+                  'You already have an active subscription — use the billing portal to change plans.',
+                  { portal: true },
+                );
+              }
+              if (existing) {
+                // A concurrent checkout won the race — adopt their customer id.
+                // Ours (created above) is orphaned in Stripe; bounded to one
+                // per race and surfaced in logs for manual cleanup.
+                if (existing !== customerId) {
+                  console.warn(`[billing] checkout race: adopting existing customer for tenant ${tenantId}`);
+                  customerId = existing;
+                }
+              } else {
+                await client.query(`UPDATE tenants SET stripe_customer_id = $1 WHERE id = $2`, [customerId, tenantId]);
+              }
+              await client.query('COMMIT');
+            } catch (err) {
+              try {
+                await client.query('ROLLBACK');
+              } catch {
+                /* already rolled back */
+              }
+              throw err;
+            }
+          } finally {
+            client.release();
+          }
 
-        const s = await getPayments().createCheckoutSession({
-          customerId: customerId!,
-          planId,
-          successUrl: `${config.appUrl}/dashboard/billing?success=1`,
-          cancelUrl: `${config.appUrl}/dashboard/billing?canceled=1`,
-          metadata: {
-            tenantId: (req as any).tenant.tenantId,
-            interval: billingInterval,
-            ...(trialDays ? { trialDays: String(trialDays) } : {}),
-            ...(couponCode ? { couponCode: couponCode.toUpperCase() } : {}),
-            ...(stripeCouponId ? { stripeCouponId } : {}),
-          },
-        });
-        return { url: s.url };
+          const s = await getPayments().createCheckoutSession({
+            customerId: customerId!,
+            planId,
+            successUrl: `${config.appUrl}/dashboard/billing?success=1`,
+            cancelUrl: `${config.appUrl}/dashboard/billing?canceled=1`,
+            metadata: {
+              tenantId: (req as any).tenant.tenantId,
+              interval: billingInterval,
+              ...(trialDays ? { trialDays: String(trialDays) } : {}),
+              ...(couponCode ? { couponCode: couponCode.toUpperCase() } : {}),
+              ...(stripeCouponId ? { stripeCouponId } : {}),
+            },
+          });
+          return { url: s.url };
+        } catch (err) {
+          await releaseReservation();
+          throw err;
+        }
       }),
     );
 
@@ -342,20 +406,30 @@ export async function registerBillingRoutes(fastify: FastifyInstance) {
       ]);
       if (t.rows.length === 0) throw new ApiError(403, 'FORBIDDEN', 'That checkout does not belong to your account');
       const tenantId = t.rows[0].id as string;
-      await applyPaymentEvent({
-        type: 'checkout.session.completed',
-        data: {
-          metadata: {
-            tenantId,
-            planId: plan,
-            interval: interval === 'annual' ? 'annual' : 'monthly',
-            ...(trial_days ? { trialDays: trial_days } : {}),
-            ...(coupon ? { couponCode: coupon } : {}),
+      const { session_id } = req.query as { session_id?: string };
+      // C1-L-2: route the event through the webhook idempotency ledger with
+      // a synthetic event id — re-visiting the mock-confirm URL replays the
+      // SAME session id and becomes a deduplicated no-op instead of
+      // double-redeeming the coupon and re-emitting billing events.
+      const eventId = session_id ? `mock-confirm:${session_id}` : `mock-confirm:${Date.now()}`;
+      await applyPaymentEvent(
+        {
+          type: 'checkout.session.completed',
+          data: {
+            metadata: {
+              tenantId,
+              planId: plan,
+              interval: interval === 'annual' ? 'annual' : 'monthly',
+              ...(trial_days ? { trialDays: trial_days } : {}),
+              ...(coupon ? { couponCode: coupon } : {}),
+            },
+            customer,
+            subscription: `sub_mock_${Date.now()}`,
           },
-          customer,
-          subscription: `sub_mock_${Date.now()}`,
         },
-      });
+        query,
+        eventId,
+      );
       return reply.redirect(`${config.appUrl}/dashboard/billing?success=1`);
     });
   });

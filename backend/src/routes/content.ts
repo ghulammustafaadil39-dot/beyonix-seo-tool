@@ -48,13 +48,33 @@ interface SiteParams {
   id: string;
 }
 
-async function enqueueGenerateContent(pieceId: string, tenantId: string, tone: string, targetWords: number) {
-  const { enqueue, QUEUES, Jobs } = await import('../queues.js');
-  await enqueue(
+/**
+ * C1-L-11: single source of truth for AI-word estimates. The worker reserves
+ * targetWords + 400, so route pre-flights use the same number — the three
+ * previously disagreeing constants (800/1500/2500 create pre-flight, +1600
+ * generate pre-flight, 1200 enqueue target) are unified here.
+ */
+export function estimateAiWords(targetWords: number): number {
+  return targetWords + 400;
+}
+
+async function enqueueGenerateContent(
+  pieceId: string,
+  tenantId: string,
+  tone: string,
+  targetWords: number,
+): Promise<{ deduplicated: boolean }> {
+  const { enqueueDeduped, QUEUES, Jobs } = await import('../queues.js');
+  // C1-M-3: the permanent `content:${pieceId}` jobId silently deduped on
+  // BullMQ and returned a fake {queued:true} forever after a terminal
+  // failure. Use the Redis-claim honest-dedupe pattern like the refresh
+  // routes, with a per-day windowed key.
+  const day = new Date().toISOString().slice(0, 10);
+  return enqueueDeduped(
     QUEUES.content,
     Jobs.GENERATE_CONTENT,
     { pieceId, tenantId, tone, targetWords },
-    { idempotencyKey: `content:${pieceId}` },
+    `content:${pieceId}:${day}`,
   );
 }
 
@@ -124,11 +144,12 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
         const estimate = LENGTH_ESTIMATES[length];
 
         const lim = await checkLimit(tenantId, plan, 'ai_words');
-        if (!canAffordAiWords(lim.used, lim.limit, estimate)) {
+        // C1-L-11: pre-flight with the same estimate the worker reserves.
+        if (!canAffordAiWords(lim.used, lim.limit, estimateAiWords(estimate))) {
           throw new ApiError(
             402,
             'LIMIT_EXCEEDED',
-            `AI words limit reached: ${lim.used}/${lim.limit} used this month; this piece needs ~${estimate} words. Upgrade to continue.`,
+            `AI words limit reached: ${lim.used}/${lim.limit} used this month; this piece needs ~${estimateAiWords(estimate)} words. Upgrade to continue.`,
             { used: lim.used, limit: lim.limit, kind: 'ai_words', upgrade: true },
           );
         }
@@ -231,6 +252,21 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
       { preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write'), schema: { params: uuidParamSchema } },
       async (req) => {
         const { tenantId } = req.tenant;
+        // C1-L-12: route approve through the same canTransition state
+        // machine as the status endpoint — a piece can no longer jump
+        // brief -> approved while the status endpoint forbids it.
+        const cur = await defaultQuery(`SELECT status FROM content_pieces WHERE id = $1 AND tenant_id = $2`, [
+          req.params.id,
+          tenantId,
+        ]);
+        if (cur.rows.length === 0) throw notFound('Content piece');
+        if (!canTransition(cur.rows[0].status as string, 'approved')) {
+          throw new ApiError(
+            400,
+            'INVALID_STATUS',
+            `Cannot approve a piece in '${cur.rows[0].status}' status`,
+          );
+        }
         const r = await defaultQuery(
           `UPDATE content_pieces SET status = 'approved', updated_at = now()
            WHERE id = $1 AND tenant_id = $2 RETURNING *`,
@@ -258,7 +294,7 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
         }
         // Pre-flight AI budget check (same estimate the worker enforces).
         const lim = await checkLimit(tenantId, plan, 'ai_words');
-        if (lim.used + 1600 > lim.limit) {
+        if (lim.used + estimateAiWords(1200) > lim.limit) {
           throw new ApiError(
             402,
             'LIMIT_EXCEEDED',
@@ -266,8 +302,10 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
             { used: lim.used, limit: lim.limit, kind: 'ai_words', upgrade: true },
           );
         }
-        await enqueueGenerateContent(piece.id, tenantId, 'friendly professional', 1200);
-        return { ok: true, queued: true };
+        // C1-M-3: report dedupe honestly — a repeat click in the same day
+        // must not get a fake {queued:true}.
+        const { deduplicated } = await enqueueGenerateContent(piece.id, tenantId, 'friendly professional', 1200);
+        return deduplicated ? { ok: true, queued: false, deduplicated: true } : { ok: true, queued: true };
       },
     );
 

@@ -83,6 +83,14 @@ export interface PaymentsProvider {
     amountOffCents?: number | null;
     duration: string;
   }): Promise<string>;
+  /**
+   * C1-H-1/H-2: cancels every active subscription owned by the Stripe
+   * customer (immediate cancel, not at-period-end — the account is being
+   * deleted, so there is nobody left to use the remaining period).
+   * Returns the canceled subscription ids; empty when the customer has no
+   * active subscriptions. Must be called BEFORE deleting tenant/user rows.
+   */
+  cancelSubscription(customerId: string): Promise<{ canceled: string[] }>;
 }
 
 // ---------- Google ----------

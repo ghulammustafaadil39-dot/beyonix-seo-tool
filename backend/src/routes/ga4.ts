@@ -70,7 +70,11 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
 
     // Google OAuth for GA4. The consent screen already requests
     // analytics.readonly, so this shares the stored Google refresh token.
-    authed.get('/sites/:id/ga4/auth-url', { schema: { params: idParamSchema } }, async (req, reply) => {
+    // C1-M-2: initiating the OAuth flow binds the site's Google integration
+    // to whoever completes consent — gate it like the read endpoints
+    // (owner/admin/editor sessions, ga4:read for API keys), consistent with
+    // ga4/connect which already requires editor+.
+    authed.get('/sites/:id/ga4/auth-url', { schema: { params: idParamSchema }, preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'ga4:read') }, async (req, reply) => {
       const { id } = req.params as { id: string };
       await requireSite(req.tenant.tenantId, id);
       // S-04: Redis state + signed-cookie browser binding + PKCE (was a
