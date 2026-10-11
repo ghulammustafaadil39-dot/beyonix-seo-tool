@@ -300,6 +300,10 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
       // - sole user of an empty shell tenant -> the shell is dissolved;
       // - sole user of a tenant WITH data -> refused (no silent data loss);
       // - last owner of a shared tenant -> refused (would orphan it).
+      // "Empty" must mean NO billing footprint either: DELETE FROM tenants
+      // cascade-deletes subscriptions, invoices and tenant_credits
+      // (all ON DELETE CASCADE), so a shell with zero sites but a paid
+      // subscription would silently lose its billing history on dissolve.
       const oldTenantId = me.rows[0].tenant_id as string;
       // Guards first (pure reads), claim second, writes last — so a refused
       // accept never burns the invitation.
@@ -311,7 +315,22 @@ export async function registerAccountRoutes(fastify: FastifyInstance) {
         );
         const oldSites = await query(`SELECT COUNT(*)::int c FROM sites WHERE tenant_id = $1`, [oldTenantId]);
         if (Number(others.rows[0].c) === 0) {
-          if (Number(oldSites.rows[0].c) > 0) {
+          // Billing footprint guard: subscriptions / invoices /
+          // tenant_credits are all ON DELETE CASCADE from tenants, so
+          // dissolving the shell would erase them. Refuse the move with
+          // the same 409 as the sites guard (safest option: the guard
+          // runs before the invitation claim, so the invite is not
+          // burned, and the user keeps access to their billing history
+          // until they cancel/transfer it — moving anyway would leave an
+          // ownerless, unreachable shell tenant behind).
+          const oldBilling = await query(
+            `SELECT
+               (SELECT COUNT(*)::int FROM subscriptions WHERE tenant_id = $1) +
+               (SELECT COUNT(*)::int FROM invoices WHERE tenant_id = $1) +
+               (SELECT COUNT(*)::int FROM tenant_credits WHERE tenant_id = $1) AS c`,
+            [oldTenantId],
+          );
+          if (Number(oldSites.rows[0].c) > 0 || Number(oldBilling.rows[0].c) > 0) {
             throw new ApiError(
               409,
               'INVITE_WOULD_ORPHAN_DATA',

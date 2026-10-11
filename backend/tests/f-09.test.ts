@@ -218,6 +218,67 @@ describe.runIf(HAS_TEST_DB)('F-09 agency & team', () => {
     expect(invRow.rows[0].accepted_at).not.toBeNull();
   });
 
+  it('REGRESSION: shell tenant with a billing footprint is NOT dissolved on invite accept (409, billing rows survive)', async () => {
+    const owner = await signupVerified(app);
+    tc.add(owner.tenantId);
+    const inviteEmail = uniqueEmail('billed');
+    const inv = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations',
+      headers: auth(owner.token),
+      payload: { email: inviteEmail, role: 'editor' },
+    });
+    expect(inv.statusCode).toBe(200);
+
+    // Invitee signs up fresh: sole user of a shell tenant with ZERO sites
+    // (the old guard's only check) — but with a paid billing footprint.
+    const invitee = await signupVerified(app, inviteEmail);
+    tc.add(invitee.tenantId);
+    await query(
+      `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, plan_id, status)
+       VALUES (gen_random_uuid(), $1, $2, 'pro', 'active')`,
+      [invitee.tenantId, `sub_billed_${Date.now()}`],
+    );
+    await query(
+      `INSERT INTO invoices (tenant_id, stripe_invoice_id, status, amount_due_cents)
+       VALUES ($1, $2, 'paid', 4900)`,
+      [invitee.tenantId, `in_billed_${Date.now()}`],
+    );
+    await query(
+      `INSERT INTO tenant_credits (tenant_id, amount_cents, reason) VALUES ($1, 1000, 'goodwill')`,
+      [invitee.tenantId],
+    );
+
+    const accept = await app.inject({
+      method: 'POST',
+      url: '/api/v1/account/invitations/accept',
+      headers: auth(invitee.token),
+      payload: { token: (inv.json() as any).token },
+    });
+    // Move refused — dissolving the shell would cascade-delete the
+    // billing rows, so the accept is blocked like any other orphan guard.
+    expect(accept.statusCode).toBe(409);
+    expect(accept.json().error.code).toBe('INVITE_WOULD_ORPHAN_DATA');
+
+    // Shell tenant + every billing row survive; the user did not move
+    // and the invitation was not burned (guards run before the claim).
+    const shell = await query(`SELECT COUNT(*)::int c FROM tenants WHERE id = $1`, [invitee.tenantId]);
+    expect(shell.rows[0].c).toBe(1);
+    const subs = await query(`SELECT COUNT(*)::int c FROM subscriptions WHERE tenant_id = $1`, [invitee.tenantId]);
+    expect(subs.rows[0].c).toBe(1);
+    const invs = await query(`SELECT COUNT(*)::int c FROM invoices WHERE tenant_id = $1`, [invitee.tenantId]);
+    expect(invs.rows[0].c).toBe(1);
+    const credits = await query(`SELECT COUNT(*)::int c FROM tenant_credits WHERE tenant_id = $1`, [invitee.tenantId]);
+    expect(credits.rows[0].c).toBe(1);
+    const me = await query(`SELECT tenant_id FROM users WHERE id = $1`, [invitee.userId]);
+    expect(me.rows[0].tenant_id).toBe(invitee.tenantId);
+    const invRow = await query(`SELECT accepted_at FROM team_invitations WHERE tenant_id = $1 AND email = $2`, [
+      owner.tenantId,
+      inviteEmail,
+    ]);
+    expect(invRow.rows[0].accepted_at).toBeNull();
+  });
+
   it('members: role change, removal, last-owner protection', async () => {
     const owner = await signupVerified(app);
     tc.add(owner.tenantId);
