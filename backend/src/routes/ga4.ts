@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { config, hasGoogle } from '../config.js';
+import { config } from '../config.js';
 import { encrypt } from '../crypto.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import { authPlugin } from '../middleware/auth.js';
-import { getGoogle } from '../providers/google.js';
+import { getGoogle, isMockGoogleAllowed } from '../providers/google.js';
 import {
   OAUTH_STATE_COOKIE,
   clearOAuthStateCookie,
@@ -160,8 +160,9 @@ export async function registerGa4Routes(fastify: FastifyInstance) {
     return reply.redirect(`${config.appUrl}/dashboard/sites/${s.data.siteId}?ga4=1`);
   });
 
-  // Mock consent page exists ONLY when Google is not configured.
-  if (!hasGoogle()) {
+  // Mock consent page exists ONLY when the mock provider is allowed
+  // (N-A1-6: NODE_ENV=test|development without Google credentials).
+  if (isMockGoogleAllowed()) {
     fastify.get('/ga4/mock-consent', { schema: mockConsentQuerySchema }, async (req, reply) => {
       const { state } = req.query as { state: string };
       return reply.redirect(`/api/v1/ga4/callback?code=mock&state=${encodeURIComponent(state)}`);

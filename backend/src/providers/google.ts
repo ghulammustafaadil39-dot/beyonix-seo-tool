@@ -239,10 +239,35 @@ class MockGoogleProvider implements GoogleProvider {
 }
 
 let cached: GoogleProvider | null = null;
+
+/**
+ * N-A1-6: the mock provider (fixed profile `mock.user@example.com`, merge by
+ * email) is a pre-account-hijack vector — anyone completing the mock OAuth
+ * flow takes over the account registered with the mock email. It may ONLY be
+ * used in explicit test/development environments. Anywhere else without real
+ * Google credentials, fail closed.
+ */
+export function isMockGoogleAllowed(): boolean {
+  const env = config.nodeEnv;
+  return !hasGoogle() && (env === 'test' || env === 'development');
+}
+
 export function getGoogle(): GoogleProvider {
   if (hasGoogle()) return new RealGoogleProvider();
+  if (!isMockGoogleAllowed()) {
+    throw new Error(
+      `FATAL: Google OAuth is not configured (missing GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET) ` +
+        `and NODE_ENV='${config.nodeEnv}' is not test|development — refusing to use the mock ` +
+        `provider. Set real Google credentials or run with NODE_ENV=test|development.`,
+    );
+  }
   if (!cached) {
-    console.log('[provider] using MOCK google (no GOOGLE_CLIENT_ID/SECRET configured)');
+    // N-A1-6: loud warning — the mock must never serve real user data.
+    console.warn(
+      `[provider] WARNING: using MOCK google provider (fixed profile mock.user@example.com) ` +
+        `because no GOOGLE_CLIENT_ID/SECRET is configured. Mock OAuth is permitted only in ` +
+        `test/development (NODE_ENV=${config.nodeEnv}); never use it with real user accounts.`,
+    );
     cached = new MockGoogleProvider();
   }
   return cached;
