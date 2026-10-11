@@ -12,9 +12,10 @@ export async function generateStaticParams() {
 export async function generateMetadata({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
-  const doc = DOCS[params.slug];
+  const { slug } = await params;
+  const doc = DOCS[slug];
   if (!doc) return { title: 'Not found' };
   return {
     title: doc.title,
@@ -23,8 +24,9 @@ export async function generateMetadata({
   };
 }
 
-export default function DocArticlePage({ params }: { params: { slug: string } }) {
-  const doc = DOCS[params.slug];
+export default async function DocArticlePage({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  const doc = DOCS[slug];
   if (!doc) notFound();
 
   return (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { contentApi, type ContentPiece } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
@@ -10,9 +10,9 @@ import ContentV2Panel from '@/components/tabs/ContentV2Panel';
 export default function ContentDetailPage({
   params,
 }: {
-  params: { id: string; contentId: string };
+  params: Promise<{ id: string; contentId: string }>;
 }) {
-  const { contentId } = params;
+  const { id, contentId } = use(params);
   const { report } = useErrorReporter();
   const [piece, setPiece] = useState<ContentPiece | null>(null);
   const [title, setTitle] = useState('');
@@ -84,7 +84,7 @@ export default function ContentDetailPage({
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <Link
-        href={`/dashboard/sites/${params.id}/content`}
+        href={`/dashboard/sites/${id}/content`}
         className="text-sm text-white/55 hover:text-white/70 hover:underline"
       >
         ← Back to content
@@ -148,7 +148,7 @@ export default function ContentDetailPage({
         </button>
       </form>
 
-      <ContentV2Panel contentId={contentId} siteId={params.id} />
+      <ContentV2Panel contentId={contentId} siteId={id} />
     </div>
   );
 }

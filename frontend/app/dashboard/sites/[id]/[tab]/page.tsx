@@ -4,7 +4,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import TabNav, { SITE_TABS } from '@/components/TabNav';
@@ -62,9 +62,9 @@ const TAB_COMPONENTS: Record<string, React.ComponentType<{ siteId: string }>> = 
 export default function SiteTabPage({
   params,
 }: {
-  params: { id: string; tab: string };
+  params: Promise<{ id: string; tab: string }>;
 }) {
-  const { id: siteId, tab } = params;
+  const { id: siteId, tab } = use(params);
   const meta = SITE_TABS.find((t) => t.slug === tab);
   const Tab = TAB_COMPONENTS[tab];
   const { report } = useErrorReporter();
