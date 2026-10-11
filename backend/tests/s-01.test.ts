@@ -47,7 +47,7 @@ describe('auth scoping regression (fp encapsulation)', () => {
     const signup = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'scoping@example.com', password: 'Password123!' },
+      payload: { email: 'scoping@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(signup.statusCode).toBe(201);
     const token = (signup.json() as any).token as string;
@@ -55,7 +55,7 @@ describe('auth scoping regression (fp encapsulation)', () => {
     const login = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
-      payload: { email: 'scoping@example.com', password: 'Password123!' },
+      payload: { email: 'scoping@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(login.statusCode).toBe(200);
 
@@ -77,7 +77,7 @@ describe('S-01 email verification flow', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'newbie@example.com', password: 'Password123!', name: 'Newbie' },
+      payload: { email: 'newbie@example.com', password: 'J7#kP9!mV2@qX5$zR8&', name: 'Newbie' },
     });
     expect(res.statusCode).toBe(201);
     const body = res.json() as any;
@@ -100,7 +100,7 @@ describe('S-01 email verification flow', () => {
     const signup = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'verifyme@example.com', password: 'Password123!' },
+      payload: { email: 'verifyme@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     const rawToken = (signup.json() as any).verifyToken as string;
     const userId = (signup.json() as any).user.id as string;
@@ -133,7 +133,7 @@ describe('S-01 email verification flow', () => {
     const signup = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'expired@example.com', password: 'Password123!' },
+      payload: { email: 'expired@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     const rawToken = (signup.json() as any).verifyToken as string;
     await query(`UPDATE email_verification_tokens SET expires_at = now() - interval '1 minute'`);

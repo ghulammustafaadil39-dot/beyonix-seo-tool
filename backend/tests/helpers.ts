@@ -44,7 +44,7 @@ export async function createTestUser(
     `INSERT INTO tenants (id, name, plan_id) VALUES (gen_random_uuid(), 'Test Tenant', 'starter') RETURNING id`,
   );
   const tenantId = t.rows[0].id as string;
-  const pwHash = await hashPassword(opts.password ?? 'Password123!');
+  const pwHash = await hashPassword(opts.password ?? 'J7#kP9!mV2@qX5$zR8&');
   const u = await query(
     `INSERT INTO users (id, tenant_id, email, password_hash, name, role, email_verified_at)
      VALUES (gen_random_uuid(), $1, $2, $3, $4, 'owner', ${opts.verified ? 'now()' : 'NULL'})
@@ -57,7 +57,7 @@ export async function createTestUser(
 export async function loginAs(
   app: FastifyInstance,
   email: string,
-  password = 'Password123!',
+  password = 'J7#kP9!mV2@qX5$zR8&',
 ): Promise<string> {
   const res = await app.inject({
     method: 'POST',

@@ -33,8 +33,26 @@ import {
   assertResendAllowed,
   consumeVerificationToken,
   issueVerificationToken,
+  sendEmailChangeEmail,
+  sendPasswordResetEmail,
   sendVerificationEmail,
 } from '../services/emailVerification.js';
+import { validatePassword } from '../services/passwordPolicy.js';
+import {
+  beginTotpSetup,
+  disableTotp,
+  enableTotp,
+  getTotpState,
+  isTotpEnabled,
+  verifyTotpOrBackup,
+} from '../services/totp.js';
+import {
+  createSession,
+  hashJti,
+  listSessions,
+  revokeAllSessions,
+  revokeSession,
+} from '../services/sessions.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -42,6 +60,36 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * integration tests can complete the flow without reading email. */
 function testVerifyTokenField(rawToken: string): Record<string, string> {
   return config.nodeEnv === 'test' ? { verifyToken: rawToken } : {};
+}
+
+/** S-05: same pattern for the password-reset debug token. */
+function testResetTokenField(rawToken: string | null): Record<string, string> {
+  return config.nodeEnv === 'test' && rawToken ? { resetToken: rawToken } : {};
+}
+
+/**
+ * S-05: issues an auth token AND registers the server-side session (for the
+ * session list / per-session revocation), then sets the auth cookie.
+ */
+async function issueAuthSession(
+  req: any,
+  reply: any,
+  userId: string,
+  tenantId: string,
+  tokenVersion: number,
+): Promise<string> {
+  const token = signToken(userId, tenantId, tokenVersion);
+  const decoded = jwt.decode(token) as { jti?: string } | null;
+  if (decoded?.jti) {
+    await createSession(
+      userId,
+      decoded.jti,
+      req.headers?.['user-agent'] as string | undefined,
+      req.ip,
+    );
+  }
+  setAuthCookie(reply, token);
+  return token;
 }
 
 const signupSchema = {
@@ -165,12 +213,22 @@ function disposableBlockEnabled(): boolean {
   return process.env.DISPOSABLE_EMAIL_BLOCK === 'true' || config.disposableEmailBlock;
 }
 
+/** S-03: strict per-IP limit for auth endpoints (default 20/min). */
+function authStrictLimit(): number {
+  const v = parseInt(process.env.AUTH_RATE_LIMIT_PER_MIN ?? '', 10);
+  return Number.isFinite(v) && v > 0 ? v : 20;
+}
+
 export async function registerAuthRoutes(fastify: FastifyInstance) {
   // Brute-force guard: auth endpoints get a much stricter limit than the
-  // global 300/min (per-IP).
-  const strictRateLimit = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+  // global per-IP limit. The max is re-read per registration (live env
+  // fallback) so tests can raise it via AUTH_RATE_LIMIT_PER_MIN without
+  // changing the production default of 20.
+  const strictRateLimit = () => ({
+    config: { rateLimit: { max: authStrictLimit(), timeWindow: '1 minute' } },
+  });
 
-  fastify.post('/auth/signup', { schema: signupSchema, ...strictRateLimit }, async (req, reply) => {
+  fastify.post('/auth/signup', { schema: signupSchema, ...strictRateLimit() }, async (req, reply) => {
     const { email, password, name, captchaToken } = req.body as {
       email: string;
       password: string;
@@ -179,7 +237,9 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     };
     const cleanEmail = (email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(cleanEmail)) throw validationError('Invalid email address');
-    if (!password || password.length < 8) throw validationError('Password must be at least 8 characters');
+    // S-05: password policy (length, common-password list, breach corpus).
+    const pwProblems = await validatePassword(password ?? '');
+    if (pwProblems.length > 0) throw validationError(pwProblems[0]);
     // S-03: optional disposable-email block (signup abuse protection).
     if (disposableBlockEnabled() && isDisposableEmail(cleanEmail)) {
       throw validationError('Please sign up with a permanent email address');
@@ -219,9 +279,9 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       const rawToken = await issueVerificationToken(user.id as string, 'signup');
       await sendVerificationEmail(cleanEmail, user.name as string, rawToken);
       // P0-01: sign with the row's token_version (logout revocation compares
-      // token tv against users.token_version).
-      const token = signToken(user.id as string, tenantId, Number(user.token_version ?? 0));
-      setAuthCookie(reply, token);
+      // token tv against users.token_version). S-05: also registers the
+      // server-side session.
+      const token = await issueAuthSession(req, reply, user.id as string, tenantId, Number(user.token_version ?? 0));
       return reply.status(201).send({
         token,
         user: { id: user.id, email: user.email, name: user.name, emailVerified: false },
@@ -241,7 +301,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     }
   });
 
-  fastify.post('/auth/login', { schema: loginSchema, ...strictRateLimit }, async (req, reply) => {
+  fastify.post('/auth/login', { schema: loginSchema, ...strictRateLimit() }, async (req, reply) => {
     const { email, password } = req.body as { email: string; password: string };
     const cleanEmail = (email ?? '').trim().toLowerCase();
     // S-03: login lockout with backoff. Checked BEFORE the user lookup and
@@ -278,11 +338,20 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     }
     // Success: clear any accumulated failures.
     await clearLoginAttempts(redis, cleanEmail, req.ip);
+    // S-05: 2FA challenge — password was correct, but no session yet. The
+    // short-lived totpToken can only be exchanged at POST /auth/totp/verify.
+    const tv = Number(row.token_version ?? 0);
+    if (await isTotpEnabled(row.id as string)) {
+      const totpToken = signToken(row.id as string, row.tenant_id as string, tv, {
+        purpose: 'totp',
+        expiresIn: '5m',
+      });
+      return { totpRequired: true, totpToken };
+    }
     const verified = await isEmailVerified(row.id as string);
     // P0-01: sign with the stored token_version (logout bumps it); a default
     // tv=0 here would be permanently revoked after the first logout.
-    const token = signToken(row.id as string, row.tenant_id as string, Number(row.token_version ?? 0));
-    setAuthCookie(reply, token);
+    const token = await issueAuthSession(req, reply, row.id as string, row.tenant_id as string, tv);
     return {
       token,
       user: { id: row.id, email: row.email, name: row.name, emailVerified: verified },
@@ -291,7 +360,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
   });
 
   // S-01: consume an email-verification token (signup or email change).
-  fastify.post('/auth/email/verify', { schema: verifyEmailSchema, ...strictRateLimit }, async (req) => {
+  fastify.post('/auth/email/verify', { schema: verifyEmailSchema, ...strictRateLimit() }, async (req) => {
     const { token } = req.body as { token?: string };
     if (!token) throw validationError('Verification token is required');
     const consumed = await consumeVerificationToken(token);
@@ -309,7 +378,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
 
   // S-01: resend the verification email. Always 200 with a generic body so
   // the endpoint cannot be used to enumerate registered emails.
-  fastify.post('/auth/email/resend', { schema: resendEmailSchema, ...strictRateLimit }, async (req) => {
+  fastify.post('/auth/email/resend', { schema: resendEmailSchema, ...strictRateLimit() }, async (req) => {
     const { email } = req.body as { email?: string };
     const cleanEmail = (email ?? '').trim().toLowerCase();
     if (EMAIL_RE.test(cleanEmail)) {
@@ -328,9 +397,120 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     return { ok: true };
   });
 
+  // S-05: password reset request. ALWAYS 200 with a generic body — the
+  // endpoint must not reveal whether the email is registered.
+  fastify.post('/auth/password/reset-request', { schema: resendEmailSchema, ...strictRateLimit() }, async (req) => {
+    const { email } = req.body as { email?: string };
+    const cleanEmail = (email ?? '').trim().toLowerCase();
+    let debugToken: string | null = null;
+    if (EMAIL_RE.test(cleanEmail)) {
+      const r = await query('SELECT id, name FROM users WHERE email = $1', [cleanEmail]);
+      const row = r.rows[0];
+      // Passwordless (Google-only) accounts have no password to reset.
+      if (row) {
+        const pw = await query('SELECT password_hash FROM users WHERE id = $1', [row.id]);
+        if (pw.rows[0]?.password_hash) {
+          try {
+            await assertResendAllowed(row.id as string);
+            const rawToken = await issueVerificationToken(row.id as string, 'password_reset');
+            await sendPasswordResetEmail(cleanEmail, (row.name as string) ?? '', rawToken);
+            debugToken = rawToken;
+          } catch {
+            // Throttled — still return the generic response (no enumeration).
+          }
+        }
+      }
+    }
+    return { ok: true, ...testResetTokenField(debugToken) };
+  });
+
+  // S-05: consume a password-reset token (one-time, 24h) and set the new
+  // password. All sessions are revoked — a compromised password dies
+  // everywhere at once.
+  fastify.post(
+    '/auth/password/reset',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['token', 'password'],
+          properties: {
+            token: { type: 'string', minLength: 8, maxLength: 200 },
+            password: { type: 'string', maxLength: 200 },
+          },
+          additionalProperties: false,
+        },
+      },
+      ...strictRateLimit(),
+    },
+    async (req) => {
+      const { token, password } = req.body as { token?: string; password?: string };
+      const problems = await validatePassword(password ?? '');
+      if (problems.length > 0) throw validationError(problems[0]);
+      const consumed = await consumeVerificationToken(token ?? '', 'password_reset');
+      if (!consumed) throw new ApiError(400, 'INVALID_TOKEN', 'This reset link is invalid or has expired');
+      await query('UPDATE users SET password_hash = $2 WHERE id = $1', [
+        consumed.userId,
+        await hashPassword(password!),
+      ]);
+      await revokeAllSessions(consumed.userId);
+      return { ok: true };
+    },
+  );
+
+  // S-05: exchanges the short-lived 2FA challenge token (+ TOTP code or
+  // backup code) for a full session. Public — the totpToken is the auth.
+  fastify.post(
+    '/auth/totp/verify',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['totpToken', 'code'],
+          properties: {
+            totpToken: { type: 'string', minLength: 8, maxLength: 2000 },
+            code: { type: 'string', minLength: 4, maxLength: 32 },
+          },
+          additionalProperties: false,
+        },
+      },
+      ...strictRateLimit(),
+    },
+    async (req, reply) => {
+      const { totpToken, code } = req.body as { totpToken?: string; code?: string };
+      let payload: any;
+      try {
+        payload = jwt.verify(totpToken ?? '', config.jwtSecret);
+      } catch {
+        throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired 2FA challenge');
+      }
+      if (!payload || payload.purpose !== 'totp' || !payload.uid) {
+        throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired 2FA challenge');
+      }
+      const ok = await verifyTotpOrBackup(payload.uid as string, code ?? '');
+      if (!ok) throw new ApiError(401, 'INVALID_CODE', 'Invalid authentication code');
+      const r = await query(
+        `SELECT u.id, u.email, u.name, u.tenant_id, u.token_version, u.email_verified_at,
+                t.name AS tenant_name, t.plan_id
+         FROM users u JOIN tenants t ON t.id = u.tenant_id
+         WHERE u.id = $1`,
+        [payload.uid],
+      );
+      const row = r.rows[0];
+      if (!row) throw new ApiError(401, 'INVALID_TOKEN', 'Invalid or expired 2FA challenge');
+      const token = await issueAuthSession(req, reply, row.id as string, row.tenant_id as string, Number(row.token_version ?? 0));
+      return {
+        token,
+        user: { id: row.id, email: row.email, name: row.name, emailVerified: row.email_verified_at != null },
+        tenant: { id: row.tenant_id, name: row.tenant_name, plan_id: row.plan_id },
+      };
+    },
+  );
+
   fastify.post('/auth/logout', async (req, reply) => {
-    // Revoke the session server-side too (bumps token_version so the JWT
-    // stops working even if copied). Best-effort: cookie is always cleared.
+    // Revoke the session server-side too (revokes the jti session and bumps
+    // token_version so the JWT stops working even if copied). Best-effort:
+    // the cookie is always cleared.
     try {
       const h = req.headers.authorization;
       const token = h?.startsWith('Bearer ')
@@ -339,7 +519,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       if (token) {
         const payload = jwt.verify(token, config.jwtSecret) as any;
         if (payload?.uid) {
-          await query('UPDATE users SET token_version = token_version + 1 WHERE id = $1', [payload.uid]);
+          await revokeAllSessions(payload.uid as string);
         }
       }
     } catch {
@@ -443,8 +623,16 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const token = signToken(userId, tenantId, tokenVersion);
-    setAuthCookie(reply, token);
+    // S-05: accounts with 2FA enabled get the short-lived challenge instead
+    // of a session — the frontend collects the TOTP code next.
+    if (await isTotpEnabled(userId)) {
+      const totpToken = signToken(userId, tenantId, tokenVersion, { purpose: 'totp', expiresIn: '5m' });
+      clearOAuthStateCookie(reply);
+      return reply.redirect(
+        `${config.appUrl}/login?totp=1&token=${encodeURIComponent(totpToken)}`,
+      );
+    }
+    const token = await issueAuthSession(req, reply, userId, tenantId, tokenVersion);
     clearOAuthStateCookie(reply); // S-04: flow complete, drop the binding cookie
     return reply.redirect(`${config.appUrl}/dashboard`);
   });
@@ -466,6 +654,220 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
         tenant: { id: t.id, name: t.name, plan_id: t.plan_id },
         plan: getPlan(t.plan_id),
       };
+    });
+
+    // S-05: change password. Requires the current password; revokes ALL
+    // sessions (the caller's included) so a compromised password dies
+    // everywhere at once.
+    authed.post(
+      '/auth/password/change',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['currentPassword', 'newPassword'],
+            properties: {
+              currentPassword: { type: 'string', maxLength: 200 },
+              newPassword: { type: 'string', maxLength: 200 },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (req) => {
+        const { currentPassword, newPassword } = req.body as {
+          currentPassword?: string;
+          newPassword?: string;
+        };
+        const r = await query('SELECT password_hash FROM users WHERE id = $1', [req.tenant.userId]);
+        const hash = r.rows[0]?.password_hash as string | null;
+        if (!hash || !(await verifyPassword(currentPassword ?? '', hash))) {
+          throw new ApiError(401, 'INVALID_CREDENTIALS', 'Current password is incorrect');
+        }
+        const problems = await validatePassword(newPassword ?? '');
+        if (problems.length > 0) throw validationError(problems[0]);
+        await query('UPDATE users SET password_hash = $2 WHERE id = $1', [
+          req.tenant.userId,
+          await hashPassword(newPassword!),
+        ]);
+        await revokeAllSessions(req.tenant.userId);
+        return { ok: true };
+      },
+    );
+
+    // S-05: request an email change. The NEW address must be verified before
+    // it takes effect (existing /auth/email/verify + confirmEmailChange).
+    authed.post(
+      '/auth/email/change',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['email'],
+            properties: { email: { type: 'string', maxLength: 320 } },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (req) => {
+        const { email } = req.body as { email?: string };
+        const cleanEmail = (email ?? '').trim().toLowerCase();
+        if (!EMAIL_RE.test(cleanEmail)) throw validationError('Invalid email address');
+        const clash = await query('SELECT id FROM users WHERE email = $1', [cleanEmail]);
+        if (clash.rows.length > 0) {
+          throw conflict('EMAIL_EXISTS', 'That email address is already in use');
+        }
+        await query('UPDATE users SET pending_email = $2 WHERE id = $1', [req.tenant.userId, cleanEmail]);
+        const rawToken = await issueVerificationToken(req.tenant.userId, 'email_change');
+        await sendEmailChangeEmail(cleanEmail, req.tenant.name, rawToken);
+        return { ok: true, ...testVerifyTokenField(rawToken) };
+      },
+    );
+
+    // S-05: delete the account and purge its data (GDPR). Requires the
+    // password when the account has one; passwordless (Google-only) accounts
+    // require a TOTP code when 2FA is on, and must set a password first
+    // otherwise. The tenant row is purged when its last user is gone
+    // (cascades to sites, audits, keywords, content, sessions, tokens).
+    authed.delete(
+      '/auth/account',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            properties: {
+              password: { type: 'string', maxLength: 200 },
+              code: { type: 'string', maxLength: 32 },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (req, reply) => {
+        const { password, code } = req.body as { password?: string; code?: string };
+        const userId = req.tenant.userId;
+        const tenantId = req.tenant.tenantId;
+        const r = await query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+        const hash = r.rows[0]?.password_hash as string | null;
+        if (hash) {
+          if (!password || !(await verifyPassword(password, hash))) {
+            throw new ApiError(401, 'INVALID_CREDENTIALS', 'Password is incorrect');
+          }
+        } else if (await isTotpEnabled(userId)) {
+          if (!code || !(await verifyTotpOrBackup(userId, code))) {
+            throw new ApiError(401, 'INVALID_CODE', 'Two-factor code is incorrect');
+          }
+        } else {
+          throw new ApiError(
+            400,
+            'PASSWORD_REQUIRED',
+            'Set a password via password reset before deleting a passwordless account',
+          );
+        }
+        await query('DELETE FROM users WHERE id = $1', [userId]);
+        await query(
+          'DELETE FROM tenants WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $1)',
+          [tenantId],
+        );
+        clearAuthCookie(reply);
+        return { ok: true };
+      },
+    );
+
+    // S-05: TOTP setup — generates the secret, stores it encrypted (not yet
+    // enabled). The secret is shown ONCE; enable with a valid code.
+    authed.post('/auth/totp/setup', async (req) => {
+      const { enabled } = await getTotpState(req.tenant.userId);
+      if (enabled) throw new ApiError(400, 'TOTP_ALREADY_ENABLED', 'Two-factor is already enabled');
+      return beginTotpSetup(req.tenant.userId);
+    });
+
+    // S-05: TOTP enable — verifies the code, enables 2FA, returns one-time
+    // backup codes (shown ONCE).
+    authed.post(
+      '/auth/totp/enable',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['code'],
+            properties: { code: { type: 'string', minLength: 4, maxLength: 32 } },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (req) => {
+        const { code } = req.body as { code?: string };
+        const codes = await enableTotp(req.tenant.userId, code ?? '');
+        if (!codes) throw new ApiError(400, 'INVALID_CODE', 'Invalid code — 2FA was not enabled');
+        // New factor, new session baseline: revoke everything EXCEPT the
+        // session that just enabled 2FA (don't log the user out mid-setup).
+        await revokeAllSessions(req.tenant.userId, req.tenant.jti);
+        return { ok: true, backupCodes: codes };
+      },
+    );
+
+    // S-05: TOTP disable — requires the account password.
+    authed.post(
+      '/auth/totp/disable',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['password'],
+            properties: { password: { type: 'string', maxLength: 200 } },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (req) => {
+        const { password } = req.body as { password?: string };
+        const r = await query('SELECT password_hash FROM users WHERE id = $1', [req.tenant.userId]);
+        const hash = r.rows[0]?.password_hash as string | null;
+        if (!hash || !(await verifyPassword(password ?? '', hash))) {
+          throw new ApiError(401, 'INVALID_CREDENTIALS', 'Password is incorrect');
+        }
+        await disableTotp(req.tenant.userId);
+        return { ok: true };
+      },
+    );
+
+    // S-05: session list. Never exposes token material — only metadata.
+    authed.get('/auth/sessions', async (req) => {
+      const sessions = await listSessions(req.tenant.userId);
+      const currentHash = req.tenant.jti ? hashJti(req.tenant.jti) : null;
+      const rows = await query(
+        'SELECT id, jti_hash FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL',
+        [req.tenant.userId],
+      );
+      const hashById = new Map((rows.rows as any[]).map((x) => [x.id as string, x.jti_hash as string]));
+      return {
+        sessions: sessions.map((s) => ({
+          id: s.id,
+          userAgent: s.user_agent,
+          ip: s.ip,
+          createdAt: s.created_at,
+          lastSeenAt: s.last_seen_at,
+          current: currentHash != null && hashById.get(s.id) === currentHash,
+        })),
+      };
+    });
+
+    // S-05: revoke one session (not-found when it isn't yours).
+    authed.delete('/auth/sessions/:id', async (req) => {
+      const { id } = req.params as { id: string };
+      if (!/^[0-9a-fA-F-]{36}$/.test(id)) throw validationError('Invalid session id');
+      const ok = await revokeSession(req.tenant.userId, id);
+      if (!ok) throw new ApiError(404, 'NOT_FOUND', 'Session not found');
+      return { ok: true };
+    });
+
+    // S-05: log out everywhere — revokes all sessions and bumps
+    // token_version (kills even session-less legacy tokens).
+    authed.post('/auth/logout-everywhere', async (req, reply) => {
+      await revokeAllSessions(req.tenant.userId);
+      clearAuthCookie(reply);
+      return { ok: true };
     });
   });
 }

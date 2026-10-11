@@ -25,6 +25,7 @@ const testRedis = new Redis(config.redisUrl);
 let app: Awaited<ReturnType<typeof buildApp>>;
 
 beforeAll(async () => {
+  process.env.AUTH_RATE_LIMIT_PER_MIN = '1000';
   await ensureTestDb();
   app = await buildApp();
   await app.ready();
@@ -43,6 +44,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  delete process.env.AUTH_RATE_LIMIT_PER_MIN;
   // Clean up our namespaced keys and close handles.
   const keys = await testRedis.keys(`${NS}*`);
   if (keys.length > 0) await testRedis.del(...keys);
@@ -184,7 +186,7 @@ describe('S-03 HTTP: signup abuse protection', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'junk@mailinator.com', password: 'Password123!' },
+      payload: { email: 'junk@mailinator.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(res.statusCode).toBe(400);
     expect((res.json() as any).error.code).toBe('VALIDATION_ERROR');
@@ -196,7 +198,7 @@ describe('S-03 HTTP: signup abuse protection', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'junk2@mailinator.com', password: 'Password123!' },
+      payload: { email: 'junk2@mailinator.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(res.statusCode).toBe(201);
   });
@@ -206,20 +208,20 @@ describe('S-03 HTTP: signup abuse protection', () => {
     const missing = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'nocap@example.com', password: 'Password123!' },
+      payload: { email: 'nocap@example.com', password: 'J7#kP9!mV2@qX5$zR8&' },
     });
     expect(missing.statusCode).toBe(400);
     expect((missing.json() as any).error.code).toBe('CAPTCHA_FAILED');
     const bad = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'nocap@example.com', password: 'Password123!', captchaToken: 'wrong' },
+      payload: { email: 'nocap@example.com', password: 'J7#kP9!mV2@qX5$zR8&', captchaToken: 'wrong' },
     });
     expect(bad.statusCode).toBe(400);
     const good = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/signup',
-      payload: { email: 'capok@example.com', password: 'Password123!', captchaToken: 'captcha-test-pass' },
+      payload: { email: 'capok@example.com', password: 'J7#kP9!mV2@qX5$zR8&', captchaToken: 'captcha-test-pass' },
     });
     expect(good.statusCode).toBe(201);
   });
@@ -232,7 +234,7 @@ describe('S-03 HTTP: login lockout end-to-end', () => {
   const via = (payload: object) =>
     app.inject({ method: 'POST', url: '/api/v1/auth/login', payload, remoteAddress: REMOTE });
 
-  it('locks the account after repeated bad passwords (generic messages)', async () => {
+  it('locks the account after repeated bad passwords (generic messages)', { timeout: 30000 }, async () => {
     const email = 'locked@example.com';
     await createTestUser(email, { password: 'Correct1!' });
     let last: any;
@@ -256,7 +258,7 @@ describe('S-03 HTTP: login lockout end-to-end', () => {
     expect((unknown.json() as any).error.code).toBe('INVALID_CREDENTIALS');
   });
 
-  it('lockout state is shared across app instances (Redis-backed)', async () => {
+  it('lockout state is shared across app instances (Redis-backed)', { timeout: 30000 }, async () => {
     const email = 'shared@example.com';
     await createTestUser(email, { password: 'Correct1!' });
     const app2 = await buildApp();

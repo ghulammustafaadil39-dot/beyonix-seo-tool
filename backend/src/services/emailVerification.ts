@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { query } from '../db.js';
 import { getNotify } from '../providers/notify.js';
 
-export type VerifyPurpose = 'signup' | 'email_change';
+export type VerifyPurpose = 'signup' | 'email_change' | 'password_reset';
 
 const RESEND_WINDOW = `1 hour`;
 const MAX_RESENDS_PER_WINDOW = 3;
@@ -82,5 +82,33 @@ export async function sendVerificationEmail(toEmail: string, name: string, rawTo
       `<p>Please confirm your email address by clicking the link below (expires in 24 hours):</p>` +
       `<p><a href="${url}">Verify my email</a></p>` +
       `<p>If you didn't create a Beyonix SEO account, you can ignore this email.</p>`,
+  );
+}
+
+/** S-05: password-reset email. Same token machinery, separate purpose + link. */
+export async function sendPasswordResetEmail(toEmail: string, name: string, rawToken: string): Promise<void> {
+  const url = `${config.appUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;
+  const safeName = escapeHtml(name || toEmail);
+  await getNotify().sendEmail(
+    toEmail,
+    'Reset your Beyonix SEO password',
+    `<p>Hi ${safeName},</p>` +
+      `<p>We received a request to reset your password. Click the link below to choose a new one (expires in 24 hours, one-time use):</p>` +
+      `<p><a href="${url}">Reset my password</a></p>` +
+      `<p>If you didn't request this, you can safely ignore this email — your password won't change.</p>`,
+  );
+}
+
+/** S-05: email-change verification mail for the NEW address. */
+export async function sendEmailChangeEmail(toEmail: string, name: string, rawToken: string): Promise<void> {
+  const url = `${config.appUrl}/verify-email?token=${encodeURIComponent(rawToken)}`;
+  const safeName = escapeHtml(name || toEmail);
+  await getNotify().sendEmail(
+    toEmail,
+    'Confirm your new Beyonix SEO email address',
+    `<p>Hi ${safeName},</p>` +
+      `<p>Please confirm this email address for your Beyonix SEO account by clicking below (expires in 24 hours):</p>` +
+      `<p><a href="${url}">Confirm my email</a></p>` +
+      `<p>If you didn't request this change, please contact support immediately.</p>`,
   );
 }
