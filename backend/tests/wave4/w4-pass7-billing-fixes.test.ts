@@ -16,12 +16,13 @@
  * - G1-L-1: a reprocessed (E4-M-2 crash-retry) webhook event sends each
  *   customer lifecycle email exactly once (dedupe on (event_id, type)).
  */
-import { beforeAll, afterAll, describe, expect, test } from 'vitest';
+import { beforeAll, afterAll, describe, expect, test, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildTestApp, query, signupOwner } from './helpers.js';
 import { resetDb } from '../integration/helpers/db.js';
 import { applyPaymentEvent } from '../../src/providers/stripe.js';
 import { registerDefaultBillingHooks } from '../../src/services/billing.js';
+import { getNotify } from '../../src/providers/notify.js';
 
 const HAS_TEST_DB = /test/i.test(process.env.DATABASE_URL ?? '');
 const uid = () => `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
@@ -362,5 +363,73 @@ describe.runIf(HAS_TEST_DB)('Pass#7 billing fixes (G5-M#1, G5-M#2, G5-L#1, G1-L-
     const res = await applyPaymentEvent(evt, query, evtId);
     expect(res.deduplicated).toBe(false); // it reprocessed...
     expect(await sentCount()).toBe(1); // ...but no second email
+  });
+
+  test('H2-L-1: concurrent duplicate (live sending claim) does not double-send', async () => {
+    const owner = await signupOwner(app);
+    await query(`UPDATE tenants SET notify_email = $2 WHERE id = $1`, [
+      owner.tenantId,
+      `p7h2l1-${uid()}@beyo.test`,
+    ]);
+    const evtId = `evt_p7h2l1_${uid()}`;
+    // Simulate the insert-race loser: the winner's claim row exists with a
+    // FRESH 'sending' status (first attempt still in flight).
+    await query(
+      `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail, event_id)
+       VALUES (gen_random_uuid(), $1, 'charge.refunded', 'email', 'sending', 'simulated in-flight', $2)`,
+      [owner.tenantId, evtId],
+    );
+    const evt: any = {
+      id: evtId,
+      type: 'charge.refunded',
+      created: nowSec(),
+      data: {
+        id: `ch_p7h2l1_${uid()}`,
+        amount_refunded: 2900,
+        metadata: { tenantId: owner.tenantId },
+      },
+    };
+    // Count ACTUAL email sends (not log rows): the pre-fix code sent the
+    // email here (its check only looked for 'sent' rows) even though its
+    // post-send INSERT then hit the unique index.
+    const spy = vi.spyOn(getNotify(), 'sendEmail').mockResolvedValue(undefined);
+    try {
+      await applyPaymentEvent(evt, query, evtId);
+      expect(spy).toHaveBeenCalledTimes(0); // skipped — the live claim belongs to the in-flight attempt
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('H2-L-1: stale sending claim (crashed mid-send) is taken over exactly once', async () => {
+    const owner = await signupOwner(app);
+    await query(`UPDATE tenants SET notify_email = $2 WHERE id = $1`, [
+      owner.tenantId,
+      `p7h2l1b-${uid()}@beyo.test`,
+    ]);
+    const evtId = `evt_p7h2l1b_${uid()}`;
+    // A 'sending' row older than 10 minutes = the sender crashed mid-send.
+    await query(
+      `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail, event_id, created_at)
+       VALUES (gen_random_uuid(), $1, 'charge.refunded', 'email', 'sending', 'simulated crash', $2, now() - interval '15 minutes')`,
+      [owner.tenantId, evtId],
+    );
+    const evt: any = {
+      id: evtId,
+      type: 'charge.refunded',
+      created: nowSec(),
+      data: {
+        id: `ch_p7h2l1b_${uid()}`,
+        amount_refunded: 2900,
+        metadata: { tenantId: owner.tenantId },
+      },
+    };
+    const spy = vi.spyOn(getNotify(), 'sendEmail').mockResolvedValue(undefined);
+    try {
+      await applyPaymentEvent(evt, query, evtId);
+      expect(spy).toHaveBeenCalledTimes(1); // taken over and sent exactly once
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

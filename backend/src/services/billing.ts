@@ -83,41 +83,69 @@ export function registerDefaultBillingHooks(): void {
     const name = t.rows[0]?.name ?? 'there';
     const notify = getNotify();
     const send = async (subject: string, html: string) => {
-      // G1-L-1: dedupe customer lifecycle emails on (event_id, type). An
-      // E4-M-2 reprocess (crash before markProcessed) or a concurrent
-      // duplicate delivery re-runs the whole webhook handler — the money
-      // paths are event-id-guarded (coupon_redemptions,
-      // tenant_credits.webhook_event_id) but this notification path was
-      // not, so the customer got the same email twice. Check before send,
-      // record the event id after send; a reprocess finds the 'sent' row
-      // and skips. (A 'failed' row does NOT suppress — the email never
-      // went out, so a retry should send it.) No event id (direct
-      // callers), or a missing table/event_id column → send as before.
+      // G1-L-1 / H2-L-1: dedupe customer lifecycle emails on (event_id,
+      // type). Claim-FIRST and atomic: INSERT the 'sending' row with
+      // ON CONFLICT DO NOTHING on the partial unique index — only the claim
+      // winner sends. (The first G1-L-1 version did SELECT-check → send →
+      // INSERT, a TOCTOU: a concurrent duplicate delivery could pass the
+      // check while the first attempt was still sending.)
+      // Takeover on conflict: 'sent' → skip; 'failed' or stale 'sending'
+      // (>10 min — crashed mid-send) → atomic conditional UPDATE, exactly
+      // one taker wins. No event id (direct callers), or a missing
+      // table/event_id column → send as before (no dedupe).
       if (e.eventId) {
         try {
-          const dup = await defaultQuery(
-            `SELECT 1 FROM notification_log
-             WHERE event_id = $1 AND notification_type = $2 AND status = 'sent' LIMIT 1`,
-            [e.eventId, e.type],
+          const claim = await defaultQuery(
+            `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail, event_id)
+             VALUES (gen_random_uuid(), $1, $2, 'email', 'sending', $3, $4)
+             ON CONFLICT (event_id, notification_type) WHERE event_id IS NOT NULL DO NOTHING
+             RETURNING id`,
+            [e.tenantId, e.type, subject, e.eventId],
           );
-          if ((dup.rowCount ?? 0) > 0) return;
+          if ((claim.rowCount ?? 0) === 0) {
+            const takeover = await defaultQuery(
+              `UPDATE notification_log SET status = 'sending', created_at = now()
+               WHERE event_id = $1 AND notification_type = $2
+                 AND (status = 'failed'
+                      OR (status = 'sending' AND created_at < now() - interval '10 minutes'))`,
+              [e.eventId, e.type],
+            );
+            if ((takeover.rowCount ?? 0) === 0) return; // 'sent' or live 'sending' — skip
+          }
         } catch {
           /* table or event_id column missing → no dedupe, send as before */
         }
       }
       try {
         await notify.sendEmail(to, subject, html);
-        await defaultQuery(
-          `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail, event_id)
-           VALUES (gen_random_uuid(), $1, $2, 'email', 'sent', $3, $4)`,
-          [e.tenantId, e.type, subject, e.eventId ?? null],
-        ).catch(() => {});
+        if (e.eventId) {
+          await defaultQuery(
+            `UPDATE notification_log SET status = 'sent' WHERE event_id = $1 AND notification_type = $2`,
+            [e.eventId, e.type],
+          ).catch(() => {});
+        } else {
+          await defaultQuery(
+            `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail)
+             VALUES (gen_random_uuid(), $1, $2, 'email', 'sent', $3)`,
+            [e.tenantId, e.type, subject],
+          ).catch(() => {});
+        }
       } catch (err) {
-        await defaultQuery(
-          `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail, event_id)
-           VALUES (gen_random_uuid(), $1, $2, 'email', 'failed', $3, $4)`,
-          [e.tenantId, e.type, String((err as Error)?.message ?? err), e.eventId ?? null],
-        ).catch(() => {});
+        // Mark 'failed' (not delete): a retry may still send it, and the
+        // takeover rule above lets exactly one retry proceed.
+        if (e.eventId) {
+          await defaultQuery(
+            `UPDATE notification_log SET status = 'failed', detail = $3
+             WHERE event_id = $1 AND notification_type = $2`,
+            [e.eventId, e.type, String((err as Error)?.message ?? err)],
+          ).catch(() => {});
+        } else {
+          await defaultQuery(
+            `INSERT INTO notification_log (id, tenant_id, notification_type, channel, status, detail)
+             VALUES (gen_random_uuid(), $1, $2, 'email', 'failed', $3)`,
+            [e.tenantId, e.type, String((err as Error)?.message ?? err)],
+          ).catch(() => {});
+        }
       }
     };
     if (e.type === 'invoice.payment_failed' || e.type === 'subscription.past_due') {
