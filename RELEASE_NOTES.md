@@ -180,8 +180,23 @@ public API. Monthly/annual billing via Stripe.
   delimiting, impersonation moved to server-side httpOnly cookie flow
   (A3-H1).
 - Pass #2 (3 fresh auditors): complete — 1 HIGH + 9 medium + 21 low found;
-  frontend fixes merged; backend fixes in progress. Pass #3 (required final
-  clean pass) pending.
+  all fixed, regression-tested, merged to main.
+- Pass #3 (5 auditors): 4 HIGH + 20 medium + 33 low → all fixed
+  (incl. Stripe cancel-on-delete/erase, atomic coupon redemption).
+- Pass #4 (5 auditors): 4 HIGH + 10 medium + 19 low → all fixed; LA product
+  decision: new signups get a server-side 14-day trial (Starter quota),
+  read-only after expiry.
+- Pass #5 (5 auditors): 2 HIGH + 7 medium + lows → all fixed (scheduler
+  billing-liveness filter, `incomplete` removed from billable, webhook
+  supersede guards, trial-gate wiring, postcss CVE override).
+- Pass #6 (4 auditors): 1 new MEDIUM (scheduler still authorized `incomplete`
+  for scheduled spend) + 14 lows → all fixed (incl. webhook event-id
+  idempotency guards, trial-UX labels).
+- Pass #7 (5 auditors): 1 HIGH (CVE-2026-23869 in next@14 — remediated via
+  Next 15.5.15 upgrade) + 3 medium (account-security UI gap, checkout
+  `incomplete` clobber, invoice.paid recovery) + 5 lows → all fixed.
+- Pass #8 (next): the first of the two consecutive clean passes required
+  before delivery (zero new medium-or-higher findings).
 
 ---
 
@@ -279,8 +294,8 @@ runs in mock mode.**
 
 ## Not yet verified (final gate checklist — LA)
 
-- [ ] Wave-4 **pass #3**: two consecutive clean passes with no new
-      medium-or-higher findings (pass #2 fixes still merging).
+- [ ] Wave-4 **passes #8 and #9**: two consecutive clean passes with no new
+      medium-or-higher findings (passes #1–#7 complete, all findings fixed).
 - [ ] Final numbers on main: full test suite, coverage ≥ 85%, E2E, load +
       chaos, strict `tsc`, lint clean.
 - [ ] `docker compose up --build` smoke from a wiped machine (deferred per

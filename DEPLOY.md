@@ -167,6 +167,21 @@ migration that added a NOT NULL column** (RUNBOOK.md).
   xact-scoped advisory lock (`pg_advisory_xact_lock`, see
   `backend/src/services/providerGuard.ts`), not by guard rows — production
   code never reads or writes the table.
+- **046** adds `coupon_redemptions(event_id PK, tenant_id, coupon_code)`: the
+  `checkout.session.completed` coupon redeem is idempotent on the webhook
+  event id, so a reprocessed (crash-retry) or concurrently-duplicate-delivered
+  event cannot double-redeem. Backward-compatible; no operator action.
+- **047** added `stripe_webhook_events.started_at` (a lease distinguishing
+  concurrent duplicates from crashed attempts) and **048** reverts it — the
+  lease broke crash recovery and was replaced by per-handler event-id guards
+  (`coupon_redemptions` for coupons, `tenant_credits.webhook_event_id` UNIQUE
+  for refund credits). Net schema effect of 047+048: one dropped column, one
+  added UNIQUE column. Backward-compatible; no operator action.
+- **049** adds `notification_log.event_id` (nullable) + a partial unique index
+  on `(event_id, notification_type)`: customer lifecycle emails are deduped on
+  (webhook event id, billing event type), so a reprocessed webhook cannot send
+  the same dunning/refund email twice. Backward-compatible; no operator
+  action.
 
 Note: `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_SITE_URL` are **baked into the
 frontend at build time** (`.env.example` "Frontend / same-origin API proxy"
