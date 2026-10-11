@@ -47,7 +47,7 @@
     "test:integration": "vitest run --project integration --project integration-stripe",
     "test:watch": "vitest",
     "rotate-keys": "tsx scripts/rotate-encryption-keys.ts",
-    "test:coverage": "vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.include=\"src/services/**/*.ts\" --coverage.include=\"src/routes/**/*.ts\" --coverage.include=\"src/metering.ts\" --coverage.include=\"src/plans.ts\" --coverage.include=\"src/config.ts\" --coverage.reportsDirectory=/tmp/qa3-coverage",
+    "test:coverage": "vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.include=\"src/services/**/*.ts\" --coverage.include=\"src/routes/**/*.ts\" --coverage.include=\"src/metering.ts\" --coverage.include=\"src/plans.ts\" --coverage.include=\"src/config.ts\"",
     "seed": "tsx scripts/seed.ts"
   },
   "type": "module",
