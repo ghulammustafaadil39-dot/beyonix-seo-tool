@@ -11,6 +11,7 @@ import { getProviderSpend } from '../metering.js';
 import { getPayments } from '../providers/stripe.js';
 import { enqueue } from '../queues.js';
 import { logActivity } from '../services/activityLog.js';
+import { LIVE_SUBSCRIPTION_STATUSES } from '../services/billing.js';
 
 /**
  * F-14: admin back-office. Every route requires platform-admin
@@ -34,6 +35,9 @@ const planOverrideSchema = {
     properties: {
       planId: { type: 'string' },
       reason: { type: 'string', minLength: 3, maxLength: 500 },
+      // F1-L-3: required to override while a live Stripe subscription
+      // exists (otherwise refused — see the guard below).
+      force: { type: 'boolean' },
     },
     additionalProperties: false,
   },
@@ -180,8 +184,30 @@ export async function registerAdminRoutes(fastify: FastifyInstance) {
 
     admin.post('/admin/tenants/:id/plan', { schema: planOverrideSchema }, async (req) => {
       const id = assertUuid((req.params as any).id, 'tenant id');
-      const { planId, reason } = req.body as { planId: string; reason: string };
+      const { planId, reason, force } = req.body as { planId: string; reason: string; force?: boolean };
       if (!isPlanId(planId)) throw validationError(`Unknown plan: ${planId}`);
+      // F1-L-3: never orphan a LIVE Stripe subscription by accident. The
+      // override "changes OUR plan record without touching Stripe" — applied
+      // to a tenant with a live subscription it wipes the local evidence
+      // (stripe_sub_id → NULL) while Stripe keeps billing; the orphaned
+      // sub's later webhooks then hit the E4-H-2 supersede guard and are
+      // ignored, and (since E4-M-4) checkout becomes allowed → a second
+      // Stripe subscription = real double billing. Refuse unless the admin
+      // explicitly passes force:true (e.g. the Stripe subscription was
+      // already canceled out-of-band), and log the force in the audit trail.
+      const cur = await query(`SELECT stripe_sub_id, status FROM subscriptions WHERE tenant_id = $1`, [id]);
+      const liveStripeSub =
+        !!cur.rows[0]?.stripe_sub_id &&
+        LIVE_SUBSCRIPTION_STATUSES.includes(cur.rows[0]?.status as string);
+      if (liveStripeSub && force !== true) {
+        throw new ApiError(
+          409,
+          'LIVE_STRIPE_SUBSCRIPTION',
+          'Tenant has a live Stripe subscription — a plan override would orphan it ' +
+            '(it keeps billing with no local record, and checkout would then allow a second subscription). ' +
+            'Cancel the Stripe subscription first, or pass force:true to override anyway.',
+        );
+      }
       // Manual override: changes OUR plan record without touching Stripe
       // (for comps, migrations, support).
       // A1-M5: the old code only updated tenants.plan_id — a tenant stuck in
@@ -206,7 +232,7 @@ export async function registerAdminRoutes(fastify: FastifyInstance) {
            grace_until = NULL, trial_ends_at = NULL`,
         [id, planId satisfies PlanId],
       );
-      await logAdminAction(req, 'tenant.plan_override', id, { planId, reason, readOnly: overLimit });
+      await logAdminAction(req, 'tenant.plan_override', id, { planId, reason, readOnly: overLimit, forced: force === true });
       await logActivity(id, {
         userId: (req as any).tenant.apiKeyId ? null : (req as any).tenant.userId,
         action: 'plan.overridden',
