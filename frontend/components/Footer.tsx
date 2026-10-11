@@ -9,6 +9,7 @@ const COLS: Array<{ title: string; links: Array<{ href: string; label: string }>
       { href: '/pricing', label: 'Pricing' },
       { href: '/docs', label: 'Documentation' },
       { href: '/docs/api', label: 'API docs' },
+      { href: '/status', label: 'System status' },
     ],
   },
   {

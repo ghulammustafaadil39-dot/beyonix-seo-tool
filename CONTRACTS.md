@@ -266,7 +266,12 @@ All `:id` params validated as UUID. All site-scoped routes verify
 ## 6. Providers (`providers/`)
 
 Interfaces in `types.ts`. Factories return real impl if env keys present,
-else mock. **Never throw when keys are missing — use mock.**
+else mock. **Never throw when keys are missing — use mock** — EXCEPT in
+production for payments and Google OAuth: `getPayments()` returns the
+fail-closed `DisabledPaymentsProvider` (503 `BILLING_NOT_CONFIGURED`,
+`stripe.ts`) when `STRIPE_SECRET_KEY` is unset, and the mock Google
+provider is refused outside test/dev (`isMockGoogleAllowed()`). This is
+the D4-L-3 correction to the original mock-everywhere rule.
 
 ```ts
 interface LLMProvider {
@@ -404,7 +409,8 @@ wired to a real API route (mock-backed is fine).
 
 `docker-compose.yml`: `postgres:16`, `redis:7`, `api` (backend Dockerfile,
 `node dist/index.js`), `worker` (same image, `node dist/worker.js`),
-`web` (frontend Dockerfile, `next start`). Single `.env` file at root.
+`web` (frontend Dockerfile — multi-stage, runs the Next.js standalone
+`server.js`, NOT `next start`). Single `.env` file at root.
 `docker compose up --build` must bring everything up; API runs migrations
 on boot.
 
@@ -418,7 +424,7 @@ on boot.
 - [ ] README complete; `docker compose up` works; `next build` clean.
 
 ## Addendum — Wave 2 Backend-A (LA-recorded, 2026-10-11)
-- Invitation accept returns `{ ok, tenantId, role, token }` — fresh tenant-bound token; the pre-move token 401s after accept. Guards: `INVITE_WOULD_ORPHAN_DATA` / `INVITE_WOULD_ORPHAN_TENANT` (409).
+- Invitation accept returns `{ ok, tenantId, role }` — the fresh tenant-bound session is delivered via the httpOnly cookie ONLY (D3-M-1: the JSON `token` was stripped to match the A3-H1 cookie-only policy; the browser page never read it). The pre-move token 401s after accept. Guards: `INVITE_WOULD_ORPHAN_DATA` / `INVITE_WOULD_ORPHAN_TENANT` (409).
 - API keys: presented via `x-api-key` header or `Bearer bseo_…`; `INSUFFICIENT_SCOPE` 403 carries `missing[]`; `:write` scope implies `:read`; raw key shown once at creation, only sha256 hash stored.
 - Tenant states: suspended → 403 `TENANT_SUSPENDED` everywhere; read-only → mutations blocked except billing/admin/account/apikeys/settings/auth/webhooks routes.
 - Outbound webhooks signed `X-BSEO-Signature: sha256=<hmac(secret, "<ts>.<body>")>`; fixed event catalog; URL SSRF-validated at registration AND re-validated per delivery attempt.

@@ -83,7 +83,7 @@ outbound signed webhooks, public API, admin back-office.
 | **Telegram** | `TELEGRAM_BOT_TOKEN` → real `sendMessage` | Logged to console | `TELEGRAM_BOT_TOKEN` | `backend/src/providers/notify.ts` |
 | **Slack** | Tenant webhook URL in notification settings → real POST via safeFetch | "not configured" error | notification settings (per tenant) | `backend/src/services/notifications.ts` |
 | **Outbound webhooks** | Real: HMAC-signed (`X-BSEO-Signature`) POSTs, retries + replay | — | tenant webhook subscriptions | `backend/src/services/webhookDelivery.ts` |
-| **CMS publish** | `CMS_PUBLISH_ENABLED=true` + credentials → real WordPress/Webflow | `{ ok: true, mock: true }`, **zero network calls** | `CMS_PUBLISH_ENABLED`, `CMS_WP_*`, `CMS_WEBFLOW_*` | `backend/src/services/publishConnector.ts` |
+| **CMS publish** | `CMS_PUBLISH_ENABLED=true` + per-request credentials → real WordPress/Webflow | `{ ok: true, mock: true }`, **zero network calls** | `CMS_PUBLISH_ENABLED` (credentials are supplied per publish request, not via env) | `backend/src/services/publishConnector.ts` |
 | **GEO / AI visibility** | — | **Simulated by design:** our LLM generates a platform-style answer, then we detect brand mentions; every row labeled `simulated: true` | follows LLM config | `backend/src/services/geoService.ts` |
 | **CAPTCHA** | `CAPTCHA_PROVIDER=hcaptcha` + secret → real hCaptcha, fail-closed | `none` default; `test` provider **refused in production** | `CAPTCHA_PROVIDER`, `CAPTCHA_SECRET` | `backend/src/providers/captcha.ts` |
 | **PageSpeed** | Real Google PageSpeed API v5 (free), cached 7d, quota-guarded | — | — | `backend/src/services/pagespeed.ts` |

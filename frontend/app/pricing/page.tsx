@@ -13,7 +13,10 @@ const LIMIT_ROWS: Array<[string, string, string, string]> = [
   ['AI words / month', '5,000', '30,000', '100,000'],
   ['Rank check frequency', 'Weekly', 'Weekly', 'Daily'],
   ['AI visibility checks / month', '20', '100', '500'],
-  ['Audits / month', '4', '12', '30'],
+  // D3-L-1: no 'Audits / month' row — there is no audits_month limit in the
+  // backend (plans.ts / metering), so the advertised 4/12/30 caps were
+  // unenforced. Audits are bounded indirectly by the crawled-pages quota.
+  // Restore this row only if a real audits_month limit is implemented.
   ['Competitor analysis', '—', '✓', '✓'],
   ['White-label reports', '—', '—', '✓'],
   ['Agency workspaces', '—', '—', '✓'],
@@ -41,7 +44,7 @@ export default function PricingPage() {
               Plans that grow with your business
             </h1>
             <p className="mx-auto mt-4 max-w-xl text-white/60">
-              Every plan starts with a free trial — no credit card required.
+              Every new account starts with a 14-day free trial — no credit card required.
               Upgrade, downgrade, or cancel anytime.
             </p>
           </div>
@@ -57,7 +60,7 @@ export default function PricingPage() {
                 href={`/signup?plan=${plan}&billing=${annual ? 'annual' : 'monthly'}`}
                 className="bx-btn-primary w-full"
               >
-                Start free with {plan.charAt(0).toUpperCase() + plan.slice(1)}
+                Start free trial with {plan.charAt(0).toUpperCase() + plan.slice(1)}
               </Link>
             )}
           />

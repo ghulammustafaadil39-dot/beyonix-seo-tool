@@ -150,6 +150,10 @@ services:
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
     env_file: .env
     environment:
+      # D4-M-1: .env (copied from .env.example) sets NODE_ENV=development,
+      # and compose env_file overrides the Dockerfile's ENV — without this
+      # the prod web container serves Next.js in dev mode.
+      NODE_ENV: production
       API_INTERNAL_URL: http://api:4000
     depends_on:
       api:

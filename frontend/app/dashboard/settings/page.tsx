@@ -12,6 +12,11 @@ export default function SettingsPage() {
   const [notifyEmail, setNotifyEmail] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [llmProvider, setLlmProvider] = useState('default');
+  // D3-L-3: BYOK key. Never pre-filled from the server (the API only
+  // reports llm_key_set); a typed value is sent on save, an empty string
+  // clears the saved key (backend A1-L6 affordance).
+  const [llmApiKey, setLlmApiKey] = useState('');
+  const [llmKeySet, setLlmKeySet] = useState(false);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -21,6 +26,7 @@ export default function SettingsPage() {
         setNotifyEmail(s.notify_email ?? '');
         setTelegramChatId(s.telegram_chat_id ?? '');
         setLlmProvider(s.llm_provider ?? 'default');
+        setLlmKeySet(s.llm_key_set);
       } catch (e) {
         report(e);
       } finally {
@@ -43,7 +49,27 @@ export default function SettingsPage() {
         notify_email: email || undefined,
         telegram_chat_id: telegramChatId.trim() || undefined,
         llm_provider: llmProvider,
+        // Only send the key when the user typed one — otherwise the field
+        // is absent and the saved key is untouched.
+        ...(llmApiKey ? { llm_api_key: llmApiKey } : {}),
       });
+      setSaved(true);
+    } catch (err) {
+      report(err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // D3-L-3: explicit "remove my saved key" affordance (empty string =
+  // clear, per the backend A1-L6 contract).
+  const clearLlmKey = async () => {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const s = await settingsApi.update({ llm_api_key: '' });
+      setLlmApiKey('');
+      setLlmKeySet(s.llm_key_set);
       setSaved(true);
     } catch (err) {
       report(err);
@@ -114,6 +140,30 @@ export default function SettingsPage() {
             <option value="openai">OpenAI</option>
           </select>
           <p className="bx-hint">Which AI engine generates content and on-page suggestions.</p>
+        </div>
+
+        <div>
+          <label htmlFor="llm-api-key" className="bx-label">Your AI API key (BYOK)</label>
+          <input
+            id="llm-api-key"
+            type="password"
+            autoComplete="off"
+            value={llmApiKey}
+            onChange={(e) => setLlmApiKey(e.target.value)}
+            placeholder={llmKeySet ? 'A key is saved — type a new one to replace it' : 'Paste your Gemini or OpenAI API key'}
+            className="bx-input font-mono"
+          />
+          <p className="bx-hint">
+            Optional — use your own key for the AI engine selected above. Keys are encrypted server-side and never shown again.
+            {llmKeySet && (
+              <>
+                {' '}A key is currently saved.{' '}
+                <button type="button" onClick={clearLlmKey} disabled={saving} className="bx-link text-sm">
+                  Remove it
+                </button>
+              </>
+            )}
+          </p>
         </div>
 
         <button type="submit" disabled={saving} className="bx-btn-primary">

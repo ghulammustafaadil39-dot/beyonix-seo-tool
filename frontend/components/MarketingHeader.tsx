@@ -46,7 +46,7 @@ export default function MarketingHeader() {
             Log in
           </Link>
           <Link href="/signup" className="bx-btn-primary">
-            Start free
+            Start free trial
           </Link>
         </div>
       </div>

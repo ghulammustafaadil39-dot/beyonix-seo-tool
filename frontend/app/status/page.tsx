@@ -12,14 +12,16 @@ async function getStatus(): Promise<any> {
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
     });
-    return { data: await res.json(), ok: res.ok };
+    // D3-L-5: when METRICS_BASIC_AUTH is set, /status requires HTTP Basic
+    // auth and returns 401 — that is not an outage, so call it out.
+    return { data: await res.json(), ok: res.ok, metricsAuth: res.status === 401 };
   } catch (e) {
     return { data: null, ok: false, error: (e as Error).message };
   }
 }
 
 export default async function StatusPage() {
-  const { data, ok, error } = await getStatus();
+  const { data, ok, error, metricsAuth } = await getStatus();
   const queues: Record<string, any> = data?.queues ?? {};
   return (
     <main className="mx-auto max-w-3xl p-8">
@@ -30,8 +32,12 @@ export default async function StatusPage() {
       </p>
       {!ok ? (
         <div role="alert" className="mt-6 rounded border border-red-300 bg-red-50 p-4">
-          <p className="font-semibold">API unreachable</p>
-          <p className="text-sm">{error ?? 'unknown error'}</p>
+          <p className="font-semibold">{metricsAuth ? 'Status endpoint is protected' : 'API unreachable'}</p>
+          <p className="text-sm">
+            {metricsAuth
+              ? 'The API returned 401 — METRICS_BASIC_AUTH is enabled in this deployment, so the public /status endpoint requires HTTP Basic auth and this page cannot read it. The service itself may be fine; check the metrics endpoint directly with the configured credentials.'
+              : (error ?? 'unknown error')}
+          </p>
         </div>
       ) : (
         <>
