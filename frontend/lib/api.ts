@@ -1577,8 +1577,8 @@ export const reportsV2Api = {
       method: 'POST',
       body: { sections, periodDays },
     }),
-  pdfUrl: (reportId: string) => `${BASE_URL}/api/v1/reports/${reportId}/pdf`,
-  htmlUrl: (reportId: string) => `${BASE_URL}/api/v1/reports/${reportId}/html`,
+  pdfUrl: (reportId: string) => `${BASE_URL}/api/v1/reports/${encodeURIComponent(reportId)}/pdf`,
+  htmlUrl: (reportId: string) => `${BASE_URL}/api/v1/reports/${encodeURIComponent(reportId)}/html`,
   compare: (reportId: string) => api<ReportComparison>(`/api/v1/reports/${reportId}/compare`),
   createShare: (reportId: string, expiresInDays = 30) =>
     api<ShareCreated>(`/api/v1/reports/${reportId}/share`, {
