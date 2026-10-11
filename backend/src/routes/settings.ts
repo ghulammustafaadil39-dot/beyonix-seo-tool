@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { encrypt } from '../crypto.js';
 import { hasSmtp, hasTelegram } from '../config.js';
 import { query } from '../db.js';
-import { ApiError } from '../errors.js';
+import { ApiError, validationError } from '../errors.js';
 import { usageSummary } from '../metering.js';
 import { authPlugin } from '../middleware/auth.js';
 import { getPayments } from '../providers/stripe.js';
@@ -57,8 +57,19 @@ export async function registerSettingsRoutes(fastify: FastifyInstance) {
         llm_provider?: string | null;
         llm_api_key?: string;
       };
-      if (body.llm_provider !== undefined && body.llm_provider !== null && body.llm_provider !== 'mock') {
-        throw new ApiError(400, 'INVALID_LLM_PROVIDER', "llm_provider must be 'mock' or null");
+      // llm_provider: the real provider identifiers the product supports,
+      // plus null = "use server default". The Settings UI's legacy 'default'
+      // value is normalized to null so existing clients keep working.
+      if (body.llm_provider !== undefined) {
+        if (body.llm_provider === 'default') body.llm_provider = null;
+        else if (
+          body.llm_provider !== null &&
+          body.llm_provider !== 'mock' &&
+          body.llm_provider !== 'gemini' &&
+          body.llm_provider !== 'openai'
+        ) {
+          throw validationError("llm_provider must be 'mock', 'gemini', 'openai' or null");
+        }
       }
       if (body.notify_email !== undefined && body.notify_email !== null && !EMAIL_RE.test(body.notify_email)) {
         throw new ApiError(400, 'INVALID_EMAIL', 'Notification email address is not valid');

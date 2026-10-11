@@ -9,7 +9,9 @@
 //  - hostnames are DNS-resolved ONCE; the TCP/TLS connection is PINNED to a
 //    validated IP via a custom undici lookup (no re-resolution at connect
 //    time) — this closes the DNS-rebinding hole (validate-then-fetch)
-//  - redirects are followed manually, each hop re-resolved + re-validated
+//  - redirects are followed manually, each hop re-resolved + re-validated;
+//    Authorization/Cookie headers are dropped on cross-origin redirects
+//    (host change or https→http downgrade)
 //  - response size is capped (streaming abort) and content-type allow-listed
 //    (gzip-bomb / huge-file OOM defense)
 //  - absolute total deadline supported for crawl time budgets
@@ -19,7 +21,12 @@
 
 import dns from 'node:dns/promises';
 import net from 'node:net';
-import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici';
+import {
+  Agent,
+  Headers as UndiciHeaders,
+  fetch as undiciFetch,
+  type RequestInit as UndiciRequestInit,
+} from 'undici';
 import { config } from '../config.js';
 
 export interface DnsRecord {
@@ -344,6 +351,32 @@ async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> 
   return out;
 }
 
+/**
+ * Returns a copy of the headers with credential headers removed. Used when a
+ * redirect crosses to a different host: native fetch strips `Authorization`
+ * cross-origin, and manually re-issuing the original init per hop must do the
+ * same (plus `Cookie`, same reasoning) or credentials leak to the new host.
+ */
+function withoutCredentialHeaders(
+  headers: UndiciRequestInit['headers'],
+): UndiciRequestInit['headers'] {
+  const h = new UndiciHeaders(headers as ConstructorParameters<typeof UndiciHeaders>[0]);
+  h.delete('authorization');
+  h.delete('cookie');
+  return h;
+}
+
+/**
+ * Whether a redirect from `current` to `target` crosses an origin boundary
+ * for credential purposes: a different host, or an https→http downgrade on
+ * the same host (credentials must never travel over plaintext). Exported for
+ * unit tests.
+ */
+export function shouldStripCredentials(current: URL, target: URL): boolean {
+  if (target.host !== current.host) return true;
+  return current.protocol === 'https:' && target.protocol === 'http:';
+}
+
 // ---------------------------------------------------------------------------
 // safeFetch
 // ---------------------------------------------------------------------------
@@ -374,6 +407,8 @@ export async function safeFetch(
   };
 
   let current = await assertUrlSafe(rawUrl, opts);
+  // Per-hop init: credential headers are dropped when a redirect crosses host.
+  let currentInit = init;
   for (let hop = 0; hop <= maxHops; hop++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), budgetLeft());
@@ -385,7 +420,7 @@ export async function safeFetch(
       // redirect:'manual' so every hop is re-validated; the pinned dispatcher
       // guarantees the connection uses the validated IP (no re-resolution).
       res = await undiciFetch(current.url.toString(), {
-        ...init,
+        ...currentInit,
         signal: ctrl.signal,
         redirect: 'manual',
         dispatcher,
@@ -402,7 +437,15 @@ export async function safeFetch(
       }
       await dispatcher.close().catch(() => undefined);
       if (!loc) return res;
-      current = await assertUrlSafe(new URL(loc, current.url.toString()).toString(), opts);
+      const target = new URL(loc, current.url.toString());
+      // Cross-origin redirect: never forward credentials (native fetch
+      // strips Authorization on any origin change; Cookie likewise).
+      // Origin change = different host OR https→http scheme downgrade.
+      // Same-origin redirects keep the original headers.
+      if (shouldStripCredentials(current.url, target) && currentInit?.headers) {
+        currentInit = { ...currentInit, headers: withoutCredentialHeaders(currentInit.headers) };
+      }
+      current = await assertUrlSafe(target.toString(), opts);
       continue;
     }
     try {
