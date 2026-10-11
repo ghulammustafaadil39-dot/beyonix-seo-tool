@@ -48,6 +48,13 @@ async function enqueueForVerifiedSites(
   // E4-H-1: filter by billing liveness — trial-expired tenants with no live
   // subscription, and suspended tenants, must NOT get scheduled spend jobs.
   // (The route-layer trial gate can't cover system-initiated work.)
+  // F2-M-1: 'incomplete' is NOT billable here — this list must match
+  // BILLABLE_SUBSCRIPTION_STATUSES in middleware/requireSubscription.ts
+  // (E4-M-1). An 'incomplete' subscription means the first payment never
+  // succeeded; counting it as live would reopen the rolling free-access
+  // loop (never-funded checkouts keep getting scheduled spend). The
+  // scheduler enrollment is a spend decision, not dunning — 'incomplete'
+  // correctly stays in the dunning/grace logic (services/billing.ts).
   const r = await query(
     `SELECT s.id, s.tenant_id FROM sites s
      JOIN tenants t ON t.id = s.tenant_id
@@ -57,7 +64,7 @@ async function enqueueForVerifiedSites(
        AND t.read_only = FALSE
        AND (t.trial_ends_at IS NULL
             OR t.trial_ends_at > now()
-            OR sub.status IN ('active', 'trialing', 'past_due', 'incomplete'))`,
+            OR sub.status IN ('active', 'trialing', 'past_due'))`,
   );
   for (const s of r.rows) {
     await enqueue(
@@ -110,7 +117,7 @@ export const SCHEDULES: ScheduleDef[] = [
            AND t.read_only = FALSE
            AND (t.trial_ends_at IS NULL
                 OR t.trial_ends_at > now()
-                OR sub.status IN ('active', 'trialing', 'past_due', 'incomplete'))`,
+                OR sub.status IN ('active', 'trialing', 'past_due'))`,
       );
       for (const row of r.rows) {
         const freq = getPlan(row.plan_id).rankcheck_freq;
