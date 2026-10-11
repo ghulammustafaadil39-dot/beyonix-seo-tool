@@ -1,31 +1,62 @@
+// W-08: every site tab is code-split behind next/dynamic so visiting one
+// tab no longer downloads all nine (plus the V2 panels, which split again
+// inside each tab). W-04: 'insights' tab added.
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useEffect, useState } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import TabNav, { SITE_TABS } from '@/components/TabNav';
 import { sitesApi, type Site } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
-import AuditTab from '@/components/tabs/AuditTab';
-import KeywordsTab from '@/components/tabs/KeywordsTab';
-import RankingsTab from '@/components/tabs/RankingsTab';
-import ContentTab from '@/components/tabs/ContentTab';
-import OnpageTab from '@/components/tabs/OnpageTab';
-import BacklinksTab from '@/components/tabs/BacklinksTab';
-import GeoTab from '@/components/tabs/GeoTab';
-import CompetitorsTab from '@/components/tabs/CompetitorsTab';
-import ReportsTab from '@/components/tabs/ReportsTab';
+import { TableSkeleton } from '@/components/Skeleton';
 
-const TAB_COMPONENTS: Record<string, (props: { siteId: string }) => React.JSX.Element> = {
-  audit: AuditTab,
-  keywords: KeywordsTab,
-  rankings: RankingsTab,
-  content: ContentTab,
-  onpage: OnpageTab,
-  backlinks: BacklinksTab,
-  geo: GeoTab,
-  competitors: CompetitorsTab,
-  reports: ReportsTab,
+const fallback = () => <TableSkeleton rows={6} cols={4} />;
+
+// Explicit import paths (required — next/dynamic cannot bundle a
+// template-literal import).
+const TAB_COMPONENTS: Record<string, React.ComponentType<{ siteId: string }>> = {
+  insights: dynamic(() => import('@/components/tabs/InsightsTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  audit: dynamic(() => import('@/components/tabs/AuditTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  keywords: dynamic(() => import('@/components/tabs/KeywordsTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  rankings: dynamic(() => import('@/components/tabs/RankingsTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  content: dynamic(() => import('@/components/tabs/ContentTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  onpage: dynamic(() => import('@/components/tabs/OnpageTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  backlinks: dynamic(() => import('@/components/tabs/BacklinksTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  geo: dynamic(() => import('@/components/tabs/GeoTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  competitors: dynamic(() => import('@/components/tabs/CompetitorsTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
+  reports: dynamic(() => import('@/components/tabs/ReportsTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
 };
 
 export default function SiteTabPage({
@@ -54,16 +85,18 @@ export default function SiteTabPage({
 
   return (
     <div className="space-y-6">
-      <nav className="flex items-center gap-2 font-mono text-sm text-white/40">
+      <nav aria-label="Breadcrumb" className="flex items-center gap-2 font-mono text-sm text-white/55">
         <Link href="/dashboard" className="hover:text-white/70 hover:underline">
           Sites
         </Link>
-        <span>/</span>
+        <span aria-hidden="true">/</span>
         <Link href={`/dashboard/sites/${siteId}`} className="hover:text-white/70 hover:underline">
           {site ? site.domain : '…'}
         </Link>
-        <span>/</span>
-        <span className="font-medium text-teal-300">{meta.label}</span>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page" className="font-medium text-teal-300">
+          {meta.label}
+        </span>
       </nav>
       <TabNav siteId={siteId} />
       <h1 className="bx-h2">{meta.label}</h1>

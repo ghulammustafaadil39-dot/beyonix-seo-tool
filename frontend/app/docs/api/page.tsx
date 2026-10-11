@@ -71,7 +71,7 @@ export default function ApiDocsPage() {
             <a href="/api/v1/openapi.json" className="bx-link">
               Download openapi.json ↗
             </a>{' '}
-            <span className="text-white/40">
+            <span className="text-white/55">
               — import it into Postman, Insomnia, or your client generator.
             </span>
           </p>

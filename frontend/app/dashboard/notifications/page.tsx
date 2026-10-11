@@ -290,7 +290,7 @@ export default function NotificationsPage() {
           immediately.
         </p>
         {drafts === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading rules…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading rules…</p>
         ) : (
           <div className="mt-3 space-y-2">
             {RULE_TYPES.map((type) => {
@@ -302,9 +302,9 @@ export default function NotificationsPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-medium text-white">{meta.label}</p>
-                      <p className="text-xs text-white/40">{meta.hint}</p>
+                      <p className="text-xs text-white/55">{meta.hint}</p>
                       {draft.id === null && (
-                        <p className="font-mono text-[11px] text-white/30">not configured yet</p>
+                        <p className="font-mono text-[11px] text-white/50">not configured yet</p>
                       )}
                     </div>
                     <button
@@ -422,7 +422,7 @@ export default function NotificationsPage() {
                 <option value="daily">Daily</option>
                 <option value="weekly">Weekly</option>
               </select>
-              <span className="text-xs text-white/40">
+              <span className="text-xs text-white/55">
                 summary email
                 {digest.last_sent_at &&
                   ` · last sent ${new Date(digest.last_sent_at).toLocaleDateString()}`}
@@ -460,16 +460,16 @@ export default function NotificationsPage() {
         )}
 
         {endpoints === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading endpoints…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading endpoints…</p>
         ) : endpoints.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No webhook endpoints yet.</p>
+          <p className="mt-3 text-sm text-white/55">No webhook endpoints yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {endpoints.map((ep) => (
               <li key={ep.id} className="bx-panel flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="font-mono text-sm text-white/85">{ep.url}</p>
-                  <p className="mt-0.5 font-mono text-[11px] text-white/40">
+                  <p className="mt-0.5 font-mono text-[11px] text-white/55">
                     {ep.events.join(', ')} · {ep.enabled ? 'enabled' : 'disabled'}
                   </p>
                 </div>
@@ -535,9 +535,9 @@ export default function NotificationsPage() {
         <div className="mt-6 border-t border-white/10 pt-4">
           <p className="text-sm font-semibold text-white">Recent deliveries</p>
           {deliveries === null ? (
-            <p className="mt-2 font-mono text-sm text-white/40">$ loading deliveries…</p>
+            <p className="mt-2 font-mono text-sm text-white/55">$ loading deliveries…</p>
           ) : deliveries.length === 0 ? (
-            <p className="mt-2 text-sm text-white/40">No deliveries yet.</p>
+            <p className="mt-2 text-sm text-white/55">No deliveries yet.</p>
           ) : (
             <ul className="mt-2 space-y-2">
               {deliveries.map((d) => (
@@ -550,7 +550,7 @@ export default function NotificationsPage() {
                       </span>
                       {d.event}
                     </p>
-                    <p className="mt-0.5 font-mono text-[11px] text-white/40">
+                    <p className="mt-0.5 font-mono text-[11px] text-white/55">
                       {d.endpoint_url} · attempts {d.attempts}
                       {d.last_status_code ? ` · HTTP ${d.last_status_code}` : ''}
                       {d.last_error ? ` · ${d.last_error}` : ''} ·{' '}
@@ -575,9 +575,9 @@ export default function NotificationsPage() {
         <h2 className="text-base font-bold text-white">Notification log</h2>
         <p className="bx-body mt-1">Everything the system tried to send you, per channel.</p>
         {log === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading log…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading log…</p>
         ) : log.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No notifications sent yet.</p>
+          <p className="mt-3 text-sm text-white/55">No notifications sent yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {log.map((n) => (
@@ -589,11 +589,11 @@ export default function NotificationsPage() {
                       {n.status}
                     </span>
                     {n.notification_type.replace(/_/g, ' ')}
-                    <span className="font-mono text-[11px] text-white/40">via {n.channel}</span>
+                    <span className="font-mono text-[11px] text-white/55">via {n.channel}</span>
                   </p>
                   {n.detail && <p className="mt-1 text-xs text-white/55">{n.detail}</p>}
                 </div>
-                <span className="shrink-0 font-mono text-[11px] text-white/30">
+                <span className="shrink-0 font-mono text-[11px] text-white/50">
                   {new Date(n.created_at).toLocaleString()}
                 </span>
               </li>

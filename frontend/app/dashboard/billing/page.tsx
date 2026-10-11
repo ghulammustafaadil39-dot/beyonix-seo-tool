@@ -10,6 +10,7 @@ import {
   type Invoice,
 } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
+import { PageHeaderSkeleton, SkeletonLines } from '@/components/Skeleton';
 import UsageMeter from '@/components/UsageMeter';
 import Modal from '@/components/Modal';
 import PlanCards, { type PlanId } from '@/components/PlanCards';
@@ -266,7 +267,18 @@ export default function BillingPage() {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading billing…</p>;
+  if (loading)
+    return (
+      <div className="mx-auto max-w-4xl space-y-6">
+        <PageHeaderSkeleton />
+        <div className="bx-card">
+          <SkeletonLines rows={3} />
+        </div>
+        <div className="bx-card">
+          <SkeletonLines rows={4} />
+        </div>
+      </div>
+    );
 
   const currentPlan = sub && sub.status !== 'none' ? (sub.plan_id as PlanId) : null;
   const limits = usage?.limits ?? {};
@@ -296,7 +308,7 @@ export default function BillingPage() {
           </p>
           <button
             onClick={() => setNotice(null)}
-            className="text-sm text-white/40 hover:text-white/70 hover:underline"
+            className="text-sm text-white/55 hover:text-white/70 hover:underline"
           >
             Dismiss
           </button>
@@ -309,7 +321,7 @@ export default function BillingPage() {
         <p className="mt-1 bg-gradient-to-r from-cyan-300 to-teal-400 bg-clip-text text-lg font-bold text-transparent">
           {currentPlan ? (PLAN_NAMES[currentPlan] ?? currentPlan) : 'No subscription yet'}
         </p>
-        <p className="mt-1 font-mono text-xs text-white/40">
+        <p className="mt-1 font-mono text-xs text-white/55">
           status: {sub?.status ?? '—'}
           {sub?.billing_interval && ` · ${sub.billing_interval}`}
           {sub?.current_period_end &&
@@ -362,7 +374,7 @@ export default function BillingPage() {
             );
           })}
           {Object.keys(limits).length === 0 && (
-            <p className="text-sm text-white/40">No usage data available.</p>
+            <p className="text-sm text-white/55">No usage data available.</p>
           )}
         </div>
       </div>
@@ -418,7 +430,7 @@ export default function BillingPage() {
       <div className="bx-card">
         <p className="bx-micro mb-4">~/ invoices</p>
         {invoices === null ? (
-          <p className="text-sm text-white/40">Loading invoices…</p>
+          <p className="text-sm text-white/55">Loading invoices…</p>
         ) : invoices.length > 0 ? (
           <div className="bx-table-wrap">
             <table className="w-full min-w-[520px] text-sm">
@@ -462,7 +474,7 @@ export default function BillingPage() {
                           View ↗
                         </a>
                       ) : (
-                        <span className="text-xs text-white/30">—</span>
+                        <span className="text-xs text-white/50">—</span>
                       )}
                     </td>
                   </tr>
@@ -471,7 +483,7 @@ export default function BillingPage() {
             </table>
           </div>
         ) : (
-          <p className="text-sm text-white/40">No invoices yet.</p>
+          <p className="text-sm text-white/55">No invoices yet.</p>
         )}
       </div>
 

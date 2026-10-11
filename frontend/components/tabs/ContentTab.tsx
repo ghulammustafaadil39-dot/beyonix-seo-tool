@@ -82,7 +82,7 @@ export default function ContentTab({ siteId }: { siteId: string }) {
     approved: 'bx-pill-ok',
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading content…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">$ loading content…</p>;
 
   return (
     <div className="space-y-6">
@@ -102,6 +102,7 @@ export default function ContentTab({ siteId }: { siteId: string }) {
             value={keywordId}
             onChange={(e) => setKeywordId(e.target.value)}
             className="bx-input"
+            aria-label="Target keyword"
           >
             <option value="">No target keyword</option>
             {keywords.map((k) => (
@@ -114,6 +115,7 @@ export default function ContentTab({ siteId }: { siteId: string }) {
             value={tone}
             onChange={(e) => setTone(e.target.value)}
             className="bx-input"
+            aria-label="Content tone"
           >
             <option value="professional">Professional</option>
             <option value="friendly">Friendly</option>
@@ -137,7 +139,7 @@ export default function ContentTab({ siteId }: { siteId: string }) {
               <th className="bx-th">Title</th>
               <th className="bx-th">Status</th>
               <th className="bx-th" title="AI words used: counts against your plan's monthly AI-words limit (see Billing).">
-                AI words <span className="normal-case text-white/30">ⓘ</span>
+                AI words <span className="normal-case text-white/50">ⓘ</span>
               </th>
               <th className="bx-th">Updated</th>
               <th className="bx-th">Actions</th>
@@ -153,8 +155,8 @@ export default function ContentTab({ siteId }: { siteId: string }) {
                     {p.status}
                   </span>
                 </td>
-                <td className="px-4 py-3 font-mono text-xs text-white/40">{p.ai_words_used}</td>
-                <td className="px-4 py-3 font-mono text-xs text-white/40">
+                <td className="px-4 py-3 font-mono text-xs text-white/55">{p.ai_words_used}</td>
+                <td className="px-4 py-3 font-mono text-xs text-white/55">
                   {new Date(p.updated_at).toLocaleDateString()}
                 </td>
                 <td className="px-4 py-3">
@@ -200,7 +202,7 @@ export default function ContentTab({ siteId }: { siteId: string }) {
             ))}
             {pieces.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/40">
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/55">
                   No content yet — create your first draft above.
                 </td>
               </tr>

@@ -116,7 +116,7 @@ export default function HomePage() {
                 See pricing
               </Link>
             </div>
-            <p className="mt-5 font-mono text-xs text-white/30">
+            <p className="mt-5 font-mono text-xs text-white/50">
               $ ./beyonix-seo --init <span className="text-teal-300/70">▊</span>
             </p>
 
@@ -127,7 +127,7 @@ export default function HomePage() {
                   <span className="h-3 w-3 rounded-full bg-red-400/60" />
                   <span className="h-3 w-3 rounded-full bg-amber-400/60" />
                   <span className="h-3 w-3 rounded-full bg-teal-400/60" />
-                  <span className="ml-2 font-mono text-xs text-white/40">
+                  <span className="ml-2 font-mono text-xs text-white/55">
                     beyonix-seo — weekly health report
                   </span>
                 </div>

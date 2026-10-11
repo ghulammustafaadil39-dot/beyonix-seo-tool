@@ -31,7 +31,7 @@ export default function DocArticlePage({ params }: { params: { slug: string } })
     <div className="min-h-screen bg-[#04090c] text-white">
       <MarketingHeader />
       <main className="mx-auto max-w-3xl px-4 py-16">
-        <nav className="font-mono text-sm text-white/40" aria-label="Breadcrumb">
+        <nav className="font-mono text-sm text-white/55" aria-label="Breadcrumb">
           <Link href="/docs" className="hover:text-white/70 hover:underline">
             Docs
           </Link>
@@ -39,7 +39,7 @@ export default function DocArticlePage({ params }: { params: { slug: string } })
           <span className="text-teal-300">{doc.title}</span>
         </nav>
         <h1 className="mt-4 text-3xl font-extrabold tracking-tight">{doc.title}</h1>
-        <p className="mt-2 font-mono text-xs text-white/40">
+        <p className="mt-2 font-mono text-xs text-white/55">
           last updated {doc.updated}
         </p>
         <article className="mt-8 space-y-8">

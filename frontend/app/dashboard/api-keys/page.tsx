@@ -150,7 +150,7 @@ export default function ApiKeysPage() {
       <div className="bx-card">
         <p className="bx-micro mb-3">~/ keys</p>
         {keys === null ? (
-          <p className="font-mono text-sm text-white/40">$ loading keys…</p>
+          <p className="font-mono text-sm text-white/55">$ loading keys…</p>
         ) : keys.length === 0 ? (
           <div className="bx-empty">
             <p className="text-sm font-medium text-white">No API keys yet</p>
@@ -172,10 +172,10 @@ export default function ApiKeysPage() {
                       </span>
                     )}
                   </p>
-                  <p className="font-mono text-xs text-white/40">
+                  <p className="font-mono text-xs text-white/55">
                     {k.key_prefix}… · {k.scopes.join(', ')}
                   </p>
-                  <p className="mt-1 font-mono text-[11px] text-white/30">
+                  <p className="mt-1 font-mono text-[11px] text-white/50">
                     created {new Date(k.created_at).toLocaleDateString()} ·
                     last used {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'} ·
                     limit {k.rate_limit_per_min}/min

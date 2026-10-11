@@ -56,6 +56,66 @@ select option {
   color: #fff;
 }
 
+/* ————————————————— W-05 accessibility + motion ————————————————— */
+
+/* Visible focus on every interactive element (WCAG 2.2 AA 2.4.7). */
+:focus-visible {
+  outline: 2px solid #2dd4bf;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Screen-reader-only helper. */
+.bx-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Skeleton shimmer — subtle terminal pulse. */
+@keyframes bx-shimmer-slide {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateX(220%);
+    opacity: 0.35;
+  }
+}
+.bx-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.bx-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.16), transparent);
+  animation: bx-shimmer-slide 1.6s ease-in-out infinite;
+}
+/* Respect reduced-motion (WCAG 2.2 AA 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  .bx-shimmer::after {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 @layer components {
   /* ——— Surfaces ——— */
   .bx-card {

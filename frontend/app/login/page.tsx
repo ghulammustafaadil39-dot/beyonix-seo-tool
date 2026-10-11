@@ -65,7 +65,7 @@ function LoginForm({ onTotp }: { onTotp: (token: string) => void }) {
       <button type="submit" disabled={loading} className="bx-btn-primary w-full py-2.5">
         {loading ? 'Logging in…' : 'Log in'}
       </button>
-      <p className="text-center text-sm text-white/40">
+      <p className="text-center text-sm text-white/55">
         No account?{' '}
         <Link href="/signup" className="bx-link">
           Sign up
@@ -189,7 +189,7 @@ function TotpForm({ challengeToken, onBack }: { challengeToken: string; onBack: 
       >
         {loading ? 'Verifying…' : 'Verify'}
       </button>
-      <p className="flex items-center justify-center gap-4 text-center text-sm text-white/40">
+      <p className="flex items-center justify-center gap-4 text-center text-sm text-white/55">
         <button
           type="button"
           onClick={() => {

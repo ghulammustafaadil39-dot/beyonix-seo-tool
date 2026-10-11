@@ -51,7 +51,7 @@ export default function OnboardingChecklist({ siteId }: { siteId: string }) {
         </p>
         <button
           onClick={() => setDismissed(true)}
-          className="text-sm text-white/40 hover:text-white/70 hover:underline"
+          className="text-sm text-white/55 hover:text-white/70 hover:underline"
         >
           Dismiss
         </button>
@@ -69,7 +69,7 @@ export default function OnboardingChecklist({ siteId }: { siteId: string }) {
           <p className="bx-micro mb-1">~/ getting started</p>
           <h2 className="text-base font-bold text-white">Set up your site</h2>
         </div>
-        <p className="font-mono text-xs text-white/40">
+        <p className="font-mono text-xs text-white/55">
           {doneCount}/{steps.length} · {pct}%
         </p>
       </div>
@@ -101,7 +101,7 @@ export default function OnboardingChecklist({ siteId }: { siteId: string }) {
                     ? 'border-teal-400/40 bg-teal-400/10 text-teal-300'
                     : s.status === 'current'
                       ? 'border-violet-400/40 bg-violet-400/10 text-violet-300'
-                      : 'border-white/10 text-white/40'
+                      : 'border-white/10 text-white/55'
                 }`}
               >
                 {s.status === 'done' ? '✓' : steps.indexOf(s) + 1}
@@ -129,7 +129,7 @@ export default function OnboardingChecklist({ siteId }: { siteId: string }) {
         ))}
       </ol>
       {pendingBackend && (
-        <p className="mt-3 font-mono text-[11px] text-white/30">
+        <p className="mt-3 font-mono text-[11px] text-white/50">
           progress computed locally — checklist service unreachable right now
         </p>
       )}

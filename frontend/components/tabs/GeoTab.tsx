@@ -4,7 +4,11 @@ import { useEffect, useState } from 'react';
 import { geoApi, type GeoScore } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import ScoreGauge from '../ScoreGauge';
-import GeoV2Panel from './GeoV2Panel';
+import dynamic from 'next/dynamic';
+const GeoV2Panel = dynamic(() => import('./GeoV2Panel').then((m) => m.default), {
+  loading: () => <div role="status" aria-label="Loading advanced panel" className="bx-panel"><div className="bx-shimmer h-24 rounded-md bg-white/5" aria-hidden="true" /></div>,
+  ssr: false,
+});
 
 // Must match the backend allowlist in routes/geo.ts (GEO_PLATFORMS_ALLOWED).
 const PLATFORMS = ['chatgpt', 'perplexity', 'gemini', 'ai_overview'];
@@ -57,7 +61,7 @@ export default function GeoTab({ siteId }: { siteId: string }) {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading GEO data…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">$ loading GEO data…</p>;
 
   return (
     <div className="space-y-6">
@@ -65,7 +69,7 @@ export default function GeoTab({ siteId }: { siteId: string }) {
         <div className="relative">
           <p className="bx-micro mb-3">~/ ai visibility</p>
           <ScoreGauge score={geo?.score ?? null} label="GEO visibility score" />
-          <p className="mt-3 text-xs text-white/40">
+          <p className="mt-3 text-xs text-white/55">
             How often AI assistants mention your brand in answers to relevant queries.
             <span className="font-medium text-amber-300"> Simulated estimate</span> — our AI approximates each
             platform's likely answer; spot-check important queries manually.
@@ -92,7 +96,7 @@ export default function GeoTab({ siteId }: { siteId: string }) {
                 className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-medium capitalize transition ${
                   platforms.includes(p)
                     ? 'border-teal-400/40 bg-teal-400/10 text-teal-200'
-                    : 'border-white/10 text-white/40 hover:bg-white/5'
+                    : 'border-white/10 text-white/55 hover:bg-white/5'
                 }`}
               >
                 <input
@@ -130,10 +134,10 @@ export default function GeoTab({ siteId }: { siteId: string }) {
             {(geo?.checks ?? []).map((c) => (
               <tr key={c.id} className="transition hover:bg-white/[0.02]">
                 <td className="px-4 py-3 text-sm font-medium text-white">{c.query}</td>
-                <td className="px-4 py-3 text-xs capitalize text-white/40">{c.platform}</td>
+                <td className="px-4 py-3 text-xs capitalize text-white/55">{c.platform}</td>
                 <td className="px-4 py-3">
                   {c.mentioned === null ? (
-                    <span className="font-mono text-xs text-white/30">pending</span>
+                    <span className="font-mono text-xs text-white/50">pending</span>
                   ) : (
                     <span className={`bx-pill ${c.mentioned ? 'bx-pill-ok' : 'bx-pill-info'}`}>
                       <span className="bx-dot" />
@@ -141,17 +145,17 @@ export default function GeoTab({ siteId }: { siteId: string }) {
                     </span>
                   )}
                 </td>
-                <td className="max-w-[280px] truncate px-4 py-3 text-xs text-white/40">
+                <td className="max-w-[280px] truncate px-4 py-3 text-xs text-white/55">
                   {c.context_snippet ?? '—'}
                 </td>
-                <td className="px-4 py-3 font-mono text-xs text-white/40">
+                <td className="px-4 py-3 font-mono text-xs text-white/55">
                   {new Date(c.checked_at).toLocaleString()}
                 </td>
               </tr>
             ))}
             {(geo?.checks ?? []).length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/40">
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-white/55">
                   No GEO checks yet — run your first check above.
                 </td>
               </tr>

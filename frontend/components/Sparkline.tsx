@@ -10,7 +10,7 @@ export default function Sparkline({
 }) {
   const vals = points.filter((p): p is number => p !== null && p > 0);
   if (vals.length === 0)
-    return <span className="text-xs text-white/30">no data</span>;
+    return <span className="text-xs text-white/50">no data</span>;
 
   const max = Math.max(...vals);
   const min = Math.min(...vals);

@@ -159,9 +159,9 @@ export default function AuditV2Panel({
         )}
 
         {groups === null ? (
-          <p className="mt-4 font-mono text-sm text-white/40">$ loading groups…</p>
+          <p className="mt-4 font-mono text-sm text-white/55">$ loading groups…</p>
         ) : groups.length === 0 ? (
-          <p className="mt-4 text-sm text-white/40">No grouped issues for this audit yet.</p>
+          <p className="mt-4 text-sm text-white/55">No grouped issues for this audit yet.</p>
         ) : (
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             {groups.map((g) => (
@@ -170,7 +170,7 @@ export default function AuditV2Panel({
                   <span className="text-sm font-medium text-white">{g.type}</span>
                   <span className="bx-pill bx-pill-info"><span className="bx-dot" />{g.count} page{g.count === 1 ? '' : 's'}</span>
                 </div>
-                <p className="mt-1 font-mono text-xs text-white/40">
+                <p className="mt-1 font-mono text-xs text-white/55">
                   {g.severity} · total impact {g.total_impact}
                 </p>
                 <p className="mt-1 text-xs text-white/60">{g.fix_suggestion}</p>
@@ -178,7 +178,7 @@ export default function AuditV2Panel({
             ))}
           </div>
         )}
-        <p className="mt-3 font-mono text-[11px] text-white/30">
+        <p className="mt-3 font-mono text-[11px] text-white/50">
           Issue states: open · ignored · resolved · wont-fix — change them in the issue table above
           ({issues.length} issues loaded for the selected audit).
         </p>
@@ -197,7 +197,7 @@ export default function AuditV2Panel({
                 </div>
               ))}
             </div>
-            <div className="mt-2 flex justify-between font-mono text-[11px] text-white/40">
+            <div className="mt-2 flex justify-between font-mono text-[11px] text-white/55">
               <span>{new Date(done[0].finished_at ?? '').toLocaleDateString()}</span>
               <span>
                 latest: <strong className="text-teal-300">{done[done.length - 1].score}/100</strong>
@@ -210,7 +210,7 @@ export default function AuditV2Panel({
             </div>
           </div>
         ) : (
-          <p className="mt-2 text-sm text-white/40">No completed audits yet — run one to start the history.</p>
+          <p className="mt-2 text-sm text-white/55">No completed audits yet — run one to start the history.</p>
         )}
         {diff && (
           <p className="mt-3 font-mono text-xs text-white/50">

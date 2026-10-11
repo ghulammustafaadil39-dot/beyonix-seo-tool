@@ -97,15 +97,15 @@ export default function BacklinksV2Panel({ siteId }: { siteId: string }) {
           </div>
         </div>
         {toxic === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading toxic links…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading toxic links…</p>
         ) : toxic.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No links at or above the toxic threshold — nothing to review.</p>
+          <p className="mt-3 text-sm text-white/55">No links at or above the toxic threshold — nothing to review.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {toxic.map((t) => (
               <li key={t.id} className="bx-panel">
                 <p className="break-all font-mono text-sm text-white">{t.source_url}</p>
-                <p className="mt-1 font-mono text-xs text-white/40">
+                <p className="mt-1 font-mono text-xs text-white/55">
                   score {t.toxic_score}/100{t.anchor_text ? ` · anchor “${t.anchor_text}”` : ''}
                   {t.referring_domain ? ` · ${t.referring_domain}` : ''}
                 </p>
@@ -128,16 +128,16 @@ export default function BacklinksV2Panel({ siteId }: { siteId: string }) {
           <p className="bx-micro mb-1">~/ anchors</p>
           <h3 className="text-base font-bold text-white">Anchor text distribution</h3>
           {anchors === null ? (
-            <p className="mt-3 font-mono text-sm text-white/40">$ loading…</p>
+            <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
           ) : anchors.length === 0 ? (
-            <p className="mt-3 text-sm text-white/40">No active backlinks yet.</p>
+            <p className="mt-3 text-sm text-white/55">No active backlinks yet.</p>
           ) : (
             <div className="mt-4 space-y-3">
               {anchors.map((a) => (
                 <div key={a.anchor}>
                   <div className="flex justify-between text-xs">
                     <span className="font-mono text-white/70">{a.anchor}</span>
-                    <span className="font-mono text-white/40">{a.links}</span>
+                    <span className="font-mono text-white/55">{a.links}</span>
                   </div>
                   <div className="bx-meter-track">
                     <div className="bx-meter-fill" style={{ width: `${(a.links / maxAnchor) * 100}%` }} />
@@ -161,9 +161,9 @@ export default function BacklinksV2Panel({ siteId }: { siteId: string }) {
             </button>
           </div>
           {opps === null ? (
-            <p className="mt-3 font-mono text-sm text-white/40">$ loading…</p>
+            <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
           ) : opps.length === 0 ? (
-            <p className="mt-3 text-sm text-white/40">No opportunities yet — hit Refresh to scan.</p>
+            <p className="mt-3 text-sm text-white/55">No opportunities yet — hit Refresh to scan.</p>
           ) : (
             <ul className="mt-3 space-y-2">
               {opps.map((o) => (

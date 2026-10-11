@@ -22,7 +22,7 @@ export default function UsageMeter({
       <div className="flex justify-between gap-2 text-xs">
         <span className="font-medium text-white/60" title={hint}>
           {label}
-          {hint && <span className="text-white/30"> ⓘ</span>}
+          {hint && <span className="text-white/50"> ⓘ</span>}
         </span>
         <span
           className={`font-mono ${
@@ -30,7 +30,7 @@ export default function UsageMeter({
               ? 'font-semibold text-red-300'
               : state === 'warn'
                 ? 'font-semibold text-amber-300'
-                : 'text-white/40'
+                : 'text-white/55'
           }`}
         >
           {used} / {limit}

@@ -106,7 +106,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
                 <div className="flex items-start justify-between gap-2">
                   <p className="font-mono text-sm font-semibold text-white">
                     {c.domain}
-                    {c.label ? <span className="ml-2 font-sans text-xs font-normal text-white/40">{c.label}</span> : null}
+                    {c.label ? <span className="ml-2 font-sans text-xs font-normal text-white/55">{c.label}</span> : null}
                   </p>
                   <button onClick={() => remove(c)} className="text-xs text-red-300/80 hover:text-red-300 hover:underline" aria-label={`Remove ${c.domain}`}>
                     Remove
@@ -121,7 +121,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
                     <div className="bx-meter-fill" style={{ width: `${((s?.visibilitySharePct ?? 0) / maxVis) * 100}%` }} />
                   </div>
                 </div>
-                <p className="mt-2 font-mono text-xs text-white/40">
+                <p className="mt-2 font-mono text-xs text-white/55">
                   {s ? `${s.keywords} keywords compared` : 'no rank data yet'} · added{' '}
                   {new Date(c.created_at).toLocaleDateString()}
                 </p>
@@ -129,12 +129,12 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
             );
           })}
           {competitors !== null && competitors.length === 0 && (
-            <p className="text-sm text-white/40">No competitors yet — add one above.</p>
+            <p className="text-sm text-white/55">No competitors yet — add one above.</p>
           )}
-          {competitors === null && <p className="font-mono text-sm text-white/40">$ loading competitors…</p>}
+          {competitors === null && <p className="font-mono text-sm text-white/55">$ loading competitors…</p>}
         </div>
         {compare && compare.summary.length > 0 && (
-          <p className="mt-3 font-mono text-xs text-white/40">
+          <p className="mt-3 font-mono text-xs text-white/55">
             Your site ({compare.site}): visibility share{' '}
             {summaryByDomain.get(compare.site)?.visibilitySharePct ?? '—'} across{' '}
             {compare.keywords.length} tracked keywords with rank data.
@@ -147,9 +147,9 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ keyword gaps</p>
         <h2 className="text-base font-bold text-white">Keywords competitors outrank you on</h2>
         {kwGaps === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
         ) : kwGaps.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No keyword gaps found in the latest rank snapshots.</p>
+          <p className="mt-3 text-sm text-white/55">No keyword gaps found in the latest rank snapshots.</p>
         ) : (
           <div className="bx-table-wrap mt-3">
             <table className="w-full min-w-[560px] text-sm">
@@ -183,15 +183,15 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ content gaps</p>
         <h2 className="text-base font-bold text-white">Content gaps</h2>
         {contentGaps === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
         ) : contentGaps.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No content gaps — every competitor-ranking keyword already has content, or no rank data yet.</p>
+          <p className="mt-3 text-sm text-white/55">No content gaps — every competitor-ranking keyword already has content, or no rank data yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {contentGaps.map((g, i) => (
               <li key={i} className="bx-panel">
                 <p className="font-mono text-sm font-medium text-white">
-                  {g.keyword} <span className="text-white/40">— {g.competitor} ranks #{g.competitorPosition}</span>
+                  {g.keyword} <span className="text-white/55">— {g.competitor} ranks #{g.competitorPosition}</span>
                 </p>
                 <p className="mt-1 text-xs text-white/55">{g.suggestion}</p>
               </li>
@@ -205,7 +205,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ backlink compare</p>
         <h2 className="text-base font-bold text-white">Backlink comparison</h2>
         {backlinks === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
         ) : (
           <div className="mt-3 space-y-2">
             <p className="font-mono text-sm text-white/80">
@@ -213,7 +213,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
               {backlinks.site.referringDomains.toLocaleString()} referring domains (your uploaded data)
             </p>
             {backlinks.competitors.map((c) => (
-              <p key={c.domain} className="font-mono text-sm text-white/40">
+              <p key={c.domain} className="font-mono text-sm text-white/55">
                 {c.domain}: <span className="bx-pill bx-pill-warn"><span className="bx-dot" />unavailable</span>
               </p>
             ))}

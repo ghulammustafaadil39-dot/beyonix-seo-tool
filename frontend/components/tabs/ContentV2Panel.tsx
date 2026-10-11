@@ -199,7 +199,7 @@ export default function ContentV2Panel({
               <p key={i} className="font-mono text-xs text-white/50">alt: {a}</p>
             ))}
             {assets.faqSchema && (
-              <pre className="max-h-40 overflow-auto font-mono text-[11px] text-white/40">{JSON.stringify(assets.faqSchema, null, 2)}</pre>
+              <pre className="max-h-40 overflow-auto font-mono text-[11px] text-white/55">{JSON.stringify(assets.faqSchema, null, 2)}</pre>
             )}
           </div>
         )}
@@ -210,15 +210,15 @@ export default function ContentV2Panel({
         <p className="bx-micro mb-1">~/ versions</p>
         <h3 className="text-base font-bold text-white">Version history</h3>
         {versions === null ? (
-          <p className="mt-3 font-mono text-sm text-white/40">$ loading versions…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">$ loading versions…</p>
         ) : versions.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No versions yet — edits, brief and status changes snapshot a version first.</p>
+          <p className="mt-3 text-sm text-white/55">No versions yet — edits, brief and status changes snapshot a version first.</p>
         ) : (
           <ol className="mt-3 space-y-2">
             {versions.map((v) => (
               <li key={v.id} className="bx-panel">
                 <p className="text-sm font-medium text-white">{v.title ?? '(untitled)'} — {v.status}</p>
-                <p className="font-mono text-xs text-white/40">
+                <p className="font-mono text-xs text-white/55">
                   {new Date(v.created_at).toLocaleString()} · by {v.changed_by ?? 'user'}
                 </p>
                 {v.draft_preview && <p className="mt-1 line-clamp-2 text-xs text-white/50">{v.draft_preview}…</p>}
@@ -226,7 +226,7 @@ export default function ContentV2Panel({
             ))}
           </ol>
         )}
-        <p className="mt-2 font-mono text-[11px] text-white/30">
+        <p className="mt-2 font-mono text-[11px] text-white/50">
           The backend stores version snapshots but has no restore endpoint — versions are read-only here.
         </p>
       </div>

@@ -40,7 +40,7 @@ export default function Footer() {
               SEO + GEO visibility for small businesses — audits, keywords, rank
               tracking, AI content, and AI-search visibility in one dashboard.
             </p>
-            <p className="mt-4 font-mono text-xs text-white/30">
+            <p className="mt-4 font-mono text-xs text-white/50">
               $ ./beyonix-seo --up <span className="text-teal-300/70">▊</span>
             </p>
           </div>
@@ -63,10 +63,10 @@ export default function Footer() {
           ))}
         </div>
         <div className="mt-10 flex flex-col gap-2 border-t border-white/5 pt-6 sm:flex-row sm:items-center sm:justify-between">
-          <p className="font-mono text-xs text-white/30">
+          <p className="font-mono text-xs text-white/50">
             © 2026 Beyonix Solutions — Beyonix SEO
           </p>
-          <p className="font-mono text-xs text-white/30">
+          <p className="font-mono text-xs text-white/50">
             Status: <span className="text-teal-300">all systems operational</span>
           </p>
         </div>

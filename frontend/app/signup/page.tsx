@@ -89,7 +89,7 @@ export default function SignupPage() {
             <button type="submit" disabled={loading} className="bx-btn-primary w-full py-2.5">
               {loading ? 'Creating account…' : 'Sign up'}
             </button>
-            <p className="text-center text-sm text-white/40">
+            <p className="text-center text-sm text-white/55">
               Have an account?{' '}
               <Link href="/login" className="bx-link">
                 Log in

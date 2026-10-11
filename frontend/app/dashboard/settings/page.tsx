@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { settingsApi, type Settings } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
+import { PageHeaderSkeleton, SkeletonLines } from '@/components/Skeleton';
 
 export default function SettingsPage() {
   const { report } = useErrorReporter();
@@ -51,7 +52,15 @@ export default function SettingsPage() {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/40">$ loading settings…</p>;
+  if (loading)
+    return (
+      <div className="mx-auto max-w-2xl space-y-6">
+        <PageHeaderSkeleton />
+        <div className="bx-card">
+          <SkeletonLines rows={4} />
+        </div>
+      </div>
+    );
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -91,8 +100,9 @@ export default function SettingsPage() {
         </div>
 
         <div>
-          <label className="bx-label">AI provider</label>
+          <label htmlFor="ai-provider" className="bx-label">AI provider</label>
           <select
+            id="ai-provider"
             value={llmProvider}
             onChange={(e) => setLlmProvider(e.target.value)}
             className="bx-input"

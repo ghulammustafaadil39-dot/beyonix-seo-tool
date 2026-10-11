@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { sitesApi, ApiError, type Site } from '@/lib/api';
 import { useErrorReporter } from '@/components/ErrorBanner';
 import AddSiteForm from '@/components/AddSiteForm';
+import { SiteGridSkeleton } from '@/components/Skeleton';
 
 export default function DashboardPage() {
   const { report } = useErrorReporter();
@@ -61,7 +62,7 @@ export default function DashboardPage() {
       </div>
 
       {loading ? (
-        <p className="font-mono text-sm text-white/40">$ loading sites…</p>
+        <SiteGridSkeleton />
       ) : sites.length === 0 ? (
         <div className="bx-empty">
           <p className="text-sm font-medium text-white">No sites yet</p>
