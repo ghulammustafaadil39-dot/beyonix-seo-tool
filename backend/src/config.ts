@@ -87,6 +87,13 @@ export const config = {
   // F-04: CMS publish connector (WordPress/Webflow). Off by default;
   // when off, publish endpoints run in honest mock mode (publishConnector).
   cmsPublishEnabled: opt('CMS_PUBLISH_ENABLED', 'false') === 'true',
+  // Q-03: env-gated observability hooks (documented, no hard dependency).
+  // When SENTRY_DSN is set, the operator initialises Sentry around the
+  // process; when OTEL_EXPORTER_OTLP_ENDPOINT is set, an OTel collector
+  // export pipeline can be attached. The app itself ships pino JSON logs
+  // (Fastify logger) + GET /metrics and GET /status.
+  sentryDsn: opt('SENTRY_DSN', ''),
+  otelEndpoint: opt('OTEL_EXPORTER_OTLP_ENDPOINT', ''),
 };
 
 export const hasStripe = () => !!config.stripeSecretKey;
