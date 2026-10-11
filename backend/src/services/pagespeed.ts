@@ -30,24 +30,27 @@ export function quotaAllows(usedToday: number, quota: number): boolean {
   return usedToday < quota;
 }
 
-async function getQuotaCount(q: QueryFn, key: string): Promise<number> {
+/**
+ * I2-L-2 (pass#9): atomically claim one quota slot. Returns true when the
+ * caller may fire the API. The old check-then-act (read count → up to 90 s
+ * of fetch → bump) let concurrent crawls overshoot the free-tier quota,
+ * and burned quota on failed fetches. The conditional upsert claims
+ * exactly one slot: only the claim winner fetches, so the count can never
+ * exceed the quota and failures never consume a slot. (Whether the
+ * conflicting row is returned unchanged or not when the WHERE is false,
+ * the post-statement count check below denies correctly either way.)
+ */
+export async function claimQuotaSlot(q: QueryFn, key: string, quota: number): Promise<boolean> {
   const r = await q(
     `INSERT INTO daily_quotas (quota_key, day, count)
-     VALUES ($1, CURRENT_DATE, 0)
-     ON CONFLICT (quota_key, day) DO UPDATE SET count = daily_quotas.count
-     RETURNING count`,
-    [key],
-  );
-  return Number(r.rows[0]?.count ?? 0);
-}
-
-async function bumpQuota(q: QueryFn, key: string): Promise<void> {
-  await q(
-    `INSERT INTO daily_quotas (quota_key, day, count)
      VALUES ($1, CURRENT_DATE, 1)
-     ON CONFLICT (quota_key, day) DO UPDATE SET count = daily_quotas.count + 1`,
-    [key],
+     ON CONFLICT (quota_key, day) DO UPDATE
+     SET count = daily_quotas.count + 1
+     WHERE daily_quotas.count < $2
+     RETURNING count`,
+    [key, quota],
   );
+  return Number(r.rows[0]?.count ?? Infinity) <= quota;
 }
 
 async function fetchPageSpeed(pageUrl: string, apiKey?: string): Promise<PageSpeedMetrics | null> {
@@ -96,13 +99,14 @@ export async function getPageSpeedMetrics(
     if (cached.rows.length > 0) {
       return { metrics: cached.rows[0].metrics as PageSpeedMetrics, cached: true, quotaExhausted: false };
     }
-    const used = await getQuotaCount(q, 'pagespeed');
     const quota = pagespeedDailyQuota();
-    if (!quotaAllows(used, quota)) {
+    // I2-L-2 (pass#9): claim the slot BEFORE the fetch — only winners call
+    // the API, so concurrent crawls can't overshoot and failed fetches
+    // never burn quota (there is no post-fetch bump anymore).
+    if (!(await claimQuotaSlot(q, 'pagespeed', quota))) {
       return { metrics: null, cached: false, quotaExhausted: true };
     }
     const metrics = await fetchPageSpeed(pageUrl, apiKey);
-    await bumpQuota(q, 'pagespeed');
     if (metrics) {
       await q(
         `INSERT INTO pagespeed_cache (url, fetched_at, metrics)

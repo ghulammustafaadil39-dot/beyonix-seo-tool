@@ -67,14 +67,17 @@ export async function reportProcessor(job: Job): Promise<unknown> {
   );
   let reportId: string;
   if ((inserted.rowCount ?? 0) === 0) {
+    // I2-L-1 (pass#9): we LOST the race (concurrent scheduler tick vs
+    // manual generate, or a BullMQ timeout retry) — the winner notifies.
+    // Falling through would send a duplicate "Weekly SEO report"
+    // email + Telegram for the same report.
     const winner = await q(
       `SELECT id FROM reports WHERE site_id = $1 AND tenant_id = $2 AND period_start = $3 LIMIT 1`,
       [siteId, tenantId, periodStart],
     );
-    reportId = winner.rows[0].id as string;
-  } else {
-    reportId = inserted.rows[0].id as string;
+    return { skipped: true, reportId: winner.rows[0]?.id as string };
   }
+  reportId = inserted.rows[0].id as string;
 
   // W-06: plugin hooks around report generation (errors isolated).
   void runPluginHooks('report.ready', { tenantId, siteId, resourceId: reportId, payload: { periodStart, periodEnd } }).catch((e) =>

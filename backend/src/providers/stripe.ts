@@ -439,10 +439,13 @@ async function resolveTenantForSubscription(
 async function episodeDunningSent(
   q: (text: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }>,
   tenantId: string,
-  graceUntil: string | Date,
+  graceUntil: string | Date | null,
 ): Promise<boolean> {
   try {
-    const episodeStart = new Date(new Date(graceUntil).getTime() - GRACE_PERIOD_DAYS * 86400_000);
+    // Null (unknown episode — shouldn't happen on the guarded call paths):
+    // fall back to "now" so only very recent duns suppress.
+    const anchor = graceUntil ? new Date(graceUntil).getTime() : Date.now();
+    const episodeStart = new Date(anchor - GRACE_PERIOD_DAYS * 86400_000);
     const r = await q(
       `SELECT 1 FROM notification_log
        WHERE tenant_id = $1
@@ -794,9 +797,10 @@ export async function applyPaymentEvent(
     // superseded sub) and is ignored. The C-01 ordering guard above adds
     // a second layer: an event older than the newest applied event is
     // dropped before this check.
-    const cur = await q(`SELECT stripe_sub_id, status FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
+    const cur = await q(`SELECT stripe_sub_id, status, grace_until FROM subscriptions WHERE tenant_id = $1`, [tenantId]);
     const storedSubId = cur.rows[0]?.stripe_sub_id as string | null | undefined;
     const storedStatus = cur.rows[0]?.status as string | null | undefined;
+    const storedGraceUntil = cur.rows[0]?.grace_until as string | null | undefined;
     if (storedSubId && storedSubId !== subId) {
       // Adopt only when the incoming subscription is NEWER: tracked row
       // TERMINAL (canceled / incomplete_expired) and the incoming event
@@ -866,7 +870,16 @@ export async function applyPaymentEvent(
       // (daily scheduler job) downgrades afterwards.
       const cur = await q(`SELECT grace_until FROM subscriptions WHERE stripe_sub_id = $1`, [subId]);
       const existingGrace = cur.rows[0]?.grace_until as string | null | undefined;
-      const graceUntil = existingGrace ? new Date(existingGrace) : graceDeadline();
+      // I5-M#1 (pass#9): mirror D1-H-1 — a 'past_due' row whose grace was
+      // CONSUMED (downgradeTenant nulls grace_until after expiry) must NOT
+      // get a fresh grace from a routine subscription.updated. Otherwise
+      // every post-downgrade updated event re-mints a 3-day grace and
+      // re-sends the dunning email, restarting the downgrade cycle
+      // indefinitely (dunning + downgraded email every loop). A first
+      // failure has stored status active/trialing (or incomplete), so it
+      // still mints correctly.
+      const graceConsumed = storedStatus === 'past_due' && !storedGraceUntil;
+      const graceUntil = graceConsumed ? null : existingGrace ? new Date(existingGrace) : graceDeadline();
       const pastDuePlan = planFromEvent ?? storedPlan ?? 'starter';
       const recordedStatus = status === 'incomplete' ? 'incomplete' : 'past_due';
       const upserted = await q(
@@ -895,7 +908,11 @@ export async function applyPaymentEvent(
       // minted.
       const storedGrace = upserted.rows[0]?.grace_until as string | Date | null | undefined;
       const justMinted =
-        !existingGrace && !!storedGrace && new Date(storedGrace).getTime() === graceUntil.getTime();
+        !graceConsumed &&
+        !existingGrace &&
+        !!storedGrace &&
+        !!graceUntil &&
+        new Date(storedGrace).getTime() === graceUntil.getTime();
       if (justMinted) {
         await emitBillingEvent({ type: 'subscription.past_due', tenantId, detail: { status, graceUntil }, eventId });
       } else if (existingGrace && !(await episodeDunningSent(q, tenantId, graceUntil))) {
@@ -1004,7 +1021,18 @@ export async function applyPaymentEvent(
         tenantId,
       ]);
       const curStatus = curSub.rows[0]?.status as string | undefined;
-      if (curStatus === 'past_due' || curStatus === 'incomplete') {
+      // I5-L#1 (pass#9): like the 'canceled'-revival branch below, only
+      // revive when the invoice belongs to the TRACKED subscription. An
+      // invoice.paid for a different (second/out-of-band/one-off) subscription
+      // of the same customer must not flip this tenant's row to 'active'
+      // with the wrong plan while stripe_sub_id still tracks the old sub
+      // (its later events would then hit the E4-H-2 supersede guard, and a
+      // failure on the real sub could downgrade a genuine payer). When the
+      // invoice carries no subscription id we cannot tell — preserve the
+      // old recover behavior rather than stranding a payer.
+      const invMatchesTracked =
+        !invSubId || invSubId === (curSub.rows[0]?.stripe_sub_id as string | undefined);
+      if ((curStatus === 'past_due' || curStatus === 'incomplete') && invMatchesTracked) {
         // G5-M#2: revive the PAID plan, not just the status. After grace
         // expiry, downgradeTenant() set tenants.plan_id='starter' (and
         // possibly read_only=TRUE) while the row stayed 'past_due' — and
