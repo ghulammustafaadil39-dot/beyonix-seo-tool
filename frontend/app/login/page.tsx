@@ -80,6 +80,10 @@ function TotpForm({ challengeToken, onBack }: { challengeToken: string; onBack: 
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Backup-code mode: the backend accepts backup codes (4–32 chars) as an
+  // alternative to the 6-digit TOTP. Without this toggle, users who lost
+  // their authenticator would have no recovery path in the UI.
+  const [useBackup, setUseBackup] = useState(false);
   const submitting = useRef(false);
 
   const verify = useCallback(
@@ -96,7 +100,11 @@ function TotpForm({ challengeToken, onBack }: { challengeToken: string; onBack: 
         setLoading(false);
         if (err instanceof ApiError) {
           if (err.code === 'INVALID_CODE') {
-            setError("That code didn't match. Check your authenticator app and try again.");
+            setError(
+              useBackup
+                ? "That backup code didn't match. Check it carefully and try again."
+                : "That code didn't match. Check your authenticator app and try again.",
+            );
           } else if (err.code === 'INVALID_TOKEN') {
             setError('This 2FA challenge has expired. Please sign in again.');
           } else {
@@ -108,17 +116,23 @@ function TotpForm({ challengeToken, onBack }: { challengeToken: string; onBack: 
         setCode('');
       }
     },
-    [challengeToken, router],
+    [challengeToken, router, useBackup],
   );
 
   // Auto-submit as soon as a full 6-digit code is present (typed or pasted).
+  // In backup-code mode there is no auto-submit (codes are 4–32 chars).
   const handleChange = (raw: string) => {
+    if (useBackup) {
+      setCode(raw.slice(0, 32));
+      return;
+    }
     const digits = raw.replace(/\D/g, '').slice(0, 6);
     setCode(digits);
     if (digits.length === 6) void verify(digits);
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    if (useBackup) return; // default paste behavior is fine for backup codes
     const digits = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
     if (digits.length === 6) {
       e.preventDefault();
@@ -129,7 +143,7 @@ function TotpForm({ challengeToken, onBack }: { challengeToken: string; onBack: 
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    void verify(code);
+    void verify(useBackup ? code.trim() : code);
   };
 
   return (
@@ -137,7 +151,9 @@ function TotpForm({ challengeToken, onBack }: { challengeToken: string; onBack: 
       <div className="text-center">
         <h2 className="text-lg font-bold text-white">Two-factor authentication</h2>
         <p className="mt-1 text-sm text-white/50">
-          Enter the 6-digit code from your authenticator app. It changes every 30 seconds.
+          {useBackup
+            ? 'Enter one of your backup codes. Each code works once.'
+            : 'Enter the 6-digit code from your authenticator app. It changes every 30 seconds.'}
         </p>
       </div>
       {error && (
@@ -151,25 +167,41 @@ function TotpForm({ challengeToken, onBack }: { challengeToken: string; onBack: 
         </label>
         <input
           id="totp-code"
-          inputMode="numeric"
-          autoComplete="one-time-code"
+          inputMode={useBackup ? 'text' : 'numeric'}
+          autoComplete={useBackup ? 'off' : 'one-time-code'}
           autoFocus
           required
-          minLength={6}
-          maxLength={6}
-          pattern="[0-9]{6}"
+          minLength={useBackup ? 4 : 6}
+          maxLength={useBackup ? 32 : 6}
+          pattern={useBackup ? undefined : '[0-9]{6}'}
           value={code}
           onChange={(e) => handleChange(e.target.value)}
           onPaste={handlePaste}
-          placeholder="000000"
+          placeholder={useBackup ? 'backup code' : '000000'}
           disabled={loading}
           className="bx-input text-center text-2xl tracking-[0.5em] tabular-nums"
         />
       </div>
-      <button type="submit" disabled={loading || code.length < 6} className="bx-btn-primary w-full py-2.5">
+      <button
+        type="submit"
+        disabled={loading || (useBackup ? code.trim().length < 4 : code.length < 6)}
+        className="bx-btn-primary w-full py-2.5"
+      >
         {loading ? 'Verifying…' : 'Verify'}
       </button>
-      <p className="text-center text-sm text-white/40">
+      <p className="flex items-center justify-center gap-4 text-center text-sm text-white/40">
+        <button
+          type="button"
+          onClick={() => {
+            setUseBackup((v) => !v);
+            setCode('');
+            setError('');
+          }}
+          className="bx-link"
+        >
+          {useBackup ? 'Use authenticator app instead' : 'Use a backup code instead'}
+        </button>
+        <span aria-hidden="true">·</span>
         <button type="button" onClick={onBack} className="bx-link">
           ← Back to sign in
         </button>
