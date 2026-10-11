@@ -165,3 +165,25 @@ A1-L1 backlink CSV 5000 sequential INSERTs in request handler; A1-L2 `GET /metri
 
 ### Explicitly clean slices (no finding)
 Tenant isolation in all sampled SQL; SSRF via safeFetch (except A1-M4); billing webhook (sig/idempotency/ordering/plan-from-price); share tokens; authN/session incl. OAuth PKCE; GDPR erase coverage; migration runner semantics + all 29 migrations; crypto (GCM/random IV/kid); config fail-closed; idempotency middleware; invite-accept race; all 111 frontend endpoint×method pairs match backend; zero dangerouslySetInnerHTML; zero client console.log; token hygiene in auth flows; honesty labels (GEO simulated, insights projection, competitor unavailable, toxic heuristic, CMS mock); README mock-vs-real table matches code; secret scan clean (except synthetic fixture key).
+
+## Final hostile audit loop (§9) — PASS #3 (2026-10-11, LA session 3)
+
+Five fresh auditors (C1: routes/services, C2: backend core, C3: frontend, C4: docs/secrets/deps, C5: billing/metering). Raw: `.audit-pass3-c{1..5}.md`. Passes #1–#2 fixes adversarially re-verified as holding (not re-reported).
+
+**Totals (new): 0 critical · 4 HIGH · 20 MEDIUM · 33 LOW.**
+
+### HIGH
+| # | Finding | Fix |
+|---|---|---|
+| C1-H1/H-2 | `DELETE /auth/account` and `DELETE /account/erase` never cancel the Stripe subscription — customer charged forever with no account; erase also hard-deletes `tenant_credits` (money owed). Zero `cancelSubscription` in codebase. | Add `cancelSubscription` to PaymentsProvider; call before row deletion. |
+| C5-H-1 | Coupon `max_redemptions` unenforced on the real discount: lock-free SELECT validate, cap enforced later as a counter that just stops + warns. N concurrent checkouts → unbounded overshoot. | Atomic check-and-increment (SELECT FOR UPDATE) at checkout before attaching Stripe discount. |
+| C4-H-1 | Prod backup sidecar can never back up (no DATABASE_URL; sleep-24h loop swallows failure). NOTE: already fixed on `agent/delivery-prep` (bedff6d: DATABASE_URL added, _pg_env.sh mounted, backup at startup) — resolves on delivery-prep merge; LA to verify. | — (merge delivery-prep) |
+
+### MEDIUM (20)
+C1: M-1 PATCH site domain keeps verified=true; M-2 GSC/GA4 auth-url routes have NO preHandler (any viewer/key can init OAuth → token overwrite); M-3 content generation has the B1-M3 silent-dedupe bug (permanent `content:${pieceId}` jobId, missed by the refresh-route fix); M-4 commitUsage accepts actualUnits > reserved; M-5 crawl_pages has no reservation (check-then-act both layers); M-6 coupon max_redemptions enforced at redemption not checkout (Stripe discount overshoots); M-7 site restore bypasses plan limits; M-8 competitor gap endpoints N+1 per keyword.
+C5: M-1 paid invoices recorded at $0 (`amount_due ?? amount_paid` picks 0 post-payment); M-2 portal plan change with unconfigured price silently limits payer to Starter; M-3 dollar DataForSEO circuit can never trip (all costCents=0); M-4 commitUsage no clamp (dup of C1-M-4, one fix); M-5 read-only tenants told to delete excess but DELETE/PATCH blocked → self-recovery impossible; M-6 coupon Stripe-id sanitization collision (SAVE-20 vs SAVE_20).
+C4: M-2 caddy:2-alpine unpinned (only floating image); M-3 README Docker quick-start contradicts compose `:?` guards; M-4 Caddyfile APP_HOST/API_HOST default localhost (silent merge → API unreachable). (C4-H-1 covered above.)
+C2: M-1 stuck-audit reaper resurrection → duplicate concurrent audits + double crawl spend (worker claims row with no status predicate; fix: conditional claim `AND status='queued'`); M-2 BYOK decrypt failure silently falls back to operator server key (should 502, not silently bill operator).
+
+### LOW (33 — fix or justify)
+C1 (18): ungated onboarding PUT, mock-confirm coupon double-redeem, bearer-URL exposure to viewers, provider API keys in query strings w/ redirect-following, +14 in file. C2 (6): DB_STATEMENT_TIMEOUT_MS throttles migrations, zero-arg requireRole() → Infinity, dead getSerp code, leader re-entry overlap, expired-reservation commit, rank date-key midnight split. C5 (5): in file. C3 (5, frontend): billingApi.checkout forwards rejected trialDays; impersonation 404s under direct-API deploys; Slack webhook URL persists after channel deselect; keywordsApi.research `limit` ignored; v1 GEO tab omits `claude`. C4 (4): web env_file gets all backend secrets; duplicate "version" in frontend/package.json; Makefile migrate `|| true`; METRICS_BASIC_AUTH missing from .env.example.
