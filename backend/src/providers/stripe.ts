@@ -3,7 +3,46 @@ import { config, hasStripe } from '../config.js';
 import { query } from '../db.js';
 import { ApiError } from '../errors.js';
 import type { PaymentsProvider } from './types.js';
-import type { PlanId } from '../plans.js';
+import { isPlanId, type PlanId } from '../plans.js';
+
+/**
+ * Single source of truth mapping a Stripe price id -> plan, derived from the
+ * STRIPE_PRICE_* env config (P0-04). Returns null for unknown/empty price ids
+ * so callers can fall back instead of writing garbage into tenants.plan_id.
+ */
+export function planIdFromStripePrice(priceId: string | null | undefined): PlanId | null {
+  if (!priceId) return null;
+  for (const [plan, id] of Object.entries(config.stripePrices)) {
+    if (id && id === priceId && isPlanId(plan)) return plan;
+  }
+  return null;
+}
+
+/**
+ * Pure builder for the real Stripe checkout-session params (unit-tested).
+ * P0-04: subscription_data.metadata {tenantId, planId} is what
+ * customer.subscription.updated carries later — session-level metadata alone
+ * never reaches the subscription object.
+ */
+export function buildCheckoutSessionParams(p: {
+  customerId: string;
+  planId: PlanId;
+  successUrl: string;
+  cancelUrl: string;
+  metadata?: Record<string, string>;
+}) {
+  const priceId = config.stripePrices[p.planId];
+  if (!priceId) throw new Error(`No STRIPE_PRICE_${p.planId.toUpperCase()} configured`);
+  return {
+    customer: p.customerId,
+    mode: 'subscription' as const,
+    line_items: [{ price: priceId, quantity: 1 }],
+    success_url: p.successUrl,
+    cancel_url: p.cancelUrl,
+    metadata: { planId: p.planId, ...p.metadata },
+    subscription_data: { metadata: { tenantId: p.metadata?.tenantId ?? '', planId: p.planId } },
+  };
+}
 
 class RealStripeProvider implements PaymentsProvider {
   name = 'stripe';
@@ -16,16 +55,7 @@ class RealStripeProvider implements PaymentsProvider {
   }
 
   async createCheckoutSession(p: { customerId: string; planId: PlanId; successUrl: string; cancelUrl: string; metadata?: Record<string, string> }) {
-    const priceId = config.stripePrices[p.planId];
-    if (!priceId) throw new Error(`No STRIPE_PRICE_${p.planId.toUpperCase()} configured`);
-    const s = await this.stripe.checkout.sessions.create({
-      customer: p.customerId,
-      mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: p.successUrl,
-      cancel_url: p.cancelUrl,
-      metadata: { planId: p.planId, ...p.metadata },
-    });
+    const s = await this.stripe.checkout.sessions.create(buildCheckoutSessionParams(p));
     return { url: s.url!, sessionId: s.id };
   }
 
@@ -81,14 +111,18 @@ export async function applyPaymentEvent(
   const { type, data } = evt;
   if (type === 'checkout.session.completed') {
     let tenantId: string | undefined = data.metadata?.tenantId ?? data.tenant_id;
-    const planId = data.metadata?.planId ?? data.plan_id;
     const customerId: string | undefined = data.customer;
     const subId: string | undefined = data.subscription;
     if (!tenantId && customerId) {
       const t = await q(`SELECT id FROM tenants WHERE stripe_customer_id = $1`, [customerId]);
       tenantId = t.rows[0]?.id;
     }
-    if (!tenantId || !planId) return;
+    // Security review: never trust an unvalidated plan id — an unsigned mock
+    // webhook (or a tampered event) could otherwise escalate any tenant.
+    // (Lookup runs first so customerId-resolved tenants aren't skipped.)
+    const rawPlanId = data.metadata?.planId ?? data.plan_id;
+    if (!tenantId || !isPlanId(rawPlanId)) return;
+    const planId: PlanId = rawPlanId;
     await q(
       `INSERT INTO subscriptions (id, tenant_id, stripe_sub_id, stripe_customer_id, plan_id, status, current_period_end)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, 'active', now() + interval '30 days')
@@ -103,7 +137,13 @@ export async function applyPaymentEvent(
   } else if (type === 'customer.subscription.updated' || type === 'customer.subscription.deleted') {
     const subId: string | undefined = data.id;
     const status = type === 'customer.subscription.deleted' ? 'canceled' : (data.status ?? 'active');
-    const planId: string | undefined = data.metadata?.planId ?? data.plan_id;
+    // P0-04: the plan is authoritative from the Stripe price id (single source
+    // of truth = STRIPE_PRICE_*), falling back to subscription metadata, then
+    // the stored plan. Unknown values never reach tenants.plan_id.
+    const priceId: string | undefined = data.items?.data?.[0]?.price?.id;
+    const fromPrice = planIdFromStripePrice(priceId);
+    const fromMeta = data.metadata?.planId ?? data.plan_id;
+    const planFromEvent = fromPrice ?? (isPlanId(fromMeta) ? fromMeta : null);
     if (!subId) return;
     const r = await q(`SELECT tenant_id, plan_id FROM subscriptions WHERE stripe_sub_id = $1`, [subId]);
     if (r.rows.length === 0) return;
@@ -116,7 +156,7 @@ export async function applyPaymentEvent(
       await q(`UPDATE subscriptions SET status=$2 WHERE stripe_sub_id=$1`, [subId, status]);
       await q(`UPDATE tenants SET plan_id='starter' WHERE id=$1`, [tenantId]);
     } else {
-      const effectivePlan = planId ?? storedPlan ?? 'starter';
+      const effectivePlan = planFromEvent ?? (storedPlan && isPlanId(storedPlan) ? storedPlan : 'starter');
       await q(`UPDATE subscriptions SET status=$2, plan_id=$3 WHERE stripe_sub_id=$1`, [subId, status, effectivePlan]);
       await q(`UPDATE tenants SET plan_id=$2 WHERE id=$1`, [tenantId, effectivePlan]);
     }

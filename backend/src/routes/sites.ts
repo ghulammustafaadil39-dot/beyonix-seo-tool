@@ -131,7 +131,7 @@ async function checkVerifyToken(domain: string, token: string): Promise<boolean>
 
 export async function registerSitesRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
-    await authed.register(authPlugin);
+    await authPlugin(authed);
 
     authed.post('/sites', { schema: createSiteSchema }, async (req, reply) => {
       const { domain } = req.body as { domain: string };

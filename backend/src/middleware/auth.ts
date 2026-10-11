@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import fp from 'fastify-plugin';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
@@ -56,8 +55,12 @@ function tokenFromRequest(req: FastifyRequest): string | null {
   return c ?? null;
 }
 
-/** Fastify plugin: verifies JWT and attaches req.tenant. Use on all tenant routes. */
-export const authPlugin = fp(async function (fastify: FastifyInstance) {
+/** Fastify plugin: verifies JWT and attaches req.tenant. Use on all tenant routes.
+ * NOTE: this plugin MUST stay encapsulated (plain async function, no
+ * fastify-plugin wrapper): fastify-plugin would lift the preHandler hook onto
+ * the parent /api/v1 scope and force auth on public routes like
+ * /auth/signup, /auth/login and /billing/webhook. */
+export async function authPlugin(fastify: FastifyInstance) {
   fastify.addHook('preHandler', async (req) => {
     const token = tokenFromRequest(req);
     if (!token) throw unauthorized('Authentication required');
@@ -88,6 +91,6 @@ export const authPlugin = fp(async function (fastify: FastifyInstance) {
       name: row.name,
     };
   });
-});
+}
 
 export { COOKIE_NAME };

@@ -156,12 +156,12 @@ describe('ApiError envelope', () => {
   it('shapes the error envelope with code, message and extras', () => {
     const { status, body } = errorEnvelope(new ApiError(400, 'EMAIL_EXISTS', 'Email already registered', { a: 1 }));
     expect(status).toBe(400);
-    expect(body).toEqual({ error: { code: 'EMAIL_EXISTS', message: 'Email already registered', a: 1 } });
+    expect(body).toEqual({ ok: false, error: { code: 'EMAIL_EXISTS', message: 'Email already registered', a: 1 } });
   });
 
   it('maps unknown errors to 500 INTERNAL', () => {
     const { status, body } = errorEnvelope(new Error('boom'));
     expect(status).toBe(500);
-    expect(body).toEqual({ error: { code: 'INTERNAL', message: 'boom' } });
+    expect(body).toEqual({ ok: false, error: { code: 'INTERNAL', message: 'boom' } });
   });
 });

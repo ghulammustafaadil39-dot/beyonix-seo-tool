@@ -37,7 +37,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function registerSettingsRoutes(fastify: FastifyInstance) {
   await fastify.register(async (authed) => {
-    await authed.register(authPlugin);
+    await authPlugin(authed);
 
     authed.get('/settings', async (req) => {
       const r = await query(`SELECT ${SETTINGS_COLS} FROM tenants WHERE id = $1`, [req.tenant.tenantId]);
