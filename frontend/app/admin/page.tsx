@@ -21,6 +21,13 @@ function formatMoney(cents: number): string {
 
 type Gate = 'loading' | 'ready' | 'notfound' | 'error';
 
+// C3-L3: impersonation goes through the same-origin Next.js proxy route
+// (/api/admin/impersonate), which sets the session cookie on the web origin.
+// When NEXT_PUBLIC_API_URL is set (direct-API deploy, no proxy), that route
+// is unreachable from the client and impersonation cannot work — the action
+// is disabled with an honest message instead of failing with a 404.
+const DIRECT_API_MODE = !!process.env.NEXT_PUBLIC_API_URL;
+
 type ActionState =
   | { kind: 'suspend'; tenant: AdminTenant }
   | { kind: 'plan'; tenant: AdminTenant }
@@ -129,6 +136,15 @@ export default function AdminPage() {
         // which sets it as an httpOnly (+Secure in prod) cookie server-side;
         // the response body carries no token. The admin's own session is
         // replaced — they must sign in again afterwards.
+        // C3-L3: direct-API deploys (NEXT_PUBLIC_API_URL) have no same-origin
+        // proxy, so the handoff cannot work there — refuse up front with a
+        // clear message instead of a broken 404 flow.
+        if (DIRECT_API_MODE) {
+          note('Impersonation is not available in this direct-API deploy. It requires the same-origin proxy deploy (NEXT_PUBLIC_API_URL unset).');
+          setAction(null);
+          setBusy(false);
+          return;
+        }
         await api<{ ok: boolean; tenantId: string }>('/api/admin/impersonate', {
           method: 'POST',
           body: { tenantId: action.tenant.id },
@@ -219,7 +235,7 @@ export default function AdminPage() {
   const totalSpend = spendTotals.reduce((s, x) => s + x.cost_cents, 0);
   const actionValid =
     action?.kind === 'impersonate'
-      ? true
+      ? !DIRECT_API_MODE
       : action?.kind === 'credit'
         ? reason.trim().length >= 3 && Number(amount) > 0
         : reason.trim().length >= 3;
@@ -320,6 +336,8 @@ export default function AdminPage() {
                           <button
                             onClick={() => openAction({ kind: 'impersonate', tenant: t })}
                             className="bx-btn-xs-secondary"
+                            disabled={DIRECT_API_MODE}
+                            title={DIRECT_API_MODE ? 'Impersonation requires the same-origin proxy deploy (NEXT_PUBLIC_API_URL unset)' : 'Sign in as this tenant (5 min, audit-logged)'}
                           >
                             Impersonate
                           </button>
@@ -536,12 +554,23 @@ export default function AdminPage() {
         >
           {action.kind === 'impersonate' ? (
             <div>
-              <p className="text-sm text-white/70">
-                You will be signed in as this tenant&rsquo;s owner for{' '}
-                <strong className="text-white">5 minutes</strong>. The session is
-                audit-logged. Your admin session is replaced — you will need to
-                sign in again afterwards. Suspended tenants cannot be impersonated.
-              </p>
+              {DIRECT_API_MODE ? (
+                <p className="text-sm text-yellow-300/90">
+                  <strong className="text-white">Not available in this deploy.</strong>{' '}
+                  This deployment calls the API directly (NEXT_PUBLIC_API_URL is
+                  set), so the impersonation handoff — which relies on the
+                  same-origin Next.js proxy to set the session cookie — cannot
+                  work here. Impersonation requires the proxied deploy
+                  (NEXT_PUBLIC_API_URL unset).
+                </p>
+              ) : (
+                <p className="text-sm text-white/70">
+                  You will be signed in as this tenant&rsquo;s owner for{' '}
+                  <strong className="text-white">5 minutes</strong>. The session is
+                  audit-logged. Your admin session is replaced — you will need to
+                  sign in again afterwards. Suspended tenants cannot be impersonated.
+                </p>
+              )}
             </div>
           ) : (
             <div className="space-y-3">

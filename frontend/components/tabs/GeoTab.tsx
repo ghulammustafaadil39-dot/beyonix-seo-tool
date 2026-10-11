@@ -11,11 +11,12 @@ const GeoV2Panel = dynamic(() => import('./GeoV2Panel').then((m) => m.default), 
 });
 
 // Must match the backend allowlist in routes/geo.ts (GEO_PLATFORMS_ALLOWED).
-const PLATFORMS = ['chatgpt', 'perplexity', 'gemini', 'ai_overview'];
+const PLATFORMS = ['chatgpt', 'perplexity', 'gemini', 'claude', 'ai_overview'];
 const PLATFORM_LABELS: Record<string, string> = {
   chatgpt: 'ChatGPT',
   perplexity: 'Perplexity',
   gemini: 'Gemini',
+  claude: 'Claude',
   ai_overview: 'Google AI Overview',
 };
 

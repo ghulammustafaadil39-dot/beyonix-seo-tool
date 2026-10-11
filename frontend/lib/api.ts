@@ -463,12 +463,14 @@ export const auditsApi = {
 };
 
 export const keywordsApi = {
-  research: (siteId: string, seeds: string[], limit?: number) =>
+  // C3-L2: the backend research schema accepts only { seeds } — there is no
+  // `limit` option, so none is offered here.
+  research: (siteId: string, seeds: string[]) =>
     api<{ data: Keyword[]; total: number; dataSource?: DataSource }>(
       `/api/v1/sites/${siteId}/keywords/research`,
       {
         method: 'POST',
-        body: { seeds, limit },
+        body: { seeds },
       },
     ),
   list: (siteId: string, tracked?: boolean) =>
@@ -547,18 +549,21 @@ export interface CheckoutOptions {
   interval?: 'monthly' | 'annual';
   /** Coupon code from the billing_coupons catalog (validated server-side). */
   couponCode?: string;
-  /** Optional trial length in days (1–90). */
-  trialDays?: number;
+  // NOTE (C3-L1): trial length is server-side plan config — the backend
+  // checkout schema has additionalProperties: false and REJECTS trialDays.
+  // There is intentionally no trialDays option here.
 }
 
 export const billingApi = {
   subscription: () => api<Subscription>('/api/v1/billing/subscription'),
   /**
    * F-11 (wired, Wave 2): real checkout schema is
-   * { planId, interval?, couponCode?, trialDays? }
+   * { planId, interval?, couponCode? }
    * (backend/src/routes/billing.ts, additionalProperties: false — field
    * names must match exactly; the coupon field is `couponCode`, not
-   * `coupon`). Returns the Stripe (or mock) checkout URL to redirect to.
+   * `coupon`. Trial length is server-side plan config and must NOT be
+   * sent — the backend 400s any extra property.) Returns the Stripe
+   * (or mock) checkout URL to redirect to.
    */
   checkout: (planId: string, opts: CheckoutOptions = {}) =>
     api<{ url: string }>('/api/v1/billing/checkout', {
@@ -567,7 +572,6 @@ export const billingApi = {
         planId,
         ...(opts.interval ? { interval: opts.interval } : {}),
         ...(opts.couponCode ? { couponCode: opts.couponCode } : {}),
-        ...(opts.trialDays ? { trialDays: opts.trialDays } : {}),
       },
     }),
   portal: () => api<{ url: string }>('/api/v1/billing/portal', { method: 'POST' }),
