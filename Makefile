@@ -23,7 +23,7 @@ install:
 	cd frontend && npm install
 
 migrate:
-	cd backend && (npm run build >/dev/null 2>&1 || true) && node dist/migrate.js
+	cd backend && npm run build && node dist/migrate.js
 
 seed:
 	cd backend && npm run seed

@@ -28,7 +28,9 @@ make dev        # installs, migrates, seeds demo data, starts API+worker+web
 
 ```bash
 cp .env.example .env
-# edit .env — at minimum set JWT_SECRET (everything else can stay empty = mock mode)
+# edit .env — compose REQUIRES POSTGRES_PASSWORD and REDIS_PASSWORD
+# (fails fast on the :? guards without them). JWT_SECRET is optional for
+# local dev (dev default is used); everything else can stay empty = mock mode.
 docker compose up --build
 ```
 

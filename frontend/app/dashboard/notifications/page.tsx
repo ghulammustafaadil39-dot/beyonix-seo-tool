@@ -175,10 +175,20 @@ export default function NotificationsPage() {
       patchDraft(type, { channels: [...draft.channels, 'slack'] }, false);
       return;
     }
-    const channels = draft.channels.includes(ch)
+    const removing = draft.channels.includes(ch);
+    const channels = removing
       ? draft.channels.filter((c) => c !== ch)
       : [...draft.channels, ch];
-    patchDraft(type, { channels });
+    // C3-L4: when the slack channel is removed, also drop the stored webhook
+    // URL so a stale secret is not retained server-side (the API has no
+    // dedicated clear endpoint — it upserts config as-is, and omitting the
+    // key clears it). If slack is re-enabled later the URL field is collected
+    // fresh (see saveSlackUrl).
+    const config =
+      ch === 'slack' && removing
+        ? Object.fromEntries(Object.entries(draft.config).filter(([k]) => k !== 'slack_webhook_url'))
+        : draft.config;
+    patchDraft(type, { channels, config });
   };
 
   const saveSlackUrl = (type: AlertRuleType) => {
