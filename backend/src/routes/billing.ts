@@ -14,6 +14,7 @@ import {
   stripeCouponIdFor,
 } from '../providers/stripe.js';
 import { getPlan, isPlanId } from '../plans.js';
+import { LIVE_SUBSCRIPTION_STATUSES } from '../services/billing.js';
 
 const checkoutSchema = {
   body: {
@@ -54,7 +55,9 @@ const invoicesQuerySchema = {
   },
 } as const;
 
-const ACTIVE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due', 'incomplete'];
+// Single live-subscription definition (F1-M-1/F2-M-1: do not fork this
+// list — services/billing.ts owns it).
+const ACTIVE_SUBSCRIPTION_STATUSES: string[] = LIVE_SUBSCRIPTION_STATUSES;
 // D1-H-1: 'past_due' MUST stay in this list (and grace-expiry downgrades
 // must keep the local row 'past_due' — see downgradeTenant). A past_due
 // Stripe subscription is still alive and retrying; letting checkout through

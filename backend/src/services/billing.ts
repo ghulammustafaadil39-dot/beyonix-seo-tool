@@ -34,6 +34,20 @@ export function onBillingEvent(hook: BillingEventHook): () => void {
   };
 }
 
+/**
+ * F1-L-3 / F2-L-4: the SINGLE definition of a "live" Stripe subscription —
+ * one Stripe is (or may still be) billing for: active, trialing, past_due,
+ * and incomplete (async first payment still pending/retried). Shared by
+ * the checkout block (routes/billing.ts), the admin plan-override guard
+ * (routes/admin.ts), and the webhook supersede/adopt guard
+ * (providers/stripe.ts). Keep all three on this list — F1-M-1/F2-M-1
+ * showed what happens when two "live" definitions drift apart.
+ */
+export const LIVE_SUBSCRIPTION_STATUSES: string[] = ['active', 'trialing', 'past_due', 'incomplete'];
+
+/** Terminal (non-billable) subscription states: the sub is dead locally. */
+export const TERMINAL_SUBSCRIPTION_STATUSES: string[] = ['canceled', 'incomplete_expired'];
+
 /** Fires hooks best-effort (a failing hook never breaks the webhook). */
 export async function emitBillingEvent(e: BillingEvent): Promise<void> {
   for (const hook of billingHooks) {
