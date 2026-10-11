@@ -6,28 +6,22 @@
 -- 30 days (deleted_at + restore window); the hard-purge job deletes them.
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
--- Hot-query indexes (verified with EXPLAIN ANALYZE during C-06):
--- usage_events windowed sums per tenant/type/period
-CREATE INDEX IF NOT EXISTS usage_events_tenant_type_created_idx
-  ON usage_events (tenant_id, event_type, created_at DESC);
--- audit issue listing per audit
-CREATE INDEX IF NOT EXISTS audit_issues_audit_idx
+-- Hot-query indexes (verified with EXPLAIN ANALYZE during C-06).
+-- NOTE: 001 already covers usage_events(tenant_id,event_type,created_at),
+-- audit_issues(audit_id), rank_checks(keyword_id,checked_at DESC) and
+-- reports(tenant_id,site_id,created_at DESC) — those are NOT duplicated here.
+-- audit issue listing per audit, filtered by severity/status
+CREATE INDEX IF NOT EXISTS audit_issues_audit_severity_idx
   ON audit_issues (audit_id, severity);
--- rank history per keyword (latest-first)
-CREATE INDEX IF NOT EXISTS rank_checks_keyword_checked_idx
-  ON rank_checks (keyword_id, checked_at DESC);
--- geo checks per site
+-- geo checks per site (site-scoped queries without tenant prefix)
 CREATE INDEX IF NOT EXISTS geo_checks_site_idx
   ON geo_checks (site_id, checked_at DESC);
--- backlinks per site
+-- backlinks per site filtered by status
 CREATE INDEX IF NOT EXISTS backlinks_site_status_idx
   ON backlinks (site_id, status);
 -- content listing per site
 CREATE INDEX IF NOT EXISTS content_pieces_site_idx
   ON content_pieces (site_id, updated_at DESC);
--- reports per site
-CREATE INDEX IF NOT EXISTS reports_site_idx
-  ON reports (site_id, created_at DESC);
 -- keywords per site (tracked filter for scheduler)
 CREATE INDEX IF NOT EXISTS keywords_site_tracked_idx
   ON keywords (site_id, tracked);
