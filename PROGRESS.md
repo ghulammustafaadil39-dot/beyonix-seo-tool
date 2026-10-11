@@ -63,14 +63,14 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 
 | ID | Owner | Wave | Status | Notes / sub-tasks |
 |---|---|---|---|---|
-| C-01 | Backend-A | 2 | review | Backend-A branch; Security re-review APPROVED (idempotency race + event ordering verified fixed; 2 LOW residuals — orphan-claim reaping, refund watermark — in fix round 2); flips verified at merge |
-| C-02 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; reserve-then-commit, 20-way concurrency test, 80/100% once-per-period alerts, 402 payloads; suite green |
-| C-03 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; graceful shutdown (API+worker), Redis leader election, DLQ+replay, per-queue timeouts, tenant rate limit wired; suite green |
+| C-01 | Backend-A | 2 | verified | MERGED to main (Backend-A branch + 2 security fix rounds); suite on main 409/9/0, tsc clean; Security APPROVED |
+| C-02 | Backend-A | 2 | verified | MERGED to main (Backend-A branch); suite on main 409/9/0, tsc clean; LA review passed |
+| C-03 | Backend-A | 2 | verified | MERGED to main (Backend-A branch); suite on main 409/9/0, tsc clean; LA review passed |
 | C-04 | Backend-B | 2 | review | Backend-B branch done (robots crawl-delay, Playwright mode, simhash dupes, bb-c04 28+4 tests); merge pending LA rebase+reconcile |
 | C-05 | Backend-B | 2 | review | Backend-B branch done (SERP snapshots, device/location/lang, SERP features, bb-c05 10); merge pending |
-| C-06 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; retention defaults-merge, GDPR export, backup/restore real-script round-trip test, EXPLAIN-verified indexes; suite green |
-| C-07 | Backend-A | 2 | review | Backend-A branch done, LA review passed, merge pending Security gate; schema-driven OpenAPI 3.1 at /api/v1/openapi.json, /settings/providers mock-real, VALIDATION_ERROR 400s, stable pagination; suite green |
-| F-01 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend progress-state API pending → Backend-A |
+| C-06 | Backend-A | 2 | verified | MERGED to main (Backend-A branch); suite on main 409/9/0, tsc clean; LA review passed |
+| C-07 | Backend-A | 2 | verified | MERGED to main (Backend-A branch); suite on main 409/9/0, tsc clean; LA review passed |
+| F-01 | Frontend Lead | 2 | in_progress | UI merged (bd2358e) + backend onboarding state API NOW ON MAIN (F-09); remaining: wire frontend adapters (onboarding/billing/team/api-keys/notifications/admin) from mock to real endpoints — Frontend task dispatched by LA |
 | F-02 | Backend-B | 2 | review | Backend-B branch done (audit v2: impact priority, states, history, share links, bb-f02 9); share-token secret fix + Security review pending 
 | F-03 | Backend-B | 2 | review | Backend-B branch done (keyword v2: clustering, gap, cannibalization, lists/tags, bb-f03 7); merge pending 
 | F-04 | Backend-B | 2 | review | Backend-B branch done (content v2: brief→optimize, versions, NLP coverage, docx export, CMS publish mock-labeled behind CMS_PUBLISH_ENABLED, bb-f04 12); merge pending 
@@ -78,12 +78,12 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 | F-06 | Backend-B | 2 | review | Backend-B branch done (backlinks v2: heuristic toxic scoring labeled, anchors, opportunities, disavow download, bb-f06 5); merge pending 
 | F-07 | Backend-B | 2 | review | Backend-B branch done (competitors CRUD, visibility compare, keyword/content gaps, backlink compare w/ honest unavailable, bb-f07 5); merge pending 
 | F-08 | Backend-B | 2 | review | Backend-B branch done (white-label branding, branded PDF/HTML, share links, schedules, bb-f08 6); share-token secret fix + Security review pending 
-| F-09 | Backend-A | 2 | review | Backend-A branch; Security re-review CHANGES REQUESTED: NEW-1 MEDIUM dissolve guard incomplete (~20 cascade tables) + non-transactional accept; NEW-2 LOW enumeration residual (202-vs-200 oracle) — fix round 2 running 
-| F-10 | Backend-A | 2 | review | Backend-A branch; Security re-review APPROVED (SSRF HIGH fixed via safeFetch, regression-proven); LOW overall-deadline in fix round 2; flips verified at merge 
-| F-11 | Frontend Lead | 2 | in_progress | UI DONE + merged (bd2358e); backend trials/coupons/annual + invoice/email/cancel endpoints pending → Backend-A C-01 |
+| F-09 | Backend-A | 2 | verified | MERGED to main (Backend-A branch + 2 security fix rounds); suite on main 409/9/0, tsc clean; Security APPROVED 
+| F-10 | Backend-A | 2 | verified | MERGED to main (Backend-A branch + 2 security fix rounds); suite on main 409/9/0, tsc clean; Security APPROVED 
+| F-11 | Frontend Lead | 2 | in_progress | UI merged (bd2358e) + backend NOW ON MAIN (C-01: trials/coupons/annual, invoices list, PATCH /billing/email, DELETE /billing/subscription, checkout coupon+interval); remaining: frontend adapter wiring — Frontend task dispatched by LA |
 | F-12 | Frontend Lead | 2 | verified | Merged bd2358e (LA-reviewed): landing/docs/legal/cookies/sitemap+robots; next build green (28 routes), tsc clean |
-| F-13 | Backend-A | 2 | review | Backend-A branch; Security re-review APPROVED (admin-scope HIGH fixed, no bypass found); flips verified at merge 
-| F-14 | Backend-A | 2 | review | Backend-A branch done; Security APPROVED (404-for-non-admin, impersonation audit, suspend semantics all verified); flips verified at branch merge 
+| F-13 | Backend-A | 2 | verified | MERGED to main (Backend-A branch + 2 security fix rounds); suite on main 409/9/0, tsc clean; Security APPROVED 
+| F-14 | Backend-A | 2 | verified | MERGED to main (Backend-A branch + 2 security fix rounds); suite on main 409/9/0, tsc clean; Security APPROVED 
 
 ## Wave 3 — Phase 4 (quality/ops) + Phase 5 (world-class)
 
@@ -150,3 +150,5 @@ Status legend: `pending` → `in_progress` → `in_review` → `verified` | `blo
 - 2026-10-11 ~09:20 PKT (LA): Backend-A security fixes landed (9db6bb9): F-10 deliverOne→safeFetch (redirect-SSRF + TOCTOU), F-13 admin-scope rejection + human-session key mgmt, C-01 idempotency claim-before-execute + event ordering (migration 030), F-09 invite enumeration→202 generic, LOWs (past_due plan_id, atomic coupon redeem, atomic invite claim). Suite 404/9/0. Follow-up fix (d6ff4bf): shell-dissolve guard extended to billing footprint (subscriptions/invoices/tenant_credits) after fix agent proved cascade-delete data loss; accept aborts 409 INVITE_WOULD_ORPHAN_DATA, invitation not burned. Suite 405/9/0, tsc clean. LA clean verification of c-01/f-09/f-10/f-13/f-14: 50/50 (an earlier 1-failure run was LA's own concurrent-work interference, not code). Security re-review dispatched.
 - NOTE for future test work: tests/c-01.test.ts sits at 19 signups vs the S-03 rate limit of 20/window — new tests in that file must reuse tenants/sessions.
 - 2026-10-11 ~09:35 PKT (LA): Security re-review of Backend-A fixes — C-01/F-10/F-13/F-14 APPROVED (reviewer independently ran suites 50/50, tsc clean; probed F-10 redirect → 0 internal hits, F-13 legacy-key persistence closed, C-01 concurrency tests meaningful). F-09 still CHANGES REQUESTED: NEW-1 (MEDIUM) shell-dissolve guard covers only 3 of ~20 ON DELETE CASCADE tenant tables (probe: usage/workspace rows silently destroyed) + accept flow non-transactional; NEW-2 (LOW) invite response still distinguishes registration (202 generic vs 200+token). NEW-3/4/5 LOWs: idempotency orphan claims never reaped, charge.refunded advances event watermark, webhook delivery no overall deadline. Fix round 2 dispatched covering all five.
+- 2026-10-11 ~09:55 PKT (LA): Backend-A branch MERGED to main (merge commit after Security final verification: F-09 APPROVED, all 5 delta items FIXED, reviewer full suite 409/9/0). LA post-merge verification on main: full suite 409 passed / 9 skipped / 0 failed, tsc clean. C-01/C-02/C-03/C-06/C-07/F-09/F-10/F-13/F-14 → verified. MAINTENANCE OBLIGATION (Security note): SHELL_TENANT_TABLES in routes/account.ts is hand-curated — Backend-B merge MUST add its new tenant-scoped tables (migrations 020–029) to the list, or the dissolve guard silently misses them.
+- NEXT (LA): (1) Backend-B rebase onto new main + reconciliations (circuitBreaker canonical = Backend-A Redis version; softDeleteSite/recordProviderSpend canonical; requireScope adoption; SHELL_TENANT_TABLES additions; share-token domain-separation fix) + Security review of F-02/F-08 share links → merge. (2) Frontend adapter wiring F-01/F-11 + F-09/F-10/F-13/F-14 UIs to real endpoints. (3) Wave 2 gate (regression + E2E journey + chaos).
