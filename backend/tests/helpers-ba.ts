@@ -3,6 +3,7 @@
  * NOT a test file itself (no .test.ts suffix).
  */
 import type { FastifyInstance } from 'fastify';
+import { sessionTokenFromResponse } from './helpers.js';
 
 let seq = 0;
 
@@ -43,7 +44,7 @@ export async function signupVerified(app: FastifyInstance, email?: string): Prom
     payload: { token: body.verifyToken },
   });
   if (v.statusCode !== 200) throw new Error(`verify failed: ${v.statusCode} ${v.body}`);
-  return { token: body.token as string, userId: body.user.id as string, email: em, tenantId: body.tenant.id as string };
+  return { token: sessionTokenFromResponse(s), userId: body.user.id as string, email: em, tenantId: body.tenant.id as string };
 }
 
 export const auth = (token: string) => ({ authorization: `Bearer ${token}` });

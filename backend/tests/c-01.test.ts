@@ -3,6 +3,7 @@ import { buildApp } from '../src/index.js';
 import type { FastifyInstance } from 'fastify';
 import { pool, query, runMigrations } from '../src/db.js';
 import { applyPaymentEvent, getPayments } from '../src/providers/stripe.js';
+import { sessionTokenFromResponse } from './helpers.js';
 import { onBillingEvent, processBillingGrace } from '../src/services/billing.js';
 
 /**
@@ -41,7 +42,7 @@ async function signupVerified(app: FastifyInstance, email: string) {
     payload: { token: body.verifyToken },
   });
   expect(v.statusCode).toBe(200);
-  return { token: body.token as string, tenantId: body.tenant.id as string, userId: body.user.id as string };
+  return { token: sessionTokenFromResponse(s), tenantId: body.tenant.id as string, userId: body.user.id as string };
 }
 
 const auth = (token: string) => ({ authorization: `Bearer ${token}` });
