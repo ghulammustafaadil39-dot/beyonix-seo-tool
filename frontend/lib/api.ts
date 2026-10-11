@@ -38,13 +38,24 @@ interface ApiOptions {
   body?: unknown;
 }
 
+/**
+ * S-06: reads the readable CSRF double-submit cookie set by the API and
+ * echoes it in the x-csrf-token header on mutations. SSR-safe (no document
+ * on the server).
+ */
+function csrfHeader(): Record<string, string> {
+  if (typeof document === 'undefined') return {};
+  const m = /(?:^|; )bseo_csrf=([^;]*)/.exec(document.cookie);
+  return m ? { 'x-csrf-token': decodeURIComponent(m[1]) } : {};
+}
+
 export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
       method: opts.method || 'GET',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...csrfHeader() },
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch {

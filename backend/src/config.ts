@@ -38,6 +38,9 @@ export const config = {
   // (keyword research, content generation). Re-read per request via a live
   // env fallback so tests/ops can tune it without a reboot.
   tenantExpensiveLimitPerHour: parseInt(opt('TENANT_EXPENSIVE_LIMIT_PER_HOUR', '30'), 10),
+  // S-06: cookie/CSRF/CORS hardening knobs.
+  cookieSameSite: opt('COOKIE_SAMESITE', 'lax'),
+  corsOrigins: opt('CORS_ORIGINS', ''),
   jwtSecret: opt('JWT_SECRET', 'dev-only-jwt-secret-change-me'),
   // S-04: HMAC secret for the signed OAuth-state binding cookie. Falls back
   // to the JWT secret so the binding is never unsigned by misconfiguration —

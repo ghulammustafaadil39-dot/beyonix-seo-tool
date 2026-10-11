@@ -8,9 +8,11 @@ import {
   clearAuthCookie,
   hashPassword,
   setAuthCookie,
+  setCsrfCookie,
   signToken,
   verifyPassword,
 } from '../middleware/auth.js';
+import { issueCsrfToken } from '../middleware/csrf.js';
 import { getGoogle } from '../providers/google.js';
 import { getCaptcha, isCaptchaRequired } from '../providers/captcha.js';
 import { getRedis } from '../redis.js';
@@ -70,6 +72,7 @@ function testResetTokenField(rawToken: string | null): Record<string, string> {
 /**
  * S-05: issues an auth token AND registers the server-side session (for the
  * session list / per-session revocation), then sets the auth cookie.
+ * S-06: also sets the readable CSRF double-submit cookie.
  */
 async function issueAuthSession(
   req: any,
@@ -89,6 +92,7 @@ async function issueAuthSession(
     );
   }
   setAuthCookie(reply, token);
+  setCsrfCookie(reply, issueCsrfToken());
   return token;
 }
 

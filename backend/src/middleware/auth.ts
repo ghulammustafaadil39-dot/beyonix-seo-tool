@@ -6,6 +6,8 @@ import { config } from '../config.js';
 import { query } from '../db.js';
 import { unauthorized } from '../errors.js';
 import { isSessionActive, touchSession } from '../services/sessions.js';
+import { CSRF_COOKIE } from './csrf.js';
+import { authCookieOptions, csrfCookieOptions } from '../services/securityHeaders.js';
 import type { PlanId } from '../plans.js';
 
 export interface TenantContext {
@@ -27,6 +29,8 @@ declare module 'fastify' {
 }
 
 const COOKIE_NAME = 'bseo_token';
+
+export { COOKIE_NAME, CSRF_COOKIE };
 
 export interface SignTokenOpts {
   /** 'auth' for API sessions, 'totp' for the short-lived 2FA challenge token. */
@@ -53,17 +57,18 @@ export function signToken(
 }
 
 export function setAuthCookie(reply: any, token: string) {
-  reply.setCookie(COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: config.nodeEnv === 'production',
-    path: '/',
-    maxAge: 7 * 24 * 3600,
-  });
+  // S-06: flags from config (SameSite strategy + Secure), not hardcoded.
+  reply.setCookie(COOKIE_NAME, token, authCookieOptions());
+}
+
+/** Sets the readable CSRF double-submit cookie alongside the auth cookie. */
+export function setCsrfCookie(reply: any, csrfToken: string) {
+  reply.setCookie(CSRF_COOKIE, csrfToken, csrfCookieOptions());
 }
 
 export function clearAuthCookie(reply: any) {
   reply.clearCookie(COOKIE_NAME, { path: '/' });
+  reply.clearCookie(CSRF_COOKIE, { path: '/' });
 }
 
 export async function hashPassword(pw: string): Promise<string> {
@@ -134,5 +139,3 @@ export async function authPlugin(fastify: FastifyInstance) {
     };
   });
 }
-
-export { COOKIE_NAME };

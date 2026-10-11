@@ -8,6 +8,8 @@ import { pool, runMigrations } from './db.js';
 import { Redis } from 'ioredis';
 import { getRedis } from './redis.js';
 import { createRateLimitStore } from './services/redisRateLimitStore.js';
+import { apiSecurityHeaders, parseCorsOrigins } from './services/securityHeaders.js';
+import { csrfGuard } from './middleware/csrf.js';
 import { errorEnvelope } from './errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerBillingRoutes } from './routes/billing.js';
@@ -45,9 +47,20 @@ export async function buildApp() {
     reply.header('x-request-id', req.id);
   });
 
+  // S-06: helmet-style hardening headers on every API response.
+  const HARDENING_HEADERS = apiSecurityHeaders();
+  app.addHook('onSend', async (_req, reply, payload) => {
+    for (const [k, v] of Object.entries(HARDENING_HEADERS)) {
+      if (!reply.hasHeader(k)) reply.header(k, v);
+    }
+    return payload;
+  });
+
   await app.register(cookie);
+  // S-06: CORS allow-list comes from CORS_ORIGINS env ONLY (comma-separated);
+  // falls back to the configured app URL. Never '*'.
   await app.register(cors, {
-    origin: [config.appUrl],
+    origin: parseCorsOrigins(config.corsOrigins, config.appUrl),
     credentials: true,
   });
   // S-03: per-IP limits are Redis-backed (shared across API instances) —
@@ -100,6 +113,10 @@ export async function buildApp() {
 
   await app.register(
     async (v1) => {
+      // S-06: CSRF double-submit guard, scoped to /api/v1 (encapsulated —
+      // never lifted to the app root). Only cookie-authenticated mutations
+      // are checked; Bearer clients and safe methods are exempt.
+      v1.addHook('preHandler', csrfGuard);
       // NOTE: every inner register MUST be awaited. Fire-and-forget here
       // deadlocks avvio: the outer `await app.register(...)` never resolves
       // and the API server never finishes booting (found by audit smoke test).
