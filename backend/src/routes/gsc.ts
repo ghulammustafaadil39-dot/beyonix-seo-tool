@@ -68,6 +68,23 @@ export async function registerGscRoutes(fastify: FastifyInstance) {
       const rows = await getGoogle().searchQueries(site.gsc_refresh_token_enc ?? '', siteUrl(site.domain));
       return { data: rows };
     });
+
+    // Phase 1: GSC connection status — tells the UI exactly what's needed.
+    authed.get('/sites/:id/gsc/status', { schema: { params: idParamSchema }, preHandler: requireScope('gsc:read') }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const mockMode = isMockGoogleAllowed();
+      const connected = !!site.gsc_connected && !mockMode;
+      return {
+        connected,
+        mock_mode: mockMode,
+        message: connected
+          ? 'Google Search Console is connected. Keyword and backlink data comes from real GSC.'
+          : mockMode
+            ? 'Running with mock Google data (development). Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env for real data — see GSC-SETUP.md.'
+            : 'Google Search Console is not connected. Connect it to unlock real keyword and backlink data — see GSC-SETUP.md.',
+      };
+    });
   });
 
   fastify.get('/gsc/callback', { schema: callbackQuerySchema }, async (req, reply) => {

@@ -11,6 +11,7 @@ import {
   researchKeywords, seedFromGsc, expandKeywords, clusterRows,
   detectCannibalization, keywordGap, importKeywords,
 } from '../services/keywordService.js';
+import { suggestKeywords, saveSuggestions } from '../services/keywordSuggester.js';
 import { isQuestionKeyword, keywordsToCsv } from '../services/keywordText.js';
 import { withUsageReservation } from '../metering.js';
 import { getKeywordSerpProvider } from '../providers/dataforseo.js';
@@ -492,6 +493,105 @@ export function registerKeywordRoutes(fastify: FastifyInstance) {
         await defaultQuery(`DELETE FROM rank_checks WHERE keyword_id = $1 AND tenant_id = $2`, [kwId, tenantId]);
         await defaultQuery(`DELETE FROM keywords WHERE id = $1 AND tenant_id = $2`, [kwId, tenantId]);
         return { deleted: true };
+      },
+    );
+
+    // ---- Phase 1: auto keyword suggestions (free: GSC + site content) ----
+    // NOTE: bodyless POST — no body schema (see audit.ts fix Oct 2026).
+
+    // Trigger suggestion generation.
+    app.post<{ Params: { id: string } }>(
+      '/sites/:id/keywords/suggest',
+      {
+        schema: { params: siteParams },
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')],
+      },
+      async (req) => {
+        const { id } = req.params;
+        const { tenantId } = req.tenant;
+        await requireSite(tenantId, id);
+        const suggestions = await suggestKeywords(tenantId, id);
+        const saved = await saveSuggestions(tenantId, id, suggestions);
+        return { generated: suggestions.length, saved, suggestions };
+      },
+    );
+
+    // List pending suggestions.
+    app.get<{ Params: { id: string } }>(
+      '/sites/:id/keywords/suggestions',
+      { schema: { params: siteParams }, preHandler: requireScope('keywords:read') },
+      async (req) => {
+        const { id } = req.params;
+        const { tenantId } = req.tenant;
+        await requireSite(tenantId, id);
+        const r = await defaultQuery(
+          `SELECT id, keyword, source, score, reason, impressions, position, status, created_at
+           FROM keyword_suggestions WHERE site_id = $1 AND tenant_id = $2 AND status = 'pending'
+           ORDER BY score DESC`,
+          [id, tenantId],
+        );
+        return { data: r.rows };
+      },
+    );
+
+    const suggestionParams = {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        suggestionId: { type: 'string', format: 'uuid' },
+      },
+      required: ['id', 'suggestionId'],
+    } as const;
+
+    // Approve a suggestion → becomes a tracked keyword.
+    app.post<{ Params: { id: string; suggestionId: string } }>(
+      '/sites/:id/keywords/suggestions/:suggestionId/approve',
+      {
+        schema: { params: suggestionParams },
+        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')],
+      },
+      async (req) => {
+        const { id, suggestionId } = req.params;
+        const { tenantId } = req.tenant;
+        await requireSite(tenantId, id);
+        const s = await defaultQuery(
+          `SELECT keyword FROM keyword_suggestions WHERE id = $1 AND site_id = $2 AND tenant_id = $3 AND status = 'pending'`,
+          [suggestionId, id, tenantId],
+        );
+        if (s.rows.length === 0) throw notFound('Suggestion');
+        const kw = s.rows[0].keyword as string;
+        await defaultQuery(
+          `INSERT INTO keywords (tenant_id, site_id, keyword, added_from, tracked)
+           VALUES ($1, $2, $3, 'suggestion', true)
+           ON CONFLICT (site_id, keyword) DO UPDATE SET tracked = true`,
+          [tenantId, id, kw],
+        );
+        await defaultQuery(
+          `UPDATE keyword_suggestions SET status = 'approved', decided_at = now() WHERE id = $1`,
+          [suggestionId],
+        );
+        return { ok: true, keyword: kw };
+      },
+    );
+
+    // Reject a suggestion.
+    app.post<{ Params: { id: string; suggestionId: string } }>(
+      '/sites/:id/keywords/suggestions/:suggestionId/reject',
+      {
+        schema: { params: suggestionParams },
+        preHandler: [requireVerifiedEmail, requireRoleOrScope(['owner', 'admin', 'editor'], 'keywords:write')],
+      },
+      async (req) => {
+        const { id, suggestionId } = req.params;
+        const { tenantId } = req.tenant;
+        await requireSite(tenantId, id);
+        const r = await defaultQuery(
+          `UPDATE keyword_suggestions SET status = 'rejected', decided_at = now()
+           WHERE id = $1 AND site_id = $2 AND tenant_id = $3 AND status = 'pending'`,
+          [suggestionId, id, tenantId],
+        );
+        if ((r.rowCount ?? 0) === 0) throw notFound('Suggestion');
+        return { ok: true };
       },
     );
   });
