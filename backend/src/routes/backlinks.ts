@@ -9,6 +9,12 @@ import { requireSite } from '../services/sites.js';
 import { enqueue, enqueueDeduped, QUEUES, Jobs } from '../queues.js';
 import { rescoreToxicLinks, TOXIC_THRESHOLD } from '../services/toxicLinks.js';
 import { findLinkOpportunities, buildDisavowFile } from '../services/linkOpportunities.js';
+import {
+  findProspects,
+  sendOutreach,
+  outreachSummary,
+  MAX_FIRST_TOUCH_PER_DAY,
+} from '../services/outreach.js';
 
 const idParams = {
   type: 'object',
@@ -268,6 +274,122 @@ export async function registerBacklinkRoutes(fastify: FastifyInstance) {
       const site = await requireSite(req.tenant.tenantId, id);
       const opportunities = await findLinkOpportunities(site.tenant_id, site.id, query);
       return { opportunities, total: opportunities.length, heuristic: true };
+    });
+
+    // ---- Phase 2 rebuild: outreach (PRIMARY workflow) ----
+    // The upload endpoint above stays as a SECONDARY import path. The
+    // primary flow is: find prospects -> personalize -> send -> track.
+
+    // Find link prospects (free SERP discovery, scored, dedupe).
+    // Bodyless POST — schema has params only (no body: {} — see audit.ts fix).
+    app.post('/sites/:id/backlinks/prospects/find', {
+      schema: { params: idParams },
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const prospects = await findProspects(site.tenant_id, site.id, query);
+      return { prospects, total: prospects.length, heuristic: true };
+    });
+
+    // List prospects with optional status/type filters.
+    app.get('/sites/:id/backlinks/prospects', { preHandler: requireScope('backlinks:read'),
+      schema: {
+        params: idParams,
+        querystring: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['new', 'pitched', 'replied', 'won', 'lost', 'rejected'] },
+            type: { type: 'string', enum: ['resource_page', 'guest_post', 'broken_link', 'unlinked_mention', 'reclaim'] },
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+          },
+        },
+      },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const { status, type, limit = 50 } = req.query as { status?: string; type?: string; limit?: number };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const params: unknown[] = [site.id, site.tenant_id];
+      let where = `WHERE site_id = $1 AND tenant_id = $2`;
+      if (status) { params.push(status); where += ` AND status = $${params.length}`; }
+      if (type) { params.push(type); where += ` AND prospect_type = $${params.length}`; }
+      params.push(limit);
+      const r = await query(
+        `SELECT id, prospect_domain, prospect_url, prospect_type, contact_email, score,
+                status, reason, sent_at, replied_at, created_at
+         FROM outreach_prospects ${where}
+         ORDER BY score DESC, created_at DESC LIMIT $${params.length}`,
+        params,
+      );
+      return { prospects: r.rows, total: r.rows.length };
+    });
+
+    // Update a prospect's contact email (needed before sending).
+    app.put('/sites/:id/backlinks/prospects/:prospectId', {
+      schema: {
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            prospectId: { type: 'string', format: 'uuid' },
+          },
+          required: ['id', 'prospectId'],
+        },
+        body: {
+          type: 'object',
+          required: ['contact_email'],
+          properties: { contact_email: { type: 'string', format: 'email', maxLength: 320 } },
+        },
+      },
+      preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write'),
+    }, async (req) => {
+      const { id, prospectId } = req.params as { id: string; prospectId: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const { contact_email } = req.body as { contact_email: string };
+      const r = await query(
+        `UPDATE outreach_prospects SET contact_email = $1
+         WHERE id = $2 AND site_id = $3 AND tenant_id = $4 RETURNING id`,
+        [contact_email, prospectId, site.id, site.tenant_id],
+      );
+      if (r.rows.length === 0) throw badRequest('Prospect not found');
+      return { ok: true };
+    });
+
+    // Send personalized outreach (enforces 25/day cap + personalization gates).
+    app.post('/sites/:id/backlinks/outreach/send', {
+      schema: {
+        params: idParams,
+        body: {
+          type: 'object',
+          required: ['prospectIds'],
+          properties: {
+            prospectIds: { type: 'array', minItems: 1, maxItems: 25, items: { type: 'string', format: 'uuid' } },
+          },
+        },
+      },
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'backlinks:write')],
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const { prospectIds } = req.body as { prospectIds: string[] };
+      const results = await sendOutreach(site.tenant_id, site.id, prospectIds, query);
+      const sent = results.filter((r) => r.ok).length;
+      return { results, sent, failed: results.length - sent, daily_cap: MAX_FIRST_TOUCH_PER_DAY };
+    });
+
+    // Outreach summary stats.
+    app.get('/sites/:id/backlinks/summary', { preHandler: requireScope('backlinks:read'), schema: { params: idParams } }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const summary = await outreachSummary(site.tenant_id, site.id, query);
+      // Also include known-backlink counts for context.
+      const bl = await query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE status = 'active')::int AS active
+         FROM backlinks WHERE site_id = $1 AND tenant_id = $2`,
+        [site.id, site.tenant_id],
+      );
+      return { ...summary, backlinks: bl.rows[0] };
     });
 
     // Disavow file download (.txt) for heuristic-toxic links.
