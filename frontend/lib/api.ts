@@ -1552,7 +1552,20 @@ export interface Competitor {
   id: string;
   domain: string;
   label: string | null;
+  discovery_source?: 'auto' | 'manual';
+  overlap_score?: number | null;
+  shared_keywords?: number | null;
+  avg_position?: number | null;
+  last_discovered_at?: string | null;
   created_at: string;
+}
+
+export interface DiscoveredCompetitor {
+  domain: string;
+  sharedKeywords: number;
+  avgPosition: number;
+  overlapScore: number;
+  keywords: string[];
 }
 
 export interface CompetitorCompare {
@@ -1585,6 +1598,15 @@ export const competitorsApi = {
     }),
   remove: (siteId: string, competitorId: string) =>
     api<null>(`/api/v1/sites/${siteId}/competitors/${competitorId}`, { method: 'DELETE' }),
+  discover: (siteId: string) =>
+    api<{ competitors: DiscoveredCompetitor[]; keywordsChecked: number; note?: string }>(
+      `/api/v1/sites/${siteId}/competitors/discover`,
+      { method: 'POST' },
+    ),
+  gaps: (siteId: string, competitorId: string) =>
+    api<{ competitor: string; gaps: CompetitorGap[]; keywordsChecked: number }>(
+      `/api/v1/sites/${siteId}/competitors/${competitorId}/gaps`,
+    ),
   compare: (siteId: string) =>
     api<CompetitorCompare>(`/api/v1/sites/${siteId}/competitors/compare`),
   keywordGaps: (siteId: string, limit = 50) =>

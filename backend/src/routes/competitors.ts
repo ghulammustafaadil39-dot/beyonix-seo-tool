@@ -13,6 +13,7 @@ import { query } from '../db.js';
 import { badRequest, notFound } from '../errors.js';
 import { requireSite } from '../services/sites.js';
 import { positionVisibility, competitorPositions } from '../services/rankMetrics.js';
+import { discoverCompetitors, competitorGaps } from '../services/competitorDiscovery.js';
 
 const idParams = {
   type: 'object',
@@ -77,8 +78,10 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const r = await query(
-        `SELECT id, domain, label, created_at FROM competitors
-         WHERE site_id = $1 AND tenant_id = $2 ORDER BY domain`,
+        `SELECT id, domain, label, discovery_source, overlap_score, shared_keywords, avg_position, last_discovered_at, created_at
+         FROM competitors
+         WHERE site_id = $1 AND tenant_id = $2
+         ORDER BY overlap_score DESC NULLS LAST, domain`,
         [site.id, site.tenant_id],
       );
       return { competitors: r.rows, total: r.rows.length };
@@ -132,6 +135,44 @@ export async function registerCompetitorRoutes(fastify: FastifyInstance) {
       );
       if (r.rowCount === 0) throw notFound('Competitor');
       return reply.code(204).send();
+    });
+
+    // ---- Auto-discovery (Phase 3) ----
+    // Free SERP overlap via DuckDuckGo — no paid APIs. Bodyless POST:
+    // no body schema on purpose (bodyless POST + body schema = 400).
+
+    app.post('/sites/:id/competitors/discover', {
+      schema: { params: idParams },
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'competitors:write')],
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const result = await discoverCompetitors(site.tenant_id, site.id);
+      if (result.keywordsChecked === 0) {
+        return {
+          ...result,
+          note: 'No keywords to base discovery on. Add or approve keywords first (Keywords tab).',
+        };
+      }
+      return result;
+    });
+
+    // Gap analysis for one competitor: keywords where the competitor ranks
+    // top-10 on free SERP but the site is missing or clearly behind.
+    app.get('/sites/:id/competitors/:competitorId/gaps', {
+      schema: { params: competitorIdParams },
+      preHandler: requireScope('competitors:read'),
+    }, async (req) => {
+      const { id, competitorId } = req.params as { id: string; competitorId: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const compR = await query(
+        `SELECT domain FROM competitors WHERE id = $1 AND site_id = $2 AND tenant_id = $3`,
+        [competitorId, site.id, site.tenant_id],
+      );
+      if (compR.rows.length === 0) throw notFound('Competitor');
+      const domain = compR.rows[0].domain as string;
+      const result = await competitorGaps(site.tenant_id, site.id, domain);
+      return { competitor: domain, ...result };
     });
 
     // ---- Visibility comparison ----

@@ -27,7 +27,11 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
   const [newDomain, setNewDomain] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [busy, setBusy] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [err, setErr] = useState('');
+  const [discoverNote, setDiscoverNote] = useState('');
+  const [gapsById, setGapsById] = useState<Record<string, CompetitorGap[]>>({});
+  const [gapsBusy, setGapsBusy] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +86,45 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
     }
   };
 
+  const runDiscover = async () => {
+    setDiscovering(true);
+    setErr('');
+    setDiscoverNote('');
+    try {
+      const r = await competitorsApi.discover(siteId);
+      setDiscoverNote(
+        r.note ?? `Checked ${r.keywordsChecked} keywords — found ${r.competitors.length} competitors.`,
+      );
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Discovery failed.');
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  const loadGaps = async (c: Competitor) => {
+    if (gapsBusy[c.id]) return;
+    // Toggle: hide if already shown.
+    if (gapsById[c.id] !== undefined) {
+      setGapsById((p) => {
+        const next = { ...p };
+        delete next[c.id];
+        return next;
+      });
+      return;
+    }
+    setGapsBusy((p) => ({ ...p, [c.id]: true }));
+    try {
+      const r = await competitorsApi.gaps(siteId, c.id);
+      setGapsById((p) => ({ ...p, [c.id]: r.gaps }));
+    } catch {
+      setGapsById((p) => ({ ...p, [c.id]: [] }));
+    } finally {
+      setGapsBusy((p) => ({ ...p, [c.id]: false }));
+    }
+  };
+
   const summaryByDomain = new Map((compare?.summary ?? []).map((s) => [s.domain, s]));
   const maxVis = Math.max(0.01, ...(compare?.summary ?? []).map((s) => s.visibilitySharePct));
 
@@ -92,7 +135,13 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
       {/* CRUD + visibility compare */}
       <div className="bx-card">
         <p className="bx-micro mb-1">~/ competitors</p>
-        <h2 className="text-base font-bold text-white">Tracked competitors</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-bold text-white">Tracked competitors</h2>
+          <button onClick={runDiscover} disabled={discovering} className="bx-btn-secondary shrink-0">
+            {discovering ? 'Discovering…' : '🔍 Auto-discover'}
+          </button>
+        </div>
+        {discoverNote && <p className="mt-2 font-mono text-xs text-teal-300">{discoverNote}</p>}
         <form onSubmit={addCompetitor} className="mt-3 flex flex-wrap gap-2">
           <input value={newDomain} onChange={(e) => setNewDomain(e.target.value)} placeholder="competitor.com" className="bx-input flex-1 font-mono" aria-label="Competitor domain" />
           <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="Label (optional)" className="bx-input !w-auto" aria-label="Competitor label" />
@@ -101,17 +150,28 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           {(competitors ?? []).map((c) => {
             const s = summaryByDomain.get(c.domain);
+            const gaps = gapsById[c.id];
             return (
               <div key={c.id} className="bx-panel">
                 <div className="flex items-start justify-between gap-2">
                   <p className="font-mono text-sm font-semibold text-white">
                     {c.domain}
                     {c.label ? <span className="ml-2 font-sans text-xs font-normal text-white/55">{c.label}</span> : null}
+                    {c.discovery_source === 'auto' && (
+                      <span className="bx-pill bx-pill-ok ml-2"><span className="bx-dot" />auto-found</span>
+                    )}
                   </p>
                   <button onClick={() => remove(c)} className="text-xs text-red-300/80 hover:text-red-300 hover:underline" aria-label={`Remove ${c.domain}`}>
                     Remove
                   </button>
                 </div>
+                {c.overlap_score != null && (
+                  <p className="mt-2 font-mono text-xs text-white/70">
+                    overlap <span className="text-teal-300">{c.overlap_score}</span>
+                    {' · '}{c.shared_keywords ?? 0} shared keywords
+                    {c.avg_position != null && <> · avg pos #{c.avg_position}</>}
+                  </p>
+                )}
                 <div className="mt-3">
                   <div className="flex justify-between text-xs">
                     <span className="text-white/50">Visibility share (your tracked keywords)</span>
@@ -120,6 +180,20 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
                   <div className="bx-meter-track">
                     <div className="bx-meter-fill" style={{ width: `${((s?.visibilitySharePct ?? 0) / maxVis) * 100}%` }} />
                   </div>
+                </div>
+                <div className="mt-2">
+                  <button onClick={() => loadGaps(c)} className="text-xs text-white/60 hover:text-white/85 hover:underline">
+                    {gapsBusy[c.id] ? 'Checking gaps…' : gaps !== undefined ? (gaps.length === 0 ? 'No keyword gaps vs this competitor' : `${gaps.length} keyword gaps — hide`) : 'Show keyword gaps vs this competitor →'}
+                  </button>
+                  {gaps !== undefined && gaps.length > 0 && (
+                    <ul className="mt-2 space-y-1">
+                      {gaps.slice(0, 8).map((g, i) => (
+                        <li key={i} className="font-mono text-xs text-white/70">
+                          {g.keyword} <span className="text-white/45">— they #{g.competitorPosition}, you {g.sitePosition === null ? '—' : `#${g.sitePosition}`}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
                 <p className="mt-2 font-mono text-xs text-white/55">
                   {s ? `${s.keywords} keywords compared` : 'no rank data yet'} · added{' '}
