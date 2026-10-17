@@ -1,99 +1,175 @@
-// W-04: site-level Insights view — consumes the backend's
-// GET /api/v1/sites/:id/insights (merged; typed adapter in lib/api.ts:
-// insightsApi.get + normalizeInsightList, normalizeForecast,
-// resolveInsightHref).
+// Phase 6: Insights dashboard overhaul.
 //
-// Rendering: a labeled visibility PROJECTION card (estimated — never
-// presented as measured traffic or a guarantee) above priority-sorted action
-// cards: priority pill, title, detail, evidence (string/list/label-value),
-// and a deep link to the relevant tab.
-// Honest when the endpoint 404s: shows "not available yet" instead of
-// fabricated data — nothing is ever mocked. (Last resort now that the
-// endpoint is merged; it should rarely trigger.)
+// Unified view: health score hero, "is hafte" (weekly summary), progress
+// (week-over-week + keyword movers), "agla kadam" (action items), plus the
+// existing prioritized actions engine. Every metric carries a plain-language
+// explanation — no bare zeros. Beginner-friendly throughout.
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   insightsApi,
+  reportsApi,
   insightPriorityLabel,
   insightPriorityRank,
   resolveInsightHref,
   ApiError,
   type SiteForecast,
   type SiteInsight,
+  type InsightsDashboard,
+  type WeeklyReport,
 } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import { PageHeaderSkeleton, SkeletonLines } from '../Skeleton';
 
-function Evidence({ evidence }: { evidence: unknown }) {
-  if (evidence == null) return null;
-  if (typeof evidence === 'string') {
-    return <p className="mt-2 text-xs text-white/60">{evidence}</p>;
-  }
-  if (Array.isArray(evidence)) {
-    if (evidence.length === 0) return null;
-    return (
-      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-white/60">
-        {evidence.map((e, i) => (
-          <li key={i}>
-            {typeof e === 'string' ? e : <code className="font-mono">{JSON.stringify(e)}</code>}
-          </li>
-        ))}
-      </ul>
-    );
-  }
-  if (typeof evidence === 'object') {
-    const entries = Object.entries(evidence as Record<string, unknown>);
-    if (entries.length === 0) return null;
-    return (
-      <dl className="mt-2 space-y-1">
-        {entries.map(([k, v]) => (
-          <div key={k} className="flex justify-between gap-4 text-xs">
-            <dt className="text-white/55">{k.replace(/_/g, ' ')}</dt>
-            <dd className="font-mono text-right text-white/70">
-              {typeof v === 'string' || typeof v === 'number' ? String(v) : JSON.stringify(v)}
-            </dd>
+const GRADE_STYLE: Record<string, { ring: string; text: string; label: string }> = {
+  excellent: { ring: 'border-teal-400/40', text: 'text-teal-300', label: 'Excellent' },
+  good: { ring: 'border-sky-400/40', text: 'text-sky-300', label: 'Good' },
+  needs_work: { ring: 'border-amber-400/40', text: 'text-amber-300', label: 'Needs work' },
+  critical: { ring: 'border-red-400/40', text: 'text-red-300', label: 'Critical' },
+  unknown: { ring: 'border-white/15', text: 'text-white/50', label: 'Not yet measured' },
+};
+
+function HealthHero({ dashboard, siteId }: { dashboard: InsightsDashboard; siteId: string }) {
+  const h = dashboard.health;
+  const g = GRADE_STYLE[h.grade] ?? GRADE_STYLE.unknown;
+  return (
+    <section className={`bx-card border ${g.ring}`} aria-label="Site health">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="bx-micro mb-1">~/ site health</p>
+          <div className="flex items-baseline gap-3">
+            <span className={`font-mono text-5xl font-bold ${g.text}`}>
+              {h.score != null ? h.score : '—'}
+            </span>
+            <span className="text-sm text-white/50">/ 100</span>
+            <span className={`bx-pill ${g.text}`}>
+              <span className="bx-dot" />
+              {g.label}
+            </span>
           </div>
-        ))}
-      </dl>
-    );
-  }
-  return null;
+          <p className="mt-2 max-w-xl text-sm text-white/60">{h.summary}</p>
+          {h.lastAuditAt && (
+            <p className="mt-1 font-mono text-[11px] text-white/40">
+              last audit {new Date(h.lastAuditAt).toLocaleString()}
+            </p>
+          )}
+        </div>
+        <Link href={`/dashboard/sites/${siteId}/audit`} className="bx-btn-secondary !px-3 !py-1.5 !text-xs">
+          Open audit →
+        </Link>
+      </div>
+    </section>
+  );
 }
 
-const PRIORITY_PILL: Record<string, string> = {
-  Critical: 'bx-pill-err',
-  High: 'bx-pill-warn',
-  Medium: 'bx-pill-sky',
-  Low: 'bx-pill-info',
-};
+function MetricCard({
+  title,
+  value,
+  summary,
+  href,
+  linkLabel,
+}: {
+  title: string;
+  value: string;
+  summary: string;
+  href?: string;
+  linkLabel?: string;
+}) {
+  return (
+    <div className="bx-card">
+      <p className="bx-micro mb-1">{title}</p>
+      <p className="font-mono text-2xl text-white">{value}</p>
+      <p className="mt-1 text-xs text-white/55">{summary}</p>
+      {href && linkLabel && (
+        <Link href={href} className="bx-link mt-2 inline-block text-xs">
+          {linkLabel} →
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function WeeklySection({
+  report,
+  siteId,
+  onShare,
+  sharing,
+}: {
+  report: WeeklyReport | null;
+  siteId: string;
+  onShare: () => void;
+  sharing: boolean;
+}) {
+  if (!report) return null;
+  const sections = [report.whatHappened, report.whatImproved, report.nextSteps];
+  return (
+    <section className="bx-card" aria-label="Weekly report">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="bx-micro mb-1">~/ is hafte ki report</p>
+          <h2 className="bx-h2">Weekly report</h2>
+          <p className="mt-1 font-mono text-[11px] text-white/40">
+            {new Date(report.periodStart).toLocaleDateString()} –{' '}
+            {new Date(report.periodEnd).toLocaleDateString()}
+          </p>
+        </div>
+        <button onClick={onShare} disabled={sharing} className="bx-btn-secondary !px-3 !py-1.5 !text-xs">
+          {sharing ? 'Sharing…' : 'Share report'}
+        </button>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        {sections.map((s) => (
+          <div key={s.heading}>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-white/70">
+              {s.heading}
+            </p>
+            <ul className="space-y-1.5">
+              {s.items.map((item, i) => (
+                <li key={i} className="text-xs text-white/60">
+                  • {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 export default function InsightsTab({ siteId }: { siteId: string }) {
   const { report } = useErrorReporter();
+  const [dashboard, setDashboard] = useState<InsightsDashboard | null>(null);
+  const [weekly, setWeekly] = useState<WeeklyReport | null>(null);
   const [insights, setInsights] = useState<SiteInsight[] | null>(null);
   const [forecast, setForecast] = useState<SiteForecast | null>(null);
-  const [computedAt, setComputedAt] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
 
   const load = useCallback(async () => {
+    setDashboard(null);
+    setWeekly(null);
     setInsights(null);
-    setForecast(null);
-    setComputedAt(null);
-    setUnavailable(false);
     try {
-      const res = await insightsApi.get(siteId);
-      setInsights(res.insights);
-      setForecast(res.forecast);
-      setComputedAt(res.computedAt);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 404) {
-        // Backend didn't return insights for this site — say so honestly,
-        // no fake data. Last resort now that the endpoint is merged.
-        setUnavailable(true);
+      const [dash, wk, ins] = await Promise.all([
+        insightsApi.dashboard(siteId),
+        insightsApi.weekly(siteId).catch(() => null),
+        insightsApi.get(siteId).catch(() => null),
+      ]);
+      setDashboard(dash);
+      setWeekly(wk);
+      if (ins) {
+        setInsights(ins.insights);
+        setForecast(ins.forecast);
       } else {
-        report(e);
+        setInsights([]);
       }
+    } catch (e) {
+      report(e);
+      setDashboard(null);
       setInsights([]);
     }
   }, [siteId, report]);
@@ -102,7 +178,35 @@ export default function InsightsTab({ siteId }: { siteId: string }) {
     load();
   }, [load]);
 
-  if (insights === null) {
+  const handleShare = useCallback(async () => {
+    setSharing(true);
+    setShareUrl(null);
+    try {
+      // Generate a stored weekly report, then share it.
+      const { report: stored } = await reportsApi.generateWeekly(siteId);
+      const { url } = await reportsApi.share(stored.id);
+      setShareUrl(url);
+    } catch (e) {
+      report(e);
+    } finally {
+      setSharing(false);
+    }
+  }, [siteId, report]);
+
+  const handleGenerateWeekly = useCallback(async () => {
+    setGenerating(true);
+    try {
+      await reportsApi.generateWeekly(siteId);
+      const wk = await insightsApi.weekly(siteId).catch(() => null);
+      setWeekly(wk);
+    } catch (e) {
+      report(e);
+    } finally {
+      setGenerating(false);
+    }
+  }, [siteId, report]);
+
+  if (dashboard === null) {
     return (
       <div className="space-y-4" role="status" aria-label="Loading insights">
         <PageHeaderSkeleton />
@@ -115,153 +219,157 @@ export default function InsightsTab({ siteId }: { siteId: string }) {
     );
   }
 
-  if (unavailable) {
-    return (
-      <div className="bx-empty">
-        <p className="text-sm font-medium text-white">Insights aren&apos;t available yet</p>
-        <p className="mt-1 text-sm text-white/50">
-          The backend didn&apos;t return insights for this site yet — this view will show
-          prioritized actions and a visibility projection as soon as they&apos;re ready.
-        </p>
-      </div>
-    );
-  }
-
-  if (insights.length === 0 && !forecast) {
-    return (
-      <div className="bx-empty">
-        <p className="text-sm font-medium text-white">Nothing to do right now</p>
-        <p className="mt-1 text-sm text-white/50">
-          No prioritized actions for this site. Run an audit or keyword research and check back.
-        </p>
-      </div>
-    );
-  }
-
+  const d = dashboard;
   return (
     <div className="space-y-6">
-      {forecast && <ForecastCard forecast={forecast} />}
+      <HealthHero dashboard={d} siteId={siteId} />
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="bx-micro mb-1">~/ do this next</p>
-          <h2 className="bx-h2">Prioritized actions</h2>
-          {computedAt && (
-            <p className="mt-1 font-mono text-[11px] text-white/40">
-              computed {new Date(computedAt).toLocaleString()}
-            </p>
-          )}
-        </div>
-        <button onClick={load} className="bx-btn-secondary !px-3 !py-1.5 !text-xs">
-          Refresh
-        </button>
+      {/* Metric grid */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <MetricCard
+          title="keywords tracked"
+          value={String(d.keywords.tracked)}
+          summary={d.keywords.summary}
+          href={`/dashboard/sites/${siteId}/keywords`}
+          linkLabel="Keywords"
+        />
+        <MetricCard
+          title="content"
+          value={`${d.content.publishedMonth}/mo`}
+          summary={d.content.summary}
+          href={`/dashboard/sites/${siteId}/content`}
+          linkLabel="Content"
+        />
+        <MetricCard
+          title="backlinks won"
+          value={String(d.backlinks.won)}
+          summary={d.backlinks.summary}
+          href={`/dashboard/sites/${siteId}/backlinks`}
+          linkLabel="Backlinks"
+        />
+        <MetricCard
+          title="ai-readiness"
+          value={d.geo.score != null ? `${d.geo.score}/100` : '—'}
+          summary={d.geo.summary}
+          href={`/dashboard/sites/${siteId}/geo`}
+          linkLabel="GEO"
+        />
+        <MetricCard
+          title="competitors"
+          value={String(d.competitors.total)}
+          summary={d.competitors.summary}
+          href={`/dashboard/sites/${siteId}/competitors`}
+          linkLabel="Competitors"
+        />
+        <MetricCard
+          title="week over week"
+          value={
+            d.weekOverWeek.scoreChange != null
+              ? `${d.weekOverWeek.scoreChange > 0 ? '+' : ''}${d.weekOverWeek.scoreChange}`
+              : '—'
+          }
+          summary={d.weekOverWeek.summary}
+          href={`/dashboard/sites/${siteId}/audit`}
+          linkLabel="Audit"
+        />
       </div>
 
-      {insights.length === 0 ? (
-        <div className="bx-empty">
-          <p className="text-sm font-medium text-white">Nothing to do right now</p>
-          <p className="mt-1 text-sm text-white/50">
-            No prioritized actions for this site. Run an audit or keyword research and check back.
-          </p>
-        </div>
-      ) : (
-      <ol className="space-y-3">
-        {insights.map((ins, i) => {
-          const label = insightPriorityLabel(ins.priority);
-          const rank = insightPriorityRank(ins.priority);
-          return (
-            <li key={ins.id ?? `${ins.type}-${i}`} className="bx-card">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="flex items-center gap-3">
-                  <span
-                    aria-hidden="true"
-                    className="font-mono text-lg font-bold text-teal-300/60"
-                  >
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <div>
-                    <p className="text-sm font-semibold text-white">{ins.title}</p>
-                    <p className="font-mono text-[11px] uppercase tracking-wider text-white/50">
-                      {ins.type.replace(/_/g, ' ')}
-                      {typeof ins.impact === 'number' && ` · impact ${ins.impact}`}
-                    </p>
-                  </div>
-                </div>
-                <span className={`bx-pill ${PRIORITY_PILL[label] ?? 'bx-pill-info'}`} aria-label={`Priority ${label}`}>
-                  <span className="bx-dot" />
-                  {label}
-                  {typeof ins.priority === 'number' && (
-                    <span className="sr-only"> (score {rank})</span>
-                  )}
-                </span>
+      {/* Keyword movers */}
+      {(d.keywords.topGainers.length > 0 || d.keywords.topLosers.length > 0) && (
+        <section className="bx-card" aria-label="Keyword movements">
+          <p className="bx-micro mb-1">~/ ranking movements</p>
+          <h2 className="bx-h2 mb-3">Keyword movers</h2>
+          <div className="grid gap-4 md:grid-cols-2">
+            {d.keywords.topGainers.length > 0 && (
+              <div>
+                <p className="mb-2 text-xs font-semibold text-teal-300">▲ Climbing</p>
+                <ul className="space-y-1">
+                  {d.keywords.topGainers.map((g) => (
+                    <li key={g.keyword} className="font-mono text-xs text-white/60">
+                      {g.keyword} <span className="text-teal-300">{g.from} → {g.to}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
-              {ins.detail && <p className="mt-2 text-sm text-white/60">{ins.detail}</p>}
-              <Evidence evidence={ins.evidence} />
-              <Link
-                href={resolveInsightHref(siteId, ins.target, ins.type)}
-                className="bx-link mt-3 inline-block text-xs"
-              >
-                Open in context →
-              </Link>
-            </li>
-          );
-        })}
-      </ol>
+            )}
+            {d.keywords.topLosers.length > 0 && (
+              <div>
+                <p className="mb-2 text-xs font-semibold text-red-300">▼ Dropping</p>
+                <ul className="space-y-1">
+                  {d.keywords.topLosers.map((l) => (
+                    <li key={l.keyword} className="font-mono text-xs text-white/60">
+                      {l.keyword} <span className="text-red-300">{l.from} → {l.to}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Weekly report */}
+      {weekly ? (
+        <WeeklySection report={weekly} siteId={siteId} onShare={handleShare} sharing={sharing} />
+      ) : (
+        <section className="bx-card">
+          <p className="bx-micro mb-1">~/ weekly report</p>
+          <p className="text-sm text-white/60">No weekly report yet.</p>
+          <button
+            onClick={handleGenerateWeekly}
+            disabled={generating}
+            className="bx-btn-secondary mt-2 !px-3 !py-1.5 !text-xs"
+          >
+            {generating ? 'Generating…' : 'Generate weekly report'}
+          </button>
+        </section>
+      )}
+      {shareUrl && (
+        <div className="bx-card border-teal-400/30">
+          <p className="text-xs text-white/70">Shareable link (anyone with this link can view):</p>
+          <p className="mt-1 break-all font-mono text-xs text-teal-300">{shareUrl}</p>
+        </div>
+      )}
+
+      {/* Prioritized actions (existing engine) */}
+      {insights && insights.length > 0 && (
+        <section aria-label="Prioritized actions">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <p className="bx-micro mb-1">~/ agla kadam</p>
+              <h2 className="bx-h2">Prioritized actions</h2>
+            </div>
+            <button onClick={load} className="bx-btn-secondary !px-3 !py-1.5 !text-xs">
+              Refresh
+            </button>
+          </div>
+          <ol className="space-y-3">
+            {insights.slice(0, 5).map((ins, i) => {
+              const label = insightPriorityLabel(ins.priority);
+              return (
+                <li key={ins.id ?? `${ins.type}-${i}`} className="bx-card">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-white">{ins.title}</p>
+                      {ins.detail && <p className="mt-1 text-xs text-white/60">{ins.detail}</p>}
+                    </div>
+                    <span className="bx-pill bx-pill-info shrink-0">
+                      <span className="bx-dot" />
+                      {label}
+                    </span>
+                  </div>
+                  <Link
+                    href={resolveInsightHref(siteId, ins.target, ins.type)}
+                    className="bx-link mt-2 inline-block text-xs"
+                  >
+                    Open in context →
+                  </Link>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
       )}
     </div>
-  );
-}
-
-/**
- * Visibility PROJECTION card. Labeled as an estimate everywhere it appears:
- * the numbers are a linear-trend projection over the rank-visibility index,
- * never measured traffic and never a promise.
- */
-function ForecastCard({ forecast }: { forecast: SiteForecast }) {
-  const delta = forecast.visibilityIndexProjected - forecast.visibilityIndexNow;
-  const deltaStr = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}`;
-  return (
-    <section className="bx-card" aria-label="Visibility projection (estimated)">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="bx-micro mb-1">~/ projection — estimated, not measured</p>
-          <h2 className="bx-h2">Visibility projection</h2>
-        </div>
-        <span
-          className="bx-pill bx-pill-info"
-          title="Computed estimate from rank trends — not a promise"
-        >
-          <span className="bx-dot" />
-          projection
-        </span>
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-1">
-        <p className="font-mono text-3xl text-white">
-          {forecast.visibilityIndexNow.toFixed(1)}
-        </p>
-        <p aria-hidden="true" className="pb-1 text-xl text-white/40">
-          →
-        </p>
-        <p className="font-mono text-3xl text-teal-300">
-          {forecast.visibilityIndexProjected.toFixed(1)}
-        </p>
-        <p className="pb-1 text-xs text-white/50">
-          visibility index · +{forecast.horizonDays}d{' '}
-          <span className={delta >= 0 ? 'text-teal-300' : 'text-red-300'}>
-            ({deltaStr})
-          </span>
-        </p>
-      </div>
-
-      <p className="mt-2 text-xs text-white/60">{forecast.label}</p>
-      <p className="mt-1 font-mono text-[11px] text-white/40">
-        based on {forecast.basedOnDays} days of tracked rank data
-        {forecast.method ? ` · ${forecast.method}` : ''}
-      </p>
-      <p className="mt-2 text-[11px] font-medium text-amber-200/80">
-        A projection, not a promise — estimated from rank trends, never measured traffic.
-      </p>
-    </section>
   );
 }

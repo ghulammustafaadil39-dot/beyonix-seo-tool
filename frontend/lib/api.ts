@@ -719,6 +719,12 @@ export const reportsApi = {
   get: (id: string) => api<Report>(`/api/v1/reports/${id}`),
   generate: (siteId: string) =>
     api<{ ok: boolean }>(`/api/v1/sites/${siteId}/reports/generate`, { method: 'POST' }),
+  // Phase 6: generate + store a weekly insights report (bodyless POST).
+  generateWeekly: (siteId: string) =>
+    api<{ ok: boolean; report: Report }>(`/api/v1/sites/${siteId}/reports/weekly`, { method: 'POST' }),
+  // Phase 6: share a report via signed public link.
+  share: (reportId: string) =>
+    api<{ url: string }>(`/api/v1/reports/${reportId}/share`, { method: 'POST' }),
 };
 
 // Autopilot v2.0
@@ -2066,4 +2072,61 @@ export const insightsApi = {
   },
   /** Actions only — back-compat. Prefer get() to also render the forecast. */
   list: async (siteId: string): Promise<SiteInsight[]> => (await insightsApi.get(siteId)).insights,
+
+  // Phase 6: unified dashboard — health, week-over-week, keywords, content,
+  // backlinks, geo, competitors. Every metric has a plain-language summary.
+  dashboard: (siteId: string): Promise<InsightsDashboard> =>
+    api<InsightsDashboard>(`/api/v1/sites/${encodeURIComponent(siteId)}/insights/dashboard`),
+
+  // Phase 6: structured weekly report — "is hafte kya hua / kya behtar
+  // hua / agla kadam". Also used for email digests.
+  weekly: (siteId: string): Promise<WeeklyReport> =>
+    api<WeeklyReport>(`/api/v1/sites/${encodeURIComponent(siteId)}/insights/weekly`),
+
+  // Phase 6: quick health score only — for overview cards.
+  health: (siteId: string): Promise<HealthSummary> =>
+    api<HealthSummary>(`/api/v1/sites/${encodeURIComponent(siteId)}/insights/health`),
 };
+
+/** Phase 6: dashboard types (mirror backend/src/services/insights.ts). */
+export interface HealthSummary {
+  score: number | null;
+  grade: 'excellent' | 'good' | 'needs_work' | 'critical' | 'unknown';
+  summary: string;
+  lastAuditAt: string | null;
+  openIssues: number;
+  openErrors: number;
+}
+
+export interface InsightsDashboard {
+  health: HealthSummary;
+  weekOverWeek: {
+    scoreChange: number | null;
+    issuesFixed: number;
+    newIssues: number;
+    summary: string;
+  };
+  keywords: {
+    tracked: number;
+    avgPosition: number | null;
+    avgPositionChange: number | null;
+    topGainers: Array<{ keyword: string; from: number | null; to: number | null }>;
+    topLosers: Array<{ keyword: string; from: number | null; to: number | null }>;
+    summary: string;
+  };
+  content: { publishedWeek: number; publishedMonth: number; inDraft: number; summary: string };
+  backlinks: { prospects: number; contacted: number; replied: number; won: number; summary: string };
+  geo: { score: number | null; trend: 'up' | 'down' | 'flat' | 'unknown'; summary: string };
+  competitors: { total: number; autoDiscovered: number; summary: string };
+  computedAt: string;
+}
+
+export interface WeeklyReport {
+  siteId: string;
+  periodStart: string;
+  periodEnd: string;
+  whatHappened: { heading: string; items: string[] };
+  whatImproved: { heading: string; items: string[] };
+  nextSteps: { heading: string; items: string[] };
+  generatedAt: string;
+}

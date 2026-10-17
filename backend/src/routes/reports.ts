@@ -84,6 +84,40 @@ export async function registerReportRoutes(fastify: FastifyInstance) {
       return deduplicated ? { ok: true, queued: false, deduplicated: true } : { ok: true, queued: true };
     });
 
+    // Phase 6: generate + store a weekly insights report synchronously.
+    // Bodyless POST (no body schema — Phase 6 critical rule).
+    app.post('/sites/:id/reports/weekly', {
+      schema: { params: idParams },
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'reports:write')],
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const { getWeeklyReport } = await import('../services/insights.js');
+      const report = await getWeeklyReport(site.tenant_id, site.id);
+      const summary = [
+        ...report.whatHappened.items,
+        ...report.whatImproved.items,
+      ].join(' ');
+      const r = await query(
+        `INSERT INTO reports (tenant_id, site_id, period_start, period_end, summary, highlights)
+         VALUES ($1, $2, $3::timestamptz, $4::timestamptz, $5, $6)
+         RETURNING id, site_id, period_start, period_end, summary, highlights, created_at`,
+        [
+          site.tenant_id,
+          site.id,
+          report.periodStart,
+          report.periodEnd,
+          summary.slice(0, 2000),
+          JSON.stringify({
+            whatHappened: report.whatHappened,
+            whatImproved: report.whatImproved,
+            nextSteps: report.nextSteps,
+          }),
+        ],
+      );
+      return { ok: true, report: r.rows[0] };
+    });
+
     // ---- F-08: white-label reports ----
 
     // Tenant branding (white-label logo + colors).
