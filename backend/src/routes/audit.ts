@@ -61,7 +61,7 @@ export async function registerAuditRoutes(fastify: FastifyInstance) {
 
     // Trigger a new full-site audit (enqueues a crawl job). 409 if one is active.
     app.post('/sites/:id/audits', {
-      schema: { params: uuidParams('id'), body: { type: 'object', properties: {} } },
+      schema: { params: uuidParams('id') },
       // A1-H2: audit triggers are a mutation — editor+ roles for sessions,
       // 'audits:write' scope for API keys. S-01: crawls cost provider budget.
       preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'audits:write')],
