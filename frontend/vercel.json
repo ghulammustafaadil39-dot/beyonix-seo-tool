@@ -1,0 +1,1 @@
+{"rewrites":[{"destination":"https://beyonix-seo-tool-production.up.railway.app/api/:path*","source":"/api/:path*"}]}
