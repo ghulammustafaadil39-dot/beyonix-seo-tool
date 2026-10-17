@@ -15,6 +15,7 @@ export interface ApiErrorShape {
   used?: number;
   limit?: number;
   status: number;
+  path?: string;
 }
 
 export class ApiError extends Error {
@@ -23,6 +24,7 @@ export class ApiError extends Error {
   used?: number;
   limit?: number;
   status: number;
+  path?: string;
   constructor(shape: ApiErrorShape) {
     super(shape.message);
     this.code = shape.code;
@@ -30,6 +32,7 @@ export class ApiError extends Error {
     this.used = shape.used;
     this.limit = shape.limit;
     this.status = shape.status;
+    this.path = shape.path;
   }
 }
 
@@ -70,6 +73,7 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
       code: 'NETWORK_ERROR',
       message: "We couldn't reach the server. Check your connection and try again.",
       status: 0,
+      path,
     });
   }
   let json: any = null;
@@ -96,6 +100,7 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
       used: err.used,
       limit: err.limit,
       status: res.status,
+      path,
     });
   }
   return json as T;

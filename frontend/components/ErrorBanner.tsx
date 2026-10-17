@@ -19,6 +19,8 @@ interface BannerState {
   /** L3-L-1/L3-L-2 (pass#12): headline override — "Plan limit reached."
       is wrong when the cause is a failed/incomplete payment, not quota. */
   title?: string;
+  /** Which API endpoint failed — shown in small text for debugging. */
+  path?: string;
 }
 
 interface ErrorCtxValue {
@@ -110,7 +112,7 @@ export function ErrorBannerProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      setErr({ message: e.message, needsBilling, noPlan: false });
+      setErr({ message: e.message, needsBilling, noPlan: false, path: e.path });
       return;
     }
     if (e instanceof Error) {
@@ -141,6 +143,9 @@ export function ErrorBannerProvider({ children }: { children: ReactNode }) {
                 </strong>
               )}
               <span>{err.message}</span>
+              {err.path && (
+                <span className="ml-2 font-mono text-xs opacity-60">({err.path})</span>
+              )}
               {err.needsBilling && (
                 <Link
                   href="/dashboard/billing"
