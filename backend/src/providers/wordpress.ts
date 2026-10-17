@@ -73,6 +73,15 @@ export async function verifyConnection(
   try {
     const r = await wpFetch(conn, '');
     if (!r.ok) return { ok: false, error: `HTTP ${r.status}: ${r.data?.message ?? 'unreachable'}` };
+    // Verify credentials actually work — /users/me requires authentication.
+    // Without this, invalid passwords pass verification but all writes fail silently.
+    const me = await wpFetch(conn, '/wp/v2/users/me');
+    if (!me.ok) {
+      return {
+        ok: false,
+        error: 'Site reached but login failed. Use a WordPress Application Password (Users → Profile → Application Passwords), not your regular password.',
+      };
+    }
     return { ok: true, wpVersion: r.data?.namespaces ? 'ok' : undefined, siteName: r.data?.name };
   } catch (e: any) {
     return { ok: false, error: e?.message ?? 'connection failed' };
