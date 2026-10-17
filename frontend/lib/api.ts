@@ -278,6 +278,39 @@ export interface PageQuality {
   grade: string;
   breakdown: QualityBreakdown[];
 }
+// ---- Phase 4: content campaigns ----
+export interface Campaign {
+  id: string;
+  site_id: string;
+  name: string;
+  blogs_per_week: number;
+  blogs_per_month: number;
+  mode: 'autopilot' | 'approval';
+  status: string;
+  suggested_count?: number;
+  approved_count?: number;
+  created_at: string;
+}
+export interface CampaignTopic {
+  id: string;
+  campaign_id: string;
+  topic: string;
+  keyword: string | null;
+  status: 'suggested' | 'approved' | 'rejected' | 'written';
+  suggested_by: 'ai' | 'user';
+  reason: string | null;
+  content_piece_id: string | null;
+  created_at: string;
+}
+export interface QualityCheckResult {
+  ok: boolean;
+  score: number;
+  passed: boolean;
+  breakdown: QualityBreakdown[];
+  suggestions: string[];
+  humanLike: boolean;
+  humanLikeIssues: string[];
+}
 export interface OnpageSuggestionItem {
   area: string;
   current?: string;
@@ -572,8 +605,35 @@ export const contentApi = {
   generate: (id: string) =>
     api<{ ok: boolean }>(`/api/v1/content/${id}/generate`, { method: 'POST' }),
   approve: (id: string) => api<ContentPiece>(`/api/v1/content/${id}/approve`, { method: 'POST' }),
+  qualityCheck: (id: string) =>
+    api<QualityCheckResult>(`/api/v1/content/${id}/quality-check`, { method: 'POST' }),
   exportUrl: (id: string, format: 'html' | 'markdown' | 'docx') =>
     `${BASE_URL}/api/v1/content/${encodeURIComponent(id)}/export?format=${format}`,
+  // ---- Phase 4: campaigns ----
+  campaigns: {
+    list: (siteId: string) =>
+      api<Paged<Campaign>>(`/api/v1/sites/${siteId}/content/campaigns`),
+    create: (siteId: string, input: { name: string; blogs_per_week?: number; blogs_per_month?: number; mode?: 'autopilot' | 'approval' }) =>
+      api<Campaign>(`/api/v1/sites/${siteId}/content/campaigns`, { method: 'POST', body: input }),
+    topics: (siteId: string, campaignId: string) =>
+      api<Paged<CampaignTopic>>(`/api/v1/sites/${siteId}/content/campaigns/${campaignId}/topics`),
+    suggest: (siteId: string, campaignId: string) =>
+      api<{ ok: boolean; suggested: number; saved: number }>(
+        `/api/v1/sites/${siteId}/content/campaigns/${campaignId}/topics/suggest`,
+        { method: 'POST' },
+      ),
+    addTopic: (siteId: string, campaignId: string, input: { topic: string; keyword?: string }) =>
+      api<CampaignTopic>(`/api/v1/sites/${siteId}/content/campaigns/${campaignId}/topics`, {
+        method: 'POST',
+        body: input,
+      }),
+    approveTopic: (siteId: string, topicId: string) =>
+      api<{ ok: boolean; pieceId: string }>(`/api/v1/sites/${siteId}/content/topics/${topicId}/approve`, {
+        method: 'POST',
+      }),
+    rejectTopic: (siteId: string, topicId: string) =>
+      api<CampaignTopic>(`/api/v1/sites/${siteId}/content/topics/${topicId}/reject`, { method: 'POST' }),
+  },
 };
 
 export const onpageApi = {

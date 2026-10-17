@@ -656,5 +656,264 @@ export async function registerContentRoutes(fastify: FastifyInstance) {
         return result;
       },
     );
+    // ---- Phase 4: content campaigns ----
+
+    // Create a campaign (publishing cadence + mode).
+    app.post<{
+      Params: SiteParams;
+      Body: { name: string; blogs_per_week?: number; blogs_per_month?: number; mode?: 'autopilot' | 'approval' };
+    }>(
+      '/sites/:id/content/campaigns',
+      {
+        schema: {
+          params: uuidParamSchema,
+          body: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+              name: { type: 'string', minLength: 1, maxLength: 120 },
+              blogs_per_week: { type: 'integer', minimum: 0, maximum: 7 },
+              blogs_per_month: { type: 'integer', minimum: 0, maximum: 31 },
+              mode: { type: 'string', enum: ['autopilot', 'approval'] },
+            },
+          },
+        },
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const site = await requireSite(tenantId, req.params.id);
+        const { createCampaign } = await import('../services/contentCampaigns.js');
+        return createCampaign(tenantId, site.id, req.body);
+      },
+    );
+
+    // List campaigns for a site (newest first).
+    app.get<{ Params: SiteParams }>(
+      '/sites/:id/content/campaigns',
+      {
+        schema: { params: uuidParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'content:read'),
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const site = await requireSite(tenantId, req.params.id);
+        const r = await defaultQuery(
+          `SELECT c.*, COUNT(t.id) FILTER (WHERE t.status = 'suggested') AS suggested_count,
+                  COUNT(t.id) FILTER (WHERE t.status = 'approved') AS approved_count
+           FROM content_campaigns c LEFT JOIN campaign_topics t ON t.campaign_id = c.id
+           WHERE c.site_id = $1 AND c.tenant_id = $2
+           GROUP BY c.id ORDER BY c.created_at DESC`,
+          [site.id, tenantId],
+        );
+        return { data: r.rows };
+      },
+    );
+
+    // List topics for a campaign.
+    app.get<{ Params: SiteParams & { campaignId: string } }>(
+      '/sites/:id/content/campaigns/:campaignId/topics',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              campaignId: { type: 'string', format: 'uuid' },
+            },
+            required: ['id', 'campaignId'],
+          },
+        },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'content:read'),
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const site = await requireSite(tenantId, req.params.id);
+        const r = await defaultQuery(
+          `SELECT * FROM campaign_topics WHERE campaign_id = $1 AND site_id = $2 AND tenant_id = $3 ORDER BY created_at DESC`,
+          [req.params.campaignId, site.id, tenantId],
+        );
+        return { data: r.rows };
+      },
+    );
+
+    // AI-suggest topics for a campaign (bodyless — suggestions come from free sources).
+    app.post<{ Params: SiteParams & { campaignId: string } }>(
+      '/sites/:id/content/campaigns/:campaignId/topics/suggest',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              campaignId: { type: 'string', format: 'uuid' },
+            },
+            required: ['id', 'campaignId'],
+          },
+        },
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const site = await requireSite(tenantId, req.params.id);
+        const camp = await defaultQuery(
+          `SELECT id FROM content_campaigns WHERE id = $1 AND site_id = $2 AND tenant_id = $3`,
+          [req.params.campaignId, site.id, tenantId],
+        );
+        if (camp.rows.length === 0) throw notFound('Campaign');
+        const { suggestTopics, saveTopicSuggestions } = await import('../services/contentCampaigns.js');
+        const suggestions = await suggestTopics(tenantId, site.id, req.params.campaignId, 5);
+        const saved = await saveTopicSuggestions(tenantId, site.id, req.params.campaignId, suggestions);
+        return { ok: true, suggested: suggestions.length, saved };
+      },
+    );
+
+    // Manually add a topic to a campaign.
+    app.post<{
+      Params: SiteParams & { campaignId: string };
+      Body: { topic: string; keyword?: string };
+    }>(
+      '/sites/:id/content/campaigns/:campaignId/topics',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              campaignId: { type: 'string', format: 'uuid' },
+            },
+            required: ['id', 'campaignId'],
+          },
+          body: {
+            type: 'object',
+            required: ['topic'],
+            properties: {
+              topic: { type: 'string', minLength: 1, maxLength: 300 },
+              keyword: { type: 'string', maxLength: 200 },
+            },
+          },
+        },
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const site = await requireSite(tenantId, req.params.id);
+        const camp = await defaultQuery(
+          `SELECT id FROM content_campaigns WHERE id = $1 AND site_id = $2 AND tenant_id = $3`,
+          [req.params.campaignId, site.id, tenantId],
+        );
+        if (camp.rows.length === 0) throw notFound('Campaign');
+        const r = await defaultQuery(
+          `INSERT INTO campaign_topics (tenant_id, site_id, campaign_id, topic, keyword, status, suggested_by)
+           VALUES ($1, $2, $3, $4, $5, 'suggested', 'user')
+           ON CONFLICT (campaign_id, lower(topic)) DO NOTHING RETURNING *`,
+          [tenantId, site.id, req.params.campaignId, req.body.topic.trim(), req.body.keyword?.trim() || null],
+        );
+        if (r.rows.length === 0) throw badRequest('This topic is already in the campaign');
+        return r.rows[0];
+      },
+    );
+
+    // Approve a topic for writing (bodyless). Creates a draft content piece
+    // linked to the topic so the existing generate/approve flow takes over.
+    app.post<{ Params: SiteParams & { topicId: string } }>(
+      '/sites/:id/content/topics/:topicId/approve',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              topicId: { type: 'string', format: 'uuid' },
+            },
+            required: ['id', 'topicId'],
+          },
+        },
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const site = await requireSite(tenantId, req.params.id);
+        const t = await defaultQuery(
+          `SELECT * FROM campaign_topics WHERE id = $1 AND site_id = $2 AND tenant_id = $3`,
+          [req.params.topicId, site.id, tenantId],
+        );
+        if (t.rows.length === 0) throw notFound('Topic');
+        const topic = t.rows[0];
+        if (topic.status === 'written' && topic.content_piece_id) {
+          return { ok: true, topic, pieceId: topic.content_piece_id, already: true };
+        }
+        // Create a draft piece for this topic (existing content flow).
+        const piece = await defaultQuery(
+          `INSERT INTO content_pieces (tenant_id, site_id, title, status, tone)
+           VALUES ($1, $2, $3, 'draft', 'professional') RETURNING *`,
+          [tenantId, site.id, topic.topic],
+        );
+        await defaultQuery(
+          `UPDATE campaign_topics SET status = 'written', decided_at = now(), content_piece_id = $1 WHERE id = $2`,
+          [piece.rows[0].id, topic.id],
+        );
+        return { ok: true, topic: { ...topic, status: 'written' }, pieceId: piece.rows[0].id };
+      },
+    );
+
+    // Reject a topic (bodyless).
+    app.post<{ Params: SiteParams & { topicId: string } }>(
+      '/sites/:id/content/topics/:topicId/reject',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              topicId: { type: 'string', format: 'uuid' },
+            },
+            required: ['id', 'topicId'],
+          },
+        },
+        preHandler: [requireRoleOrScope(['owner', 'admin', 'editor'], 'content:write')],
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const site = await requireSite(tenantId, req.params.id);
+        const r = await defaultQuery(
+          `UPDATE campaign_topics SET status = 'rejected', decided_at = now()
+           WHERE id = $1 AND site_id = $2 AND tenant_id = $3 AND status = 'suggested' RETURNING *`,
+          [req.params.topicId, site.id, tenantId],
+        );
+        if (r.rows.length === 0) throw notFound('Topic');
+        return r.rows[0];
+      },
+    );
+
+    // Quality check on a content piece's draft (bodyless).
+    // Uses /content/:id to match the existing generate/approve route pattern
+    // (Fastify disallows duplicate :id param names in one path).
+    app.post<{ Params: { id: string } }>(
+      '/content/:id/quality-check',
+      {
+        schema: { params: uuidParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'content:read'),
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const { scoreContent, isHumanLike } = await import('../services/contentQuality.js');
+        const r = await defaultQuery(
+          `SELECT p.*, k.keyword FROM content_pieces p
+           LEFT JOIN keywords k ON k.id = p.keyword_id
+           WHERE p.id = $1 AND p.tenant_id = $2`,
+          [req.params.id, tenantId],
+        );
+        if (r.rows.length === 0) throw notFound('Content piece');
+        const piece = r.rows[0];
+        const draft = piece.draft ?? '';
+        if (!draft.trim()) {
+          return { ok: true, score: 0, passed: false, breakdown: [], suggestions: ['No draft yet — generate the draft first, then run the quality check.'], humanLike: false, humanLikeIssues: ['No draft to evaluate'] };
+        }
+        const result = scoreContent(draft, piece.keyword ?? '');
+        const hl = isHumanLike(draft);
+        return { ok: true, ...result, humanLike: hl.humanLike, humanLikeIssues: hl.issues };
+      },
+    );
   });
 }
