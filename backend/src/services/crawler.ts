@@ -241,8 +241,14 @@ export function analyzePage(html: string, url: string): AnalyzedPage {
     !!$('meta[property="og:description"]').first().attr('content')?.trim();
 
   // word count from visible body text
+  // Strip boilerplate (nav/header/footer/aside) BEFORE simhash — comparing
+  // full body text causes false duplicate positives on sites with big menus.
   $('script, style, noscript').remove();
-  const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+  const $content = $('body').clone();
+  $content.find('nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], .mega-menu, .dropdown-menu').remove();
+  // Prefer <main> or <article> if present (real content area)
+  const $main = $content.find('main, article, [role="main"]').first();
+  const bodyText = ($main.length ? $main : $content).text().replace(/\s+/g, ' ').trim();
   const wordCount = bodyText ? bodyText.split(' ').length : 0;
 
   return {

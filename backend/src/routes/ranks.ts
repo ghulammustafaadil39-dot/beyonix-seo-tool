@@ -13,11 +13,11 @@ import { requireSite } from '../services/sites.js';
 import { enqueue, enqueueDeduped, QUEUES, Jobs } from '../queues.js';
 import { positionVisibility, siteVisibilityShare, competitorPositions } from '../services/rankMetrics.js';
 import { DEFAULT_TRACKING } from '../services/rankJobs.js';
-import { getKeywordSerpProvider } from '../providers/dataforseo.js';
 
-/** BUG-QA-W2-4: honest source label, same convention as the keyword-gap endpoint. */
+/** Phase 7: rank checks always use the free DuckDuckGo provider now —
+ *  positions are really measured (top 10), never mock-seeded. */
 function rankDataSource(): 'mock' | 'real' {
-  return getKeywordSerpProvider().isMock ? 'mock' : 'real';
+  return 'real';
 }
 
 const siteParams = {
@@ -64,8 +64,20 @@ const rankRowSchema = (prefix: string) => ({
   },
 });
 
-export function registerRankRoutes(fastify: FastifyInstance) {
-  fastify.register(async (app) => {
+/** Shared enqueue for manual rank checks (refresh + check routes). */
+async function enqueueRankCheck(tenantId: string, siteId: string) {
+  // B1-M3: report dedupe honestly — a repeat click in the same day
+  // must not get a fake `{queued:true}`.
+  const { deduplicated } = await enqueueDeduped(
+    QUEUES.rankCheck,
+    Jobs.RANK_CHECK,
+    { siteId, tenantId },
+    `rank:${siteId}:${new Date().toISOString().slice(0, 10)}`,
+  );
+  return deduplicated ? { ok: true, queued: false, deduplicated: true } : { ok: true, queued: true };
+}
+
+export function registerRankRoutes(fastify: FastifyInstance) {  fastify.register(async (app) => {
     await authPlugin(app);
 
     // Latest rank per tracked keyword + previous position + 30-point sparkline.
@@ -251,7 +263,7 @@ export function registerRankRoutes(fastify: FastifyInstance) {
         await requireSite(tenantId, siteId);
         const limit = req.query.limit ?? 20;
         const r = await defaultQuery(
-          `SELECT ra.id, ra.keyword_id, k.keyword, ra.direction, ra.prev_position, ra.position, ra.delta, ra.created_at
+          `SELECT ra.id, ra.keyword_id, k.keyword, ra.direction, ra.prev_position, ra.position, ra.delta, ra.reason, ra.created_at
            FROM rank_alerts ra
            JOIN keywords k ON k.id = ra.keyword_id
            WHERE ra.site_id = $1 AND ra.tenant_id = $2
@@ -392,17 +404,78 @@ export function registerRankRoutes(fastify: FastifyInstance) {
       '/sites/:id/ranks/refresh',
       {
         schema: { params: siteParams },
-        // A1-H2: refresh spends DataForSEO budget — editor+ / ranks:write.
-        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'ranks:write')], // S-01: DataForSEO spend
+        // A1-H2: refresh spends rank-check resources — editor+ / ranks:write.
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'ranks:write')],
       },
       async (req) => {
         const { tenantId } = req.tenant;
         const siteId = req.params.id;
         await requireSite(tenantId, siteId);
-        // B1-M3: report dedupe honestly — a repeat click in the same day
-        // must not get a fake `{queued:true}`.
-        const { deduplicated } = await enqueueDeduped(QUEUES.rankCheck, Jobs.RANK_CHECK, { siteId, tenantId }, `rank:${siteId}:${new Date().toISOString().slice(0, 10)}`);
-        return deduplicated ? { ok: true, queued: false, deduplicated: true } : { ok: true, queued: true };
+        return enqueueRankCheck(tenantId, siteId);
+      },
+    );
+
+    // Phase 7: manual rank check trigger (bodyless POST — same as refresh).
+    // Exists so the frontend "Check rankings now" button has a dedicated,
+    // clearly-named endpoint; behavior is identical to /refresh.
+    app.post<{ Params: { id: string } }>(
+      '/sites/:id/ranks/check',
+      {
+        // CRITICAL: no body schema — the frontend sends a bodyless POST.
+        schema: { params: siteParams },
+        preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'ranks:write')],
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const siteId = req.params.id;
+        await requireSite(tenantId, siteId);
+        return enqueueRankCheck(tenantId, siteId);
+      },
+    );
+
+    // Phase 7: rank history scoped to a site (for the Ranks tab chart).
+    // Mirrors /keywords/:kwId/history but verifies the keyword belongs to
+    // the site, so the tab never needs a keyword-scoped call.
+    app.get<{ Params: { id: string }; Querystring: { keyword_id?: string; days?: string } }>(
+      '/sites/:id/ranks/history',
+      {
+        preHandler: requireScope('ranks:read'),
+        schema: {
+          params: siteParams,
+          querystring: {
+            type: 'object',
+            properties: {
+              keyword_id: { type: 'string', format: 'uuid' },
+              days: { type: 'string', pattern: '^[0-9]+$' },
+            },
+            required: ['keyword_id'],
+          },
+        },
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        const siteId = req.params.id;
+        const kwId = req.query.keyword_id as string;
+        await requireSite(tenantId, siteId);
+        const kw = await defaultQuery(
+          `SELECT id, keyword FROM keywords WHERE id = $1 AND site_id = $2 AND tenant_id = $3`,
+          [kwId, siteId, tenantId],
+        );
+        if (kw.rows.length === 0) throw notFound('Keyword');
+        const days = Math.min(365, Math.max(1, parseInt(req.query.days ?? '90', 10) || 90));
+        const r = await defaultQuery(
+          `SELECT id, position, pixel_rank, url, serp_features, device, location_code, language, checked_at
+           FROM rank_checks
+           WHERE keyword_id = $1 AND tenant_id = $2
+             AND checked_at > now() - ($3 || ' days')::interval
+           ORDER BY checked_at DESC LIMIT 500`,
+          [kwId, tenantId, String(days)],
+        );
+        return {
+          keyword: kw.rows[0].keyword,
+          dataSource: rankDataSource(),
+          data: r.rows.map((row: any) => ({ ...row, not_ranked: row.position == null })),
+        };
       },
     );
   });

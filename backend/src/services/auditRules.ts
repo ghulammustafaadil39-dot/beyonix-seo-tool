@@ -589,15 +589,20 @@ export function runRules(
     issues.push(...rule.check(siteAnchor, ctx));
   }
   for (const b of brokenLinks) {
+    // Timeouts (status 0) are warnings, not errors — the link might work,
+    // the check just couldn't complete. Don't scare users with false errors.
+    const isTimeout = b.status === 0;
     issues.push(
       mk(
         'broken-link',
-        'error',
+        isTimeout ? 'warning' : 'error',
         b.from,
-        b.status === 0
-          ? `Link to ${b.to} failed to load (network error or timeout).`
+        isTimeout
+          ? `Link to ${b.to} couldn't be checked (timeout). It may work — verify manually.`
           : `Link to ${b.to} returned HTTP ${b.status}.`,
-        'Fix the link target, point it at a working URL, or remove the link.',
+        isTimeout
+          ? 'Open the link in your browser to verify it works.'
+          : 'Fix the link target, point it at a working URL, or remove the link.',
       ),
     );
   }
@@ -607,9 +612,15 @@ export function runRules(
 const SEVERITY_WEIGHTS: Record<Severity, number> = { error: 10, warning: 4, info: 1 };
 
 /** Health score: 100 - min(90, weighted deductions), floored at 0. */
-export function scoreFor(issues: { severity: string }[]): number {
+export function scoreFor(issues: { severity: string; type: string }[]): number {
+  // Dedupe by issue type — 100 duplicate-content warnings on different pages
+  // should not tank the score 100x. Each unique problem counts once.
+  const seen = new Set<string>();
   let deduction = 0;
   for (const i of issues) {
+    const key = `${i.severity}:${i.type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     deduction += SEVERITY_WEIGHTS[i.severity as Severity] ?? 0;
   }
   return Math.max(0, 100 - Math.min(90, deduction));

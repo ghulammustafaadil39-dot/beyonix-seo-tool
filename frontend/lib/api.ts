@@ -233,6 +233,8 @@ export interface RankEntry {
   keyword_id: string;
   keyword: string;
   position: number | null;
+  prev_position?: number | null;
+  not_ranked?: boolean;
   url: string | null;
   checked_at: string | null;
   spark?: number[];
@@ -242,6 +244,17 @@ export interface RankHistoryPoint {
   checked_at: string;
   position: number | null;
   url: string | null;
+}
+export interface RankAlert {
+  id: string;
+  keyword_id: string;
+  keyword: string;
+  direction: 'improved' | 'dropped';
+  prev_position: number | null;
+  position: number | null;
+  delta: number;
+  reason: string | null;
+  created_at: string;
 }
 
 /**
@@ -591,8 +604,19 @@ export const ranksApi = {
     api<{ data: RankEntry[]; dataSource?: DataSource }>(`/api/v1/sites/${siteId}/ranks`),
   history: (kwId: string, days = 90) =>
     api<{ data: RankHistoryPoint[] }>(`/api/v1/keywords/${kwId}/history?days=${days}`),
+  // Phase 7: site-scoped history for the Ranks tab chart.
+  historyBySite: (siteId: string, keywordId: string, days = 90) =>
+    api<{ keyword: string; data: RankHistoryPoint[] }>(
+      `/api/v1/sites/${siteId}/ranks/history?keyword_id=${keywordId}&days=${days}`,
+    ),
   refresh: (siteId: string) =>
     api<{ ok: boolean }>(`/api/v1/sites/${siteId}/ranks/refresh`, { method: 'POST' }),
+  // Phase 7: dedicated manual check trigger (bodyless POST).
+  check: (siteId: string) =>
+    api<{ ok: boolean; queued: boolean }>(`/api/v1/sites/${siteId}/ranks/check`, { method: 'POST' }),
+  // Phase 7: persisted rank-drop alerts with beginner-friendly reasons.
+  alerts: (siteId: string, limit = 20) =>
+    api<{ data: RankAlert[] }>(`/api/v1/sites/${siteId}/ranks/alerts?limit=${limit}`),
 };
 
 export const contentApi = {
