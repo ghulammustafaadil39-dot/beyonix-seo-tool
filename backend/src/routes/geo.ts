@@ -11,6 +11,10 @@ import {
   geoScore, runGeoCheck, shareOfVoice, geoHistory, geoRecommendations,
   generateLlmsTxt, GEO_ENGINES, SIMULATED_DISCLAIMER,
 } from '../services/geoService.js';
+import {
+  checkAiVisibility, generateGeoFixes, saveReadinessResult,
+  latestReadiness, readinessHistory,
+} from '../services/geoChecker.js';
 import { checkLimit } from '../metering.js';
 
 const idParams = {
@@ -250,6 +254,109 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
       return reply.type('text/plain; charset=utf-8')
         .header('Content-Disposition', 'attachment; filename="llms.txt"')
         .send(txt);
+    });
+
+    // ---- Phase 5: GEO readiness (FREE AI-visibility audit) ----
+    // Separate from the LLM-simulation checks above — this audits the
+    // site's own AI-readiness (llms.txt, robots.txt, schema, content).
+
+    // Run full readiness audit (bodyless — no body schema!).
+    app.post('/sites/:id/geo/readiness', {
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write')],
+      schema: { params: idParams },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const result = await checkAiVisibility(site.tenant_id, site.id);
+      await saveReadinessResult(site.tenant_id, site.id, result);
+      return result;
+    });
+
+    // Latest readiness score + breakdown.
+    app.get('/sites/:id/geo/readiness', {
+      preHandler: requireScope('geo:read'),
+      schema: { params: idParams },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const latest = await latestReadiness(site.tenant_id, site.id);
+      if (!latest) return { score: null, checks: [], checked_at: null, message: 'Abhi tak check nahi hua — "Check karo" dabayein.' };
+      return { score: latest.score, checks: latest.checks, checked_at: latest.created_at };
+    });
+
+    // Score history (for charts + insights integration).
+    app.get<{ Querystring: { days?: number } }>('/sites/:id/geo/readiness/history', {
+      preHandler: requireScope('geo:read'),
+      schema: {
+        params: idParams,
+        querystring: { type: 'object', properties: { days: { type: 'integer', minimum: 1, maximum: 365, default: 90 } } },
+      },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const days = (req.query as { days?: number }).days ?? 90;
+      const points = await readinessHistory(site.tenant_id, site.id, days);
+      return { points };
+    });
+
+    // Get ready-to-use fixes (llms.txt, robots.txt, schemas).
+    app.post<{ Body: { fix_type?: string } }>('/sites/:id/geo/readiness/fix', {
+      preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write')],
+      schema: {
+        params: idParams,
+        body: {
+          type: 'object',
+          properties: { fix_type: { type: 'string', enum: ['llms_txt', 'robots_txt', 'org_schema', 'faq_schema'] } },
+        },
+      },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const fixes = await generateGeoFixes(site.tenant_id, site.id);
+      const { fix_type } = req.body as { fix_type?: string };
+      if (fix_type) {
+        const one = fixes.find((f) => f.fixType === fix_type);
+        if (!one) throw notFound('Fix');
+        return { fix: one };
+      }
+      return { fixes };
+    });
+
+    // Client-configurable check schedule (daily/weekly).
+    app.post<{ Body: { frequency: 'daily' | 'weekly'; enabled?: boolean } }>('/sites/:id/geo/readiness/schedule', {
+      preHandler: requireRoleOrScope(['owner', 'admin', 'editor'], 'geo:write'),
+      schema: {
+        params: idParams,
+        body: {
+          type: 'object',
+          required: ['frequency'],
+          properties: {
+            frequency: { type: 'string', enum: ['daily', 'weekly'] },
+            enabled: { type: 'boolean', default: true },
+          },
+        },
+      },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const { frequency, enabled } = req.body;
+      await query(
+        `INSERT INTO geo_schedules (site_id, tenant_id, frequency, enabled, updated_at)
+         VALUES ($1, $2, $3, $4, now())
+         ON CONFLICT (site_id) DO UPDATE SET frequency = $3, enabled = $4, updated_at = now()`,
+        [site.id, site.tenant_id, frequency, enabled ?? true],
+      );
+      return { ok: true, frequency, enabled: enabled ?? true };
+    });
+
+    app.get('/sites/:id/geo/readiness/schedule', {
+      preHandler: requireScope('geo:read'),
+      schema: { params: idParams },
+    }, async (req) => {
+      const { id } = req.params as { id: string };
+      const site = await requireSite(req.tenant.tenantId, id);
+      const r = await query(`SELECT frequency, enabled FROM geo_schedules WHERE site_id = $1`, [site.id]);
+      return r.rows[0] ?? { frequency: 'weekly', enabled: true };
     });
   });
 }

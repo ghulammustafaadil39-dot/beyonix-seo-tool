@@ -667,6 +667,53 @@ export const geoApi = {
     }),
 };
 
+// Phase 5: GEO readiness (FREE AI-visibility audit)
+export interface GeoReadinessCheck {
+  key: string;
+  label: string;
+  detail: string;
+  passed: boolean;
+  points: number;
+  maxPoints: number;
+  fixHint: string;
+}
+export interface GeoReadinessResult {
+  score: number;
+  checks: GeoReadinessCheck[];
+  verdict: string;
+  checkedAt: string;
+}
+export interface GeoFix {
+  fixType: string;
+  title: string;
+  content: string;
+  contentKind: 'file' | 'code' | 'instructions';
+}
+export const geoReadinessApi = {
+  run: (siteId: string) =>
+    api<GeoReadinessResult>(`/api/v1/sites/${siteId}/geo/readiness`, { method: 'POST' }),
+  latest: (siteId: string) =>
+    api<{ score: number | null; checks: GeoReadinessCheck[]; checked_at: string | null; message?: string }>(
+      `/api/v1/sites/${siteId}/geo/readiness`,
+    ),
+  history: (siteId: string, days = 90) =>
+    api<{ points: Array<{ date: string; score: number }> }>(
+      `/api/v1/sites/${siteId}/geo/readiness/history?days=${days}`,
+    ),
+  fixes: (siteId: string, fixType?: string) =>
+    api<{ fixes: GeoFix[]; fix?: GeoFix }>(`/api/v1/sites/${siteId}/geo/readiness/fix`, {
+      method: 'POST',
+      ...(fixType ? { body: { fix_type: fixType } } : {}),
+    }),
+  schedule: (siteId: string, frequency: 'daily' | 'weekly', enabled = true) =>
+    api<{ ok: boolean; frequency: string; enabled: boolean }>(
+      `/api/v1/sites/${siteId}/geo/readiness/schedule`,
+      { method: 'POST', body: { frequency, enabled } },
+    ),
+  getSchedule: (siteId: string) =>
+    api<{ frequency: string; enabled: boolean }>(`/api/v1/sites/${siteId}/geo/readiness/schedule`),
+};
+
 export const reportsApi = {
   list: (siteId: string) => api<Paged<Report>>(`/api/v1/sites/${siteId}/reports`),
   get: (id: string) => api<Report>(`/api/v1/reports/${id}`),

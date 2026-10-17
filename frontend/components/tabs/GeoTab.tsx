@@ -5,6 +5,10 @@ import { geoApi, type GeoScore } from '@/lib/api';
 import { useErrorReporter } from '../ErrorBanner';
 import ScoreGauge from '../ScoreGauge';
 import dynamic from 'next/dynamic';
+const GeoReadinessPanel = dynamic(() => import('./GeoReadinessPanel').then((m) => m.default), {
+  loading: () => <div role="status" aria-label="Loading readiness panel" className="bx-panel"><div className="bx-shimmer h-24 rounded-md bg-white/5" aria-hidden="true" /></div>,
+  ssr: false,
+});
 const GeoV2Panel = dynamic(() => import('./GeoV2Panel').then((m) => m.default), {
   loading: () => <div role="status" aria-label="Loading advanced panel" className="bx-panel"><div className="bx-shimmer h-24 rounded-md bg-white/5" aria-hidden="true" /></div>,
   ssr: false,
@@ -66,6 +70,9 @@ export default function GeoTab({ siteId }: { siteId: string }) {
 
   return (
     <div className="space-y-6">
+      {/* Phase 5: FREE AI-readiness audit — runs before the simulated checks. */}
+      <GeoReadinessPanel siteId={siteId} />
+
       <div className="bx-card bx-glow">
         <div className="relative">
           <p className="bx-micro mb-3">~/ ai visibility</p>
