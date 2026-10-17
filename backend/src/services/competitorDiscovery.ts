@@ -232,5 +232,20 @@ export async function competitorGaps(
     if (i < seeds.length - 1) await sleep(700);
   }
   gaps.sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0));
+  // Persist gaps so Phase 4 topic suggestions can use them (competitor_keywords table).
+  for (const g of gaps) {
+    try {
+      await q(
+        `INSERT INTO competitor_keywords (tenant_id, site_id, keyword, competitor_domain, competitor_position, site_position, volume)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (site_id, keyword, competitor_domain)
+         DO UPDATE SET competitor_position = EXCLUDED.competitor_position,
+                       site_position = EXCLUDED.site_position,
+                       volume = EXCLUDED.volume,
+                       discovered_at = now()`,
+        [tenantId, siteId, g.keyword, comp, g.competitorPosition, g.sitePosition, g.volume],
+      );
+    } catch { /* table may not exist yet — non-fatal */ }
+  }
   return { gaps, keywordsChecked: seeds.length };
 }
