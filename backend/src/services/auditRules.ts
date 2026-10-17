@@ -65,6 +65,56 @@ function oncePerSite(ctx: RuleCtx, key: string): boolean {
 }
 
 export const RULES: Rule[] = [
+  // v2.0 (Technical SEO Lead spec): H1 checks — were missing from the audit.
+  {
+    type: 'missing-h1',
+    severity: 'error',
+    check: (p) =>
+      p.h1Count === 0
+        ? [
+            mk(
+              'missing-h1',
+              'error',
+              p.url,
+              'This page has no H1 heading — search engines use the H1 to understand the page topic.',
+              'Add one clear H1 with the page\u2019s main keyword, matching the page topic.',
+            ),
+          ]
+        : [],
+  },
+  {
+    type: 'multiple-h1',
+    severity: 'warning',
+    check: (p) =>
+      p.h1Count > 1
+        ? [
+            mk(
+              'multiple-h1',
+              'warning',
+              p.url,
+              `This page has ${p.h1Count} H1 headings — there should be exactly one so search engines know the main topic.`,
+              'Keep the main H1 and change the others to H2.',
+            ),
+          ]
+        : [],
+  },
+  // v2.0: canonical checks.
+  {
+    type: 'missing-canonical',
+    severity: 'warning',
+    check: (p) =>
+      !p.canonical
+        ? [
+            mk(
+              'missing-canonical',
+              'warning',
+              p.url,
+              'This page has no canonical tag — Google may index duplicate versions of this URL separately.',
+              'Add a self-referencing canonical tag pointing to this page\u2019s main URL.',
+            ),
+          ]
+        : [],
+  },
   {
     type: 'missing-title',
     severity: 'error',

@@ -57,6 +57,10 @@ const TAB_COMPONENTS: Record<string, React.ComponentType<{ siteId: string }>> = 
     loading: fallback,
     ssr: false,
   }),
+  autopilot: dynamic(() => import('@/components/tabs/AutopilotTab').then((m) => m.default), {
+    loading: fallback,
+    ssr: false,
+  }),
 };
 
 export default function SiteTabPage({

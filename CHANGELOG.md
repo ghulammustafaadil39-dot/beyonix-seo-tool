@@ -3,6 +3,21 @@
 Seeded from git history on 2026-10-11 (Wave 3, QA/Release Lead). Entries are
 grouped by program wave; exact commit messages live in `git log`.
 
+## v1.1.0 — Autopilot (2026-10-17)
+
+- NEW: WordPress Autopilot — connect a WP site via Application Passwords;
+  the product now FIXES SEO issues itself, not just reports them.
+- Two modes: Co-pilot (user approves each fix) and Autopilot (safe fixes
+  auto-applied). Mode switch in dashboard → Autopilot tab.
+- Fix engine: auto-safe = missing meta descriptions, missing alt text
+  (additive only); approval-gated = title rewrites, redirects, schema.
+  Never touches: URLs, robots.txt deindex, noindex, deletions, theme files.
+- Safety: every change logged with previous value, one-click undo (30 days),
+  max 20 changes/run, 50/day, idempotency re-checks, page-builder detection.
+- New audit rules (Technical SEO Lead spec): missing H1, multiple H1s,
+  missing canonical.
+- Credentials encrypted at rest; meta writes restricted to allowlist.
+
 ## v1.0.1 — local-testing fixes (2026-10-17)
 
 - Fixed frontend `api()` sending `Content-Type: application/json` on bodyless

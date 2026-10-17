@@ -36,6 +36,7 @@ import { registerCompetitorRoutes } from './routes/competitors.js';
 import { registerGeoRoutes } from './routes/geo.js';
 import { registerReportRoutes } from './routes/reports.js';
 import { registerSettingsRoutes } from './routes/settings.js';
+import { registerAutopilotRoutes } from './routes/autopilot.js';
 import { registerWellKnownRoutes } from './routes/wellKnown.js';
 import { registerInsightRoutes } from './routes/insights.js';
 import { registerJobEventRoutes } from './routes/jobEvents.js';
@@ -170,6 +171,7 @@ export async function buildApp() {
       await registerGeoRoutes(v1);
       await registerReportRoutes(v1);
       await registerSettingsRoutes(v1);
+      await registerAutopilotRoutes(v1);
       await registerInsightRoutes(v1);
       await registerJobEventRoutes(v1);
     },

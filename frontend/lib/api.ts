@@ -609,6 +609,74 @@ export const reportsApi = {
     api<{ ok: boolean }>(`/api/v1/sites/${siteId}/reports/generate`, { method: 'POST' }),
 };
 
+// Autopilot v2.0
+export interface WpStatus {
+  connected: boolean;
+  site_url?: string;
+  seo_plugin?: string;
+  status?: string;
+  mode?: 'copilot' | 'autopilot';
+  enabled?: boolean;
+}
+export interface AutopilotProposal {
+  id: string;
+  change_type: string;
+  field_key: string;
+  wp_post_id: number;
+  page_url: string;
+  previous_value: string | null;
+  proposed_value: string;
+  reason: string;
+  status: string;
+  created_at: string;
+}
+export interface SiteChange {
+  id: string;
+  wp_post_id: number;
+  change_type: string;
+  field_key: string;
+  previous_value: string | null;
+  new_value: string | null;
+  page_url: string;
+  status: string;
+  mode: string;
+  created_at: string;
+  applied_at: string | null;
+  reverted_at: string | null;
+}
+
+export const autopilotApi = {
+  status: (siteId: string) => api<WpStatus>(`/api/v1/sites/${siteId}/wp-status`),
+  connect: (siteId: string, input: { siteUrl: string; username: string; appPassword: string }) =>
+    api<{ ok: boolean; seoPlugin: string }>(`/api/v1/sites/${siteId}/wp-connect`, {
+      method: 'POST',
+      body: input,
+    }),
+  settings: (siteId: string, input: { mode?: 'copilot' | 'autopilot'; enabled?: boolean }) =>
+    api<WpStatus>(`/api/v1/sites/${siteId}/autopilot/settings`, { method: 'PUT', body: input }),
+  scan: (siteId: string) =>
+    api<{ scanned: number; proposals: number; autoApplied: number; mode: string }>(
+      `/api/v1/sites/${siteId}/autopilot/scan`,
+      { method: 'POST' },
+    ),
+  proposals: (siteId: string) =>
+    api<{ data: AutopilotProposal[] }>(`/api/v1/sites/${siteId}/autopilot/proposals`),
+  approve: (siteId: string, proposalId: string) =>
+    api<{ ok: boolean }>(`/api/v1/sites/${siteId}/autopilot/proposals/${proposalId}/approve`, {
+      method: 'POST',
+    }),
+  reject: (siteId: string, proposalId: string) =>
+    api<{ ok: boolean }>(`/api/v1/sites/${siteId}/autopilot/proposals/${proposalId}/reject`, {
+      method: 'POST',
+    }),
+  history: (siteId: string) =>
+    api<{ data: SiteChange[] }>(`/api/v1/sites/${siteId}/autopilot/history`),
+  revert: (siteId: string, changeId: string) =>
+    api<{ ok: boolean }>(`/api/v1/sites/${siteId}/autopilot/changes/${changeId}/revert`, {
+      method: 'POST',
+    }),
+};
+
 export interface CheckoutOptions {
   /** Billing cadence; backend defaults to 'monthly' when omitted. */
   interval?: 'monthly' | 'annual';

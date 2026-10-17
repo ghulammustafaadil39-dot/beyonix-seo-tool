@@ -17,6 +17,7 @@ export const SITE_TABS: Array<{ slug: string; label: string; labelKey: MessageKe
   { slug: 'geo', label: 'GEO', labelKey: 'tabs.geo' },
   { slug: 'competitors', label: 'Competitors', labelKey: 'tabs.competitors' },
   { slug: 'reports', label: 'Reports', labelKey: 'tabs.reports' },
+  { slug: 'autopilot', label: 'Autopilot', labelKey: 'tabs.autopilot' },
 ];
 
 export default function TabNav({ siteId }: { siteId: string }) {

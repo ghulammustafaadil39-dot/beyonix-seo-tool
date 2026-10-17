@@ -28,6 +28,7 @@ export const en = {
   'tabs.competitors': 'Competitors',
   'tabs.reports': 'Reports',
   'tabs.insights': 'Insights',
+  'tabs.autopilot': 'Autopilot',
   // ——— common actions ———
   'actions.save': 'Save',
   'actions.saving': 'Saving…',
