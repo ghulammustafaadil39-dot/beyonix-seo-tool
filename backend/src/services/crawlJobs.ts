@@ -170,9 +170,9 @@ async function insertPages(
   const rows: string[] = [];
   const params: unknown[] = [];
   pages.forEach((p, i) => {
-    const o = i * 18;
+    const o = i * 25;
     rows.push(
-      `(gen_random_uuid(), $${o + 1}, $${o + 2}, $${o + 3}, $${o + 4}, $${o + 5}, $${o + 6}, $${o + 7}, $${o + 8}, $${o + 9}, $${o + 10}, $${o + 11}, $${o + 12}, $${o + 13}, $${o + 14}, $${o + 15}, $${o + 16}, $${o + 17}, $${o + 18})`,
+      `(gen_random_uuid(), $${o + 1}, $${o + 2}, $${o + 3}, $${o + 4}, $${o + 5}, $${o + 6}, $${o + 7}, $${o + 8}, $${o + 9}, $${o + 10}, $${o + 11}, $${o + 12}, $${o + 13}, $${o + 14}, $${o + 15}, $${o + 16}, $${o + 17}, $${o + 18}, $${o + 19}, $${o + 20}, $${o + 21}, $${o + 22}, $${o + 23}, $${o + 24}, $${o + 25})`,
     );
     params.push(
       tenantId, auditId, siteId, p.url, p.statusCode,
@@ -185,11 +185,20 @@ async function insertPages(
       p.redirectHops ?? 0,
       JSON.stringify((p.images ?? []).slice(0, 100).map((im) => ({ src: im.src, alt: im.alt, bytes: im.bytes ?? null }))),
       p.notModified ?? false,
+      // Phase 8: richer per-page data for automatic on-page analysis from crawl.
+      p.metaDescription ?? null,
+      JSON.stringify(p.h1s ?? []),
+      p.robotsNoindex ?? false,
+      JSON.stringify(p.schemaTypes ?? []),
+      p.hasOgTags ?? false,
+      p.hasFaqSchema ?? false,
+      p.hasArticleSchema ?? false,
     );
   });
   await q(
     `INSERT INTO audit_pages (id, tenant_id, audit_id, site_id, url, status_code, title, word_count, load_ms,
-       etag, last_modified, canonical, hreflangs, inlinks, outlinks, simhash, redirect_hops, images, reused_conditional)
+       etag, last_modified, canonical, hreflangs, inlinks, outlinks, simhash, redirect_hops, images, reused_conditional,
+       meta_description, h1s, robots_noindex, schema_types, has_og_tags, has_faq_schema, has_article_schema)
      VALUES ${rows.join(',')}
      ON CONFLICT (audit_id, url) DO NOTHING`,
     params,
@@ -428,9 +437,11 @@ async function runCrawlSite(
       if (reusedUrls.size > 0) {
         await q(
           `INSERT INTO audit_pages (id, tenant_id, audit_id, site_id, url, status_code, title, word_count, load_ms,
-             etag, last_modified, canonical, hreflangs, inlinks, outlinks, simhash, redirect_hops, images, reused_conditional)
+             etag, last_modified, canonical, hreflangs, inlinks, outlinks, simhash, redirect_hops, images, reused_conditional,
+             meta_description, h1s, robots_noindex, schema_types, has_og_tags, has_faq_schema, has_article_schema)
            SELECT gen_random_uuid(), $2, $3, $4, url, status_code, title, word_count, load_ms,
-             etag, last_modified, canonical, hreflangs, inlinks, outlinks, simhash, redirect_hops, images, TRUE
+             etag, last_modified, canonical, hreflangs, inlinks, outlinks, simhash, redirect_hops, images, TRUE,
+             meta_description, h1s, robots_noindex, schema_types, has_og_tags, has_faq_schema, has_article_schema
            FROM audit_pages WHERE audit_id = $1 AND tenant_id = $2 AND url = ANY($5)`,
           [prev.id, tenantId, auditId, siteId, [...reusedUrls]],
         );

@@ -11,7 +11,8 @@ import { generateMetered } from '../services/llmMetered.js';
 import { checkLimit, assertLimit } from '../metering.js';
 import { type PlanId } from '../plans.js';
 import { safeFetch } from '../services/safeFetch.js';
-import { ApiError, badRequest, validationError } from '../errors.js';
+import { ApiError, badRequest, notFound, validationError } from '../errors.js';
+import { listCrawledPages, getCrawledPageAnalysis } from '../services/onpageAnalysis.js';
 
 export interface PageBasics {
   statusCode: number;
@@ -313,6 +314,53 @@ export async function registerOnpageRoutes(fastify: FastifyInstance) {
         preHandler: [requireVerifiedEmail, requireActiveSubscriptionOrTrial, requireRoleOrScope(['owner', 'admin', 'editor'], 'onpage:write')],
       },
       async (req) => analyzeUrl(req.tenant.tenantId, req.tenant.plan, req.params.id, req.query.url),
+    );
+
+    // ---- Phase 8: automatic per-page analysis from the audit crawl ----
+    // No manual URL entry, no re-fetch, no LLM cost. Pages come from the
+    // latest finished audit's audit_pages rows (migration 058 enriches them).
+
+    // List all crawled pages of the latest audit with quick scores.
+    app.get<{ Params: SiteParams }>(
+      '/sites/:id/onpage/pages',
+      {
+        schema: { params: uuidParamSchema },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'onpage:read'),
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        await requireSite(tenantId, req.params.id);
+        const { auditId, pages } = await listCrawledPages(tenantId, req.params.id);
+        if (!auditId) {
+          throw notFound('No finished audit yet — run an audit first');
+        }
+        return { auditId, pages, count: pages.length };
+      },
+    );
+
+    // Detailed per-page analysis from crawl data (?url=...).
+    app.get<{ Params: SiteParams; Querystring: { url: string } }>(
+      '/sites/:id/onpage/page',
+      {
+        schema: {
+          params: uuidParamSchema,
+          querystring: {
+            type: 'object',
+            required: ['url'],
+            properties: { url: { type: 'string', minLength: 1, maxLength: 2048 } },
+          },
+        },
+        preHandler: requireRoleOrScope(['owner', 'admin', 'editor', 'viewer'], 'onpage:read'),
+      },
+      async (req) => {
+        const { tenantId } = req.tenant;
+        await requireSite(tenantId, req.params.id);
+        const analysis = await getCrawledPageAnalysis(tenantId, req.params.id, req.query.url);
+        if (!analysis) {
+          throw notFound('Page not found in the latest audit crawl');
+        }
+        return analysis;
+      },
     );
   });
 }

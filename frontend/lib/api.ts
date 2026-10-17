@@ -666,7 +666,46 @@ export const onpageApi = {
       method: 'POST',
       body: { url },
     }),
+  // Phase 8: automatic per-page analysis from the audit crawl (no URL entry needed).
+  pages: (siteId: string) =>
+    api<OnpagePagesResponse>(`/api/v1/sites/${siteId}/onpage/pages`),
+  pageDetail: (siteId: string, url: string) =>
+    api<OnpagePageAnalysis>(
+      `/api/v1/sites/${siteId}/onpage/page?url=${encodeURIComponent(url)}`,
+    ),
 };
+
+export interface OnpagePageSummary {
+  url: string;
+  title: string | null;
+  status_code: number;
+  word_count: number;
+  score: number;
+  grade: string;
+}
+
+export interface OnpagePagesResponse {
+  auditId: string;
+  pages: OnpagePageSummary[];
+  count: number;
+}
+
+export interface OnpageCheck {
+  key: string;
+  label: string;
+  status: 'pass' | 'warn' | 'fail';
+  points: number;
+  max: number;
+  detail: string;
+  fix: string;
+}
+
+export interface OnpagePageAnalysis {
+  url: string;
+  score: number;
+  grade: string;
+  checks: OnpageCheck[];
+}
 
 export const backlinksApi = {
   list: (siteId: string, status?: string) =>
