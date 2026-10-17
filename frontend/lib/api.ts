@@ -52,11 +52,18 @@ function csrfHeader(): Record<string, string> {
 export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
   let res: Response;
   try {
+    // FIX (Oct 2026, bug #3): only send Content-Type when there is a body.
+    // Sending `Content-Type: application/json` with an empty body makes
+    // Fastify reject the request with FST_ERR_CTP_EMPTY_JSON_BODY, which
+    // broke every bodyless POST (audit start, logout, track/untrack, ...).
+    const headers: Record<string, string> = { ...csrfHeader() };
+    const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
     res = await fetch(`${BASE_URL}${path}`, {
       method: opts.method || 'GET',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...csrfHeader() },
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      headers,
+      body,
     });
   } catch {
     throw new ApiError({

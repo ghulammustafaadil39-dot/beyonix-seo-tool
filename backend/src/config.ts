@@ -98,6 +98,11 @@ export const config = {
   // unset = unauthenticated (scraper-friendly default; set it in production
   // so aggregate spend / queue-depth intel isn't public).
   metricsBasicAuth: opt('METRICS_BASIC_AUTH', ''),
+  // DEV ONLY (Oct 2026): skip the email-verification gate for local testing.
+  // Lets testers exercise audit/keyword-research/etc. without an SMTP server.
+  // NEVER enable in production — it removes the anti-abuse gate for
+  // cost-incurring features. Default off.
+  devBypassEmailVerification: opt('DEV_BYPASS_EMAIL_VERIFICATION', 'false') === 'true',
 };
 
 export const hasStripe = () => !!config.stripeSecretKey;

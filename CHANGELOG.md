@@ -3,6 +3,20 @@
 Seeded from git history on 2026-10-11 (Wave 3, QA/Release Lead). Entries are
 grouped by program wave; exact commit messages live in `git log`.
 
+## v1.0.1 — local-testing fixes (2026-10-17)
+
+- Fixed frontend `api()` sending `Content-Type: application/json` on bodyless
+  POSTs → Fastify `FST_ERR_CTP_EMPTY_JSON_BODY` (broke audit start, logout,
+  keywords track/untrack, etc.). Content-Type now sent only when a body exists.
+- Added `DEV_BYPASS_EMAIL_VERIFICATION` (default off, dev-only): skips the
+  email-verification gate so audit/keyword-research/etc. can be tested without
+  an SMTP server. Never enable in production.
+- Fixed web service inheriting `PORT=4000` from `.env` via env_file (overrode
+  the Dockerfile's `PORT=3000` while compose maps 3000:3000 → dead web).
+  `docker-compose.yml` now pins `PORT: 3000` for web.
+- Clarified `API_INTERNAL_URL` in `.env.example` (compose overrides it to
+  `http://api:4000`; `localhost` is for non-Docker runs only).
+
 ## Wave 0 — baseline (2026-10-10)
 
 - Strong-MVP baseline commit + deep hostile audit (22 findings: 4 high, 11 medium, 7 low).
