@@ -152,18 +152,18 @@ export async function checkAiVisibility(
     key: 'llms_txt',
     label: 'llms.txt file',
     detail: llmsOk
-      ? 'llms.txt mil gayi — AI crawlers ko tumhari site ka structured intro milta hai.'
-      : 'llms.txt nahi mili — AI ko tumhari site ka koi ready-made summary nahi milta.',
+      ? 'llms.txt found — AI crawlers get a structured intro to your site.'
+      : 'No llms.txt found — AI assistants have no ready-made summary of your site to quote from.',
     passed: llmsOk,
     points: llmsOk ? 25 : 0,
     maxPoints: 25,
-    fixHint: 'Neeche "Generate llms.txt" dabao — tayyar file milegi jo site pe lagani hai.',
+    fixHint: 'Click "Generate llms.txt" below — you\'ll get a ready file to add to your site.',
   });
 
   // 2. robots.txt AI crawlers (15)
   const robots = await fetchText(`${base}/robots.txt`);
   let robotsOk = false;
-  let robotsDetail = 'robots.txt nahi mili ya parhi nahi ja saki.';
+  let robotsDetail = 'robots.txt not found or could not be read.';
   if (robots.ok && robots.text.trim()) {
     const parsed = parseRobots(robots.text);
     const blocked: string[] = [];
@@ -176,9 +176,9 @@ export async function checkAiVisibility(
     }
     if (blocked.length === 0) {
       robotsOk = true;
-      robotsDetail = 'Koi AI crawler block nahi — GPTBot, ClaudeBot, PerplexityBot sab aa sakte hain.';
+      robotsDetail = 'No AI crawlers blocked — GPTBot, ClaudeBot, PerplexityBot can all access your site.';
     } else {
-      robotsDetail = `Ye AI crawlers block hain: ${blocked.join(', ')} — AI tumhari site parh hi nahi sakta.`;
+      robotsDetail = `These AI crawlers are blocked: ${blocked.join(', ')} — AI cannot read your site.`;
     }
   }
   checks.push({
@@ -188,7 +188,7 @@ export async function checkAiVisibility(
     passed: robotsOk,
     points: robotsOk ? 15 : 0,
     maxPoints: 15,
-    fixHint: 'Neeche "Fix robots.txt" dabao — AI crawlers ko allow karne wali lines milengi.',
+    fixHint: 'Click "Fix robots.txt" below — you\'ll get lines that allow AI crawlers.',
   });
 
   // 3+4+5. Homepage: schema + content
@@ -196,7 +196,7 @@ export async function checkAiVisibility(
   let orgOk = false;
   let faqOk = false;
   let defOk = false;
-  let defDetail = 'Homepage load nahi hui — schema check nahi ho saka.';
+  let defDetail = 'Homepage did not load — schema check could not run.';
   if (home.ok && home.text) {
     const types = extractJsonLdTypes(home.text).map((t) => t.toLowerCase());
     orgOk = types.some((t) => t === 'organization' || t === 'localbusiness' || t.includes('business'));
@@ -209,23 +209,23 @@ export async function checkAiVisibility(
     key: 'org_schema',
     label: 'Organization schema',
     detail: orgOk
-      ? 'Organization/LocalBusiness schema mil gaya — AI ko pata hai ye kis business ki site hai.'
-      : 'Organization schema nahi mila — AI ko tumhare business ka naam, type, contact samajh nahi aata.',
+      ? 'Organization/LocalBusiness schema found — AI knows what business this site belongs to.'
+      : 'No Organization schema found — AI cannot understand your business name, type, or contact info.',
     passed: orgOk,
     points: orgOk ? 20 : 0,
     maxPoints: 20,
-    fixHint: '"Copy schema" dabao — tayyar JSON-LD milega jo homepage me lagana hai.',
+    fixHint: 'Click "Copy schema" — you\'ll get ready JSON-LD to add to your homepage.',
   });
   checks.push({
     key: 'faq_schema',
     label: 'FAQ schema',
     detail: faqOk
-      ? 'FAQ schema mil gaya — AI tumhare sawal-jawab seedha quote kar sakta hai.'
-      : 'FAQ schema nahi mila — AI answers me tumhari site quote hone ke chance kam hain.',
+      ? 'FAQ schema found — AI can directly quote your Q&A content.'
+      : 'No FAQ schema found — your site is less likely to be quoted in AI answers.',
     passed: faqOk,
     points: faqOk ? 20 : 0,
     maxPoints: 20,
-    fixHint: '"Copy FAQ schema" dabao — sample FAQ markup milega.',
+    fixHint: 'Click "Copy FAQ schema" — you\'ll get sample FAQ markup.',
   });
   checks.push({
     key: 'definition_content',
@@ -234,16 +234,16 @@ export async function checkAiVisibility(
     passed: defOk,
     points: defOk ? 20 : 0,
     maxPoints: 20,
-    fixHint: 'Homepage pe wazeh headings (H2) aur sawal-jawab wale blocks add karo.',
+    fixHint: 'Add clear headings (H2) and Q&A blocks to your homepage.',
   });
 
   const score = checks.reduce((s, c) => s + c.points, 0);
   const verdict =
     score >= 80
-      ? 'Zabardast! Tumhari site AI ke liye tayyar hai — AI tumhara naam lega.'
+      ? 'Excellent! Your site is ready for AI — AI will mention your brand.'
       : score >= 50
-        ? 'Theek-thaak, lekin AI tumhe aksar miss kar dega. Neeche wali cheezein fix karo.'
-        : 'Khatra! AI ko tumhari site nazar hi nahi aa rahi. Abhi fix karo.';
+        ? 'Decent, but AI will often miss you. Fix the items below.'
+        : 'Warning! AI cannot see your site at all. Fix this now.';
 
   return { score, checks, verdict, checkedAt: new Date().toISOString() };
 }

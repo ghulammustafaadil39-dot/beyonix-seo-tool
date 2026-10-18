@@ -280,7 +280,7 @@ export async function registerGeoRoutes(fastify: FastifyInstance) {
       const { id } = req.params as { id: string };
       const site = await requireSite(req.tenant.tenantId, id);
       const latest = await latestReadiness(site.tenant_id, site.id);
-      if (!latest) return { score: null, checks: [], checked_at: null, message: 'Abhi tak check nahi hua — "Check karo" dabayein.' };
+      if (!latest) return { score: null, checks: [], checked_at: null, message: 'Not checked yet — click "Run check" to start.' };
       return { score: latest.score, checks: latest.checks, checked_at: latest.created_at };
     });
 
