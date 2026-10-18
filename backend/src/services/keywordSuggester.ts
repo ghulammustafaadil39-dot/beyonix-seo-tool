@@ -121,11 +121,17 @@ export async function suggestKeywords(
     [siteId],
   );
   const titles = pages.rows.map((r: any) => r.title as string).filter(Boolean);
-  // Fall back to the domain itself as a seed if no crawl data yet
+  // Fall back to the domain itself as a seed if no crawl data yet.
+  // NOTE: pass empty domain so brand words are NOT excluded — for a fresh
+  // site with zero crawl data, suggesting the brand is better than nothing.
+  // (Bug Oct 2026: passing the real domain filtered out EVERY word for
+  // domains like thinkhigher.com.au → zero suggestions.)
+  let domainForExtraction = site.domain;
   if (titles.length === 0) {
     titles.push(site.domain.replace(/[.-]/g, ' '));
+    domainForExtraction = '';
   }
-  const phrases = extractPhrases(titles, site.domain);
+  const phrases = extractPhrases(titles, domainForExtraction);
   const sorted = [...phrases.entries()].sort((a, b) => b[1] - a[1]);
   for (const [phrase, weight] of sorted.slice(0, 30)) {
     if (seen.has(phrase)) continue;
