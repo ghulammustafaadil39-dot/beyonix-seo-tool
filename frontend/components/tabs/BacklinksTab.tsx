@@ -62,7 +62,7 @@ export default function BacklinksTab({ siteId }: { siteId: string }) {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/55">$ loading backlinks…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">Loading backlinks…</p>;
 
   return (
     <div className="space-y-4">

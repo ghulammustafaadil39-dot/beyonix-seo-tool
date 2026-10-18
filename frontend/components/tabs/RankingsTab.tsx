@@ -146,7 +146,7 @@ export default function RankingsTab({ siteId }: { siteId: string }) {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/55">$ loading rankings…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">Loading rankings…</p>;
 
   return (
     <div className="space-y-4">

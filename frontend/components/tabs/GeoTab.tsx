@@ -66,7 +66,7 @@ export default function GeoTab({ siteId }: { siteId: string }) {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/55">$ loading GEO data…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">Loading GEO data…</p>;
 
   return (
     <div className="space-y-6">

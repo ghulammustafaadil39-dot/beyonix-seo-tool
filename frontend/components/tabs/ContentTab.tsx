@@ -132,7 +132,7 @@ function CampaignsSection({ siteId }: { siteId: string }) {
     written: 'bx-pill-ok',
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/55">$ loading campaigns…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">Loading campaigns…</p>;
 
   return (
     <div className="bx-card">
@@ -401,7 +401,7 @@ export default function ContentTab({ siteId }: { siteId: string }) {
     approved: 'bx-pill-ok',
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/55">$ loading content…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">Loading content…</p>;
 
   return (
     <div className="space-y-6">

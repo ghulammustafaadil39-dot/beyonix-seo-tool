@@ -97,7 +97,7 @@ export default function BacklinksV2Panel({ siteId }: { siteId: string }) {
           </div>
         </div>
         {toxic === null ? (
-          <p className="mt-3 font-mono text-sm text-white/55">$ loading toxic links…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">Loading toxic links…</p>
         ) : toxic.length === 0 ? (
           <p className="mt-3 text-sm text-white/55">No links at or above the toxic threshold — nothing to review.</p>
         ) : (
@@ -128,7 +128,7 @@ export default function BacklinksV2Panel({ siteId }: { siteId: string }) {
           <p className="bx-micro mb-1">~/ anchors</p>
           <h3 className="text-base font-bold text-white">Anchor text distribution</h3>
           {anchors === null ? (
-            <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
+            <p className="mt-3 font-mono text-sm text-white/55">Loading…</p>
           ) : anchors.length === 0 ? (
             <p className="mt-3 text-sm text-white/55">No active backlinks yet.</p>
           ) : (
@@ -161,7 +161,7 @@ export default function BacklinksV2Panel({ siteId }: { siteId: string }) {
             </button>
           </div>
           {opps === null ? (
-            <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
+            <p className="mt-3 font-mono text-sm text-white/55">Loading…</p>
           ) : opps.length === 0 ? (
             <p className="mt-3 text-sm text-white/55">No opportunities yet — hit Refresh to scan.</p>
           ) : (

@@ -94,7 +94,7 @@ export default function GeoReadinessPanel({ siteId }: { siteId: string }) {
     }
   };
 
-  if (loading) return <p className="font-mono text-sm text-white/55">$ loading AI readiness…</p>;
+  if (loading) return <p className="font-mono text-sm text-white/55">Loading AI readiness…</p>;
 
   const failedChecks = (data?.checks ?? []).filter((c) => !c.passed);
 

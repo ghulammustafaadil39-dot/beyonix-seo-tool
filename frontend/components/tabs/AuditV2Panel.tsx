@@ -159,7 +159,7 @@ export default function AuditV2Panel({
         )}
 
         {groups === null ? (
-          <p className="mt-4 font-mono text-sm text-white/55">$ loading groups…</p>
+          <p className="mt-4 font-mono text-sm text-white/55">Loading groups…</p>
         ) : groups.length === 0 ? (
           <p className="mt-4 text-sm text-white/55">No grouped issues for this audit yet.</p>
         ) : (

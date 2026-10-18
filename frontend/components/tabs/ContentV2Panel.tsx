@@ -210,7 +210,7 @@ export default function ContentV2Panel({
         <p className="bx-micro mb-1">~/ versions</p>
         <h3 className="text-base font-bold text-white">Version history</h3>
         {versions === null ? (
-          <p className="mt-3 font-mono text-sm text-white/55">$ loading versions…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">Loading versions…</p>
         ) : versions.length === 0 ? (
           <p className="mt-3 text-sm text-white/55">No versions yet — edits, brief and status changes snapshot a version first.</p>
         ) : (

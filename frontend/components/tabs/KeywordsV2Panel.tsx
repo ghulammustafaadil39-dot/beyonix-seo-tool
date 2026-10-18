@@ -161,7 +161,7 @@ export default function KeywordsV2Panel({ siteId }: { siteId: string }) {
           <a href={keywordsV2Api.exportUrl(siteId)} className="bx-btn-secondary !text-xs">Export CSV</a>
         </div>
         {clusters === null ? (
-          <p className="mt-4 font-mono text-sm text-white/55">$ loading clusters…</p>
+          <p className="mt-4 font-mono text-sm text-white/55">Loading clusters…</p>
         ) : clusters.length === 0 ? (
           <p className="mt-4 text-sm text-white/55">No keywords yet — research or import some first.</p>
         ) : (
@@ -194,7 +194,7 @@ export default function KeywordsV2Panel({ siteId }: { siteId: string }) {
           <h3 className="text-base font-bold text-white">Cannibalization watch</h3>
           <div className="mt-3 space-y-3">
             {cannib === null ? (
-              <p className="font-mono text-sm text-white/55">$ loading…</p>
+              <p className="font-mono text-sm text-white/55">Loading…</p>
             ) : cannib.length === 0 ? (
               <p className="text-sm text-white/55">No cannibalization detected.</p>
             ) : (

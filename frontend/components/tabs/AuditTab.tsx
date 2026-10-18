@@ -20,6 +20,39 @@ const SEVERITY_COLOR: Record<string, string> = {
   info: 'bx-pill-info',
 };
 
+// Human-readable labels for technical issue type keys
+const ISSUE_LABELS: Record<string, string> = {
+  'title-long': 'Title too long',
+  'title-short': 'Title too short',
+  'missing-title': 'Missing title',
+  'duplicate-title': 'Duplicate title',
+  'missing-meta-description': 'Missing meta description',
+  'meta-description-long': 'Meta description too long',
+  'duplicate-meta-description': 'Duplicate meta description',
+  'missing-canonical': 'Missing canonical URL',
+  'missing-viewport': 'Missing viewport meta',
+  'missing-robots': 'Missing robots.txt',
+  'missing-sitemap': 'Missing sitemap',
+  'images-missing-alt': 'Images missing alt text',
+  'image-too-large': 'Image too large',
+  'image-missing-dimensions': 'Image missing dimensions',
+  'slow-page': 'Slow page load',
+  'thin-content': 'Thin content',
+  'duplicate-content': 'Duplicate content',
+  'orphan-page': 'Orphan page (no internal links)',
+  'page-noindex': 'Page set to noindex',
+  'redirect-chain-long': 'Long redirect chain',
+  'redirect-loop': 'Redirect loop',
+  'poor-lcp': 'Poor Largest Contentful Paint',
+  'poor-cls': 'Poor Cumulative Layout Shift',
+  'missing-og-tags': 'Missing Open Graph tags',
+  'no-faq-schema': 'Missing FAQ schema',
+  'schema-invalid-json': 'Invalid schema markup',
+  'schema-missing-field': 'Schema missing required field',
+};
+
+const issueLabel = (type: string) => ISSUE_LABELS[type] ?? type.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
 export default function AuditTab({ siteId }: { siteId: string }) {
   const { report } = useErrorReporter();
   const [audits, setAudits] = useState<Audit[]>([]);
@@ -214,7 +247,7 @@ export default function AuditTab({ siteId }: { siteId: string }) {
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  <p className="text-sm font-medium text-white">{i.type}</p>
+                  <p className="text-sm font-medium text-white">{issueLabel(i.type)}</p>
                   <p className="text-xs text-white/55">{i.detail}</p>
                 </td>
                 <td className="max-w-[220px] truncate px-4 py-3 font-mono text-xs text-white/55">{i.url}</td>

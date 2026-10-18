@@ -146,7 +146,7 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
           {prompts !== null && prompts.length === 0 && (
             <li className="text-sm text-white/55">No prompts yet — add your first one above.</li>
           )}
-          {prompts === null && <li className="font-mono text-sm text-white/55">$ loading prompts…</li>}
+          {prompts === null && <li className="font-mono text-sm text-white/55">Loading prompts…</li>}
         </ul>
       </div>
 
@@ -155,7 +155,7 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ share of voice</p>
         <h3 className="text-base font-bold text-white">AI mention share of voice (simulated)</h3>
         {sov === null ? (
-          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">Loading…</p>
         ) : sov.length === 0 ? (
           <p className="mt-3 text-sm text-white/55">No simulated checks yet — run the prompt set to build share-of-voice data.</p>
         ) : (
@@ -182,7 +182,7 @@ export default function GeoV2Panel({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ history</p>
         <h3 className="text-base font-bold text-white">Mention history (simulated, 30 days)</h3>
         {history === null ? (
-          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">Loading…</p>
         ) : history.length === 0 ? (
           <p className="mt-3 text-sm text-white/55">No check history yet.</p>
         ) : (

@@ -205,7 +205,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
           {competitors !== null && competitors.length === 0 && (
             <p className="text-sm text-white/55">No competitors yet — add one above.</p>
           )}
-          {competitors === null && <p className="font-mono text-sm text-white/55">$ loading competitors…</p>}
+          {competitors === null && <p className="font-mono text-sm text-white/55">Loading competitors…</p>}
         </div>
         {compare && compare.summary.length > 0 && (
           <p className="mt-3 font-mono text-xs text-white/55">
@@ -221,7 +221,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ keyword gaps</p>
         <h2 className="text-base font-bold text-white">Keywords competitors outrank you on</h2>
         {kwGaps === null ? (
-          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">Loading…</p>
         ) : kwGaps.length === 0 ? (
           <p className="mt-3 text-sm text-white/55">No keyword gaps found in the latest rank snapshots.</p>
         ) : (
@@ -257,7 +257,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ content gaps</p>
         <h2 className="text-base font-bold text-white">Content gaps</h2>
         {contentGaps === null ? (
-          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">Loading…</p>
         ) : contentGaps.length === 0 ? (
           <p className="mt-3 text-sm text-white/55">No content gaps — every competitor-ranking keyword already has content, or no rank data yet.</p>
         ) : (
@@ -279,7 +279,7 @@ export default function CompetitorsTab({ siteId }: { siteId: string }) {
         <p className="bx-micro mb-1">~/ backlink compare</p>
         <h2 className="text-base font-bold text-white">Backlink comparison</h2>
         {backlinks === null ? (
-          <p className="mt-3 font-mono text-sm text-white/55">$ loading…</p>
+          <p className="mt-3 font-mono text-sm text-white/55">Loading…</p>
         ) : (
           <div className="mt-3 space-y-2">
             <p className="font-mono text-sm text-white/80">
