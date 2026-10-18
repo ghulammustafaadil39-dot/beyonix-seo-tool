@@ -6,9 +6,11 @@ RUN npm ci
 COPY backend/tsconfig.json ./
 COPY backend/src ./src
 COPY backend/migrations ./migrations
+COPY start.sh ./
 RUN npm run build && npm prune --omit=dev
 RUN test -f ./dist/prompts/geo-answer.txt
+RUN chmod +x ./start.sh
 USER node
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD wget -qO- http://localhost:${PORT:-4000}/healthz || exit 1
-CMD ["node", "dist/index.js"]
+CMD ["./start.sh"]
