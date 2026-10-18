@@ -70,9 +70,11 @@ export default function GeoTab({ siteId }: { siteId: string }) {
 
   return (
     <div className="space-y-6">
-      {/* Phase 5: FREE AI-readiness audit — runs before the simulated checks. */}
+      {/* Phase 5: FREE AI-readiness audit — the main GEO feature, works without API keys. */}
       <GeoReadinessPanel siteId={siteId} />
 
+      {/* AI mention tracker — requires GEMINI_API_KEY or OPENAI_API_KEY. Hidden when using mock data. */}
+      {geo && geo.score !== 0 && (
       <div className="bx-card bx-glow">
         <div className="relative">
           <p className="bx-micro mb-3">~/ ai visibility</p>
@@ -84,6 +86,7 @@ export default function GeoTab({ siteId }: { siteId: string }) {
           </p>
         </div>
       </div>
+      )}
 
       <div className="bx-card">
         <p className="bx-micro mb-1">~/ run check</p>
